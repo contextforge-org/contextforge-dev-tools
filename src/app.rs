@@ -110,21 +110,35 @@ pub enum DebugAction {
 pub fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
     match cli.command {
         Command::Stack(args) => resolve_stack(args.command, environment).map(Action::Stack),
-        Command::Probe(args) => Ok(Action::Probe {
-            topology: resolve_routed_lane(args.lane, environment)?,
-            protocol_version: resolve_protocol_version(args.protocol_version, environment)?,
-        }),
-        Command::Load(args) => Ok(Action::Load(ResolvedLoadArgs {
-            topology: resolve_routed_lane(args.target.lane, environment)?,
-            protocol_version: resolve_protocol_version(args.target.protocol_version, environment)?,
-            request: LoadRequest {
-                engine: args.engine.into(),
-                smoke: args.smoke,
-                users: args.users,
-                spawn_rate: args.spawn_rate,
-                run_time: args.run_time,
-            },
-        })),
+        Command::Probe(args) => {
+            let topology = resolve_topology(args.lane, environment)?;
+            Ok(Action::Probe {
+                topology,
+                protocol_version: resolve_protocol_version(
+                    args.protocol_version,
+                    environment,
+                    ProtocolVersion::default(),
+                )?,
+            })
+        }
+        Command::Load(args) => {
+            let topology = resolve_topology(args.target.lane, environment)?;
+            Ok(Action::Load(ResolvedLoadArgs {
+                topology,
+                protocol_version: resolve_protocol_version(
+                    args.target.protocol_version,
+                    environment,
+                    ProtocolVersion::default(),
+                )?,
+                request: LoadRequest {
+                    engine: args.engine.into(),
+                    smoke: args.smoke,
+                    users: args.users,
+                    spawn_rate: args.spawn_rate,
+                    run_time: args.run_time,
+                },
+            }))
+        }
         Command::Live(args) => {
             let lane = resolve_live_lane(args.target.lane, environment)?;
             if lane == LiveLane::Fixture && args.group != LiveGroup::Protocol {
@@ -136,6 +150,7 @@ pub fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
                 protocol_version: resolve_protocol_version(
                     args.target.protocol_version,
                     environment,
+                    ProtocolVersion::default(),
                 )?,
             })
         }
@@ -152,15 +167,19 @@ pub fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
             },
         })),
         Command::Debug(args) => Ok(Action::Debug(match args.command {
-            DebugCommand::Inspect(args) => DebugAction::Inspect {
-                topology: resolve_routed_lane(args.target.lane, environment)?,
-                protocol_version: resolve_protocol_version(
-                    args.target.protocol_version,
-                    environment,
-                )?,
-                method: args.method,
-                server_id: args.server_id,
-            },
+            DebugCommand::Inspect(args) => {
+                let topology = resolve_topology(args.target.lane, environment)?;
+                DebugAction::Inspect {
+                    topology,
+                    protocol_version: resolve_protocol_version(
+                        args.target.protocol_version,
+                        environment,
+                        ProtocolVersion::default(),
+                    )?,
+                    method: args.method,
+                    server_id: args.server_id,
+                }
+            }
             DebugCommand::Token(args) => {
                 if args.kind == TokenKind::Admin && args.server_id.is_some() {
                     bail!("--server-id is only valid with --kind scoped");
@@ -186,31 +205,22 @@ fn resolve_live_lane(lane: Option<CliLane>, environment: &Environment) -> Result
     })
 }
 
-fn resolve_routed_lane(lane: Option<CliLane>, environment: &Environment) -> Result<StackMode> {
-    match resolve_live_lane(lane, environment)? {
-        LiveLane::Fixture => {
-            bail!("--lane fixture-direct is only supported by live and conformance run")
-        }
-        LiveLane::Controlplane => Ok(StackMode::Controlplane),
-        LiveLane::Dataplane => Ok(StackMode::Dataplane),
-    }
-}
-
 fn resolve_protocol_version(
     explicit: Option<ProtocolVersion>,
     environment: &Environment,
+    fallback: ProtocolVersion,
 ) -> Result<ProtocolVersion> {
     if let Some(version) = explicit {
         return Ok(version);
     }
     let Some(value) = environment.get(OsStr::new(PROTOCOL_VERSION_ENV)) else {
-        return Ok(ProtocolVersion::default());
+        return Ok(fallback);
     };
     let value = value
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("{PROTOCOL_VERSION_ENV} must be UTF-8"))?;
     if value.is_empty() {
-        return Ok(ProtocolVersion::default());
+        return Ok(fallback);
     }
     ProtocolVersion::from_str(value)
         .map_err(|error| anyhow::anyhow!("invalid {PROTOCOL_VERSION_ENV}: {error}"))

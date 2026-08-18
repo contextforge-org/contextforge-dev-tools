@@ -40,7 +40,13 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             .env(CONFORMANCE_SERVER_ERA_ENV, server_era.label());
         self.runner.run_async(&build).await?;
 
-        let up = project.command(["up", "-d", "--wait", OFFICIAL_CONFORMANCE_SERVICE]);
+        let up = project.command([
+            "up",
+            "-d",
+            "--wait",
+            OFFICIAL_CONFORMANCE_SERVICE,
+            OFFICIAL_CONFORMANCE_PROXY_SERVICE,
+        ]);
         let up = self
             .compose_environment(up, topology, true)?
             .env(CONFORMANCE_SERVER_ERA_ENV, server_era.label());
@@ -63,6 +69,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             "rm",
             "--stop",
             "--force",
+            OFFICIAL_CONFORMANCE_PROXY_SERVICE,
             OFFICIAL_CONFORMANCE_SERVICE,
         ]);
         let remove = self.compose_environment(remove, topology, true)?;
@@ -147,6 +154,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             let mut fixture_metadata = None;
             let mut fixture_endpoint = None;
             let mut service_started = false;
+            let mut managed_token = None;
 
             if topology_failure.is_none() {
                 let (start_result, start_interrupted) = finish_phase_after_interrupt(
@@ -229,7 +237,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             }
 
             if topology_failure.is_none() && run_routed {
-                match self.admin_token().and_then(|token| {
+                match self.admin_session_token().await.and_then(|token| {
                     ConformanceFixtureClient::builder(self.base_url()?, token)
                         .build()
                         .map_err(AppFailure::from)
@@ -274,14 +282,21 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                     .zip(fixture_metadata.as_ref());
                 match run_inputs {
                     Some((fixture, metadata)) => {
-                        match self.generated_bearer_token(topology, &fixture.server_id) {
+                        match self
+                            .managed_bearer_token(topology, &fixture.server_id)
+                            .await
+                        {
                             Ok(token) => {
+                                managed_token = Some(token);
+                                let token = managed_token
+                                    .as_ref()
+                                    .expect("managed token was just stored");
                                 let tests = async {
                                     self.run_official_conformance_mode(
                                         &OfficialConformanceRun {
                                             topology,
                                             server_id: &fixture.server_id,
-                                            token: &token,
+                                            token: &token.value,
                                             spec_version,
                                             server_era,
                                             fixture: metadata,
@@ -312,6 +327,12 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                         )));
                     }
                 }
+            }
+
+            if let Some(token) = managed_token.as_ref() {
+                topology_failure =
+                    finish_with_cleanup(topology_failure, self.revoke_managed_token(token).await)
+                        .err();
             }
 
             if let Some((client, fixture)) = fixture_state {
@@ -838,7 +859,7 @@ mod tests {
                 ConformanceServerEra::Legacy,
                 OutputStyle::plain(),
             ),
-            "────────────\n MCP conformance lane: fixture direct\n    Starting 40 scenarios with @modelcontextprotocol/conformance@0.2.0-alpha.9 (client 2026-07-28, server legacy)"
+            "────────────\n MCP conformance lane: fixture direct\n    Starting 40 scenarios with @modelcontextprotocol/conformance@0.2.0-alpha.11 (client 2026-07-28, server legacy)"
         );
     }
 

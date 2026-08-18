@@ -10,7 +10,7 @@ use axum::extract::State;
 use axum::http::{HeaderMap, Method, Request, Response, StatusCode};
 use axum::routing::any;
 use cf_integration_load::{GooseLoadConfig, GooseRunError, LoadEngine, LoadRequest, LoadSettings};
-use cf_integration_mcp::mcp::{ACCEPT, PROTOCOL_VERSION};
+use cf_integration_mcp::mcp::{ACCEPT, PROTOCOL_VERSION, STATELESS_PROTOCOL_VERSION};
 use cf_integration_platform::StackMode;
 use cf_integration_platform::config::{AppConfig, Environment};
 use serde_json::{Value, json};
@@ -182,6 +182,9 @@ struct Observation {
     authenticated: bool,
     session: Option<String>,
     protocol_version: Option<String>,
+    routing_method: Option<String>,
+    routing_name: Option<String>,
+    metadata_protocol_version: Option<String>,
     initialize_protocol_version: Option<String>,
     called_tool: Option<String>,
 }
@@ -215,6 +218,15 @@ async fn mcp_handler(State(state): State<MockState>, request: Request<Body>) -> 
             == Some("Bearer secret.goose.jwt"),
         session: header(&parts.headers, "mcp-session-id"),
         protocol_version: header(&parts.headers, "mcp-protocol-version"),
+        routing_method: header(&parts.headers, "mcp-method"),
+        routing_name: header(&parts.headers, "mcp-name"),
+        metadata_protocol_version: payload
+            .as_ref()
+            .and_then(|value| {
+                value.pointer("/params/_meta/io.modelcontextprotocol~1protocolVersion")
+            })
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         initialize_protocol_version: payload
             .as_ref()
             .and_then(|value| value.pointer("/params/protocolVersion"))
@@ -247,6 +259,32 @@ async fn mcp_handler(State(state): State<MockState>, request: Request<Body>) -> 
     };
     let id = payload.get("id").cloned().unwrap_or(Value::Null);
     match rpc_method.as_deref() {
+        Some("server/discover") => {
+            if !has_stateless_headers(
+                &parts.headers,
+                &payload,
+                "server/discover",
+                None,
+                state.protocol_version,
+            ) {
+                return response(
+                    StatusCode::BAD_REQUEST,
+                    "text/plain",
+                    "bad discover request",
+                );
+            }
+            json_response(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "supportedVersions": [state.protocol_version],
+                    "capabilities": {"tools": {}},
+                    "resultType": "complete",
+                    "cacheScope": "private",
+                    "ttlMs": 0
+                }
+            }))
+        }
         Some("initialize") => {
             if header(&parts.headers, "mcp-session-id").is_some()
                 || header(&parts.headers, "mcp-protocol-version").is_some()
@@ -302,7 +340,18 @@ async fn mcp_handler(State(state): State<MockState>, request: Request<Body>) -> 
             }
         }
         Some("tools/list") => {
-            if !has_session_headers(&parts.headers, state.protocol_version) {
+            let valid_headers = if state.protocol_version == STATELESS_PROTOCOL_VERSION {
+                has_stateless_headers(
+                    &parts.headers,
+                    &payload,
+                    "tools/list",
+                    None,
+                    state.protocol_version,
+                )
+            } else {
+                has_session_headers(&parts.headers, state.protocol_version)
+            };
+            if !valid_headers {
                 return response(StatusCode::BAD_REQUEST, "text/plain", "bad list headers");
             }
             json_response(json!({
@@ -317,7 +366,18 @@ async fn mcp_handler(State(state): State<MockState>, request: Request<Body>) -> 
             }))
         }
         Some("tools/call") => {
-            if !has_session_headers(&parts.headers, state.protocol_version)
+            let valid_headers = if state.protocol_version == STATELESS_PROTOCOL_VERSION {
+                has_stateless_headers(
+                    &parts.headers,
+                    &payload,
+                    "tools/call",
+                    Some("echo"),
+                    state.protocol_version,
+                )
+            } else {
+                has_session_headers(&parts.headers, state.protocol_version)
+            };
+            if !valid_headers
                 || payload.pointer("/params/name").and_then(Value::as_str) != Some("echo")
                 || payload
                     .pointer("/params/arguments/message")
@@ -374,6 +434,23 @@ fn header(headers: &HeaderMap, name: &str) -> Option<String> {
 fn has_session_headers(headers: &HeaderMap, protocol_version: &str) -> bool {
     header(headers, "mcp-session-id").as_deref() == Some(SESSION_ID)
         && header(headers, "mcp-protocol-version").as_deref() == Some(protocol_version)
+}
+
+fn has_stateless_headers(
+    headers: &HeaderMap,
+    payload: &Value,
+    method: &str,
+    name: Option<&str>,
+    protocol_version: &str,
+) -> bool {
+    header(headers, "mcp-session-id").is_none()
+        && header(headers, "mcp-protocol-version").as_deref() == Some(protocol_version)
+        && header(headers, "mcp-method").as_deref() == Some(method)
+        && header(headers, "mcp-name").as_deref() == name
+        && payload
+            .pointer("/params/_meta/io.modelcontextprotocol~1protocolVersion")
+            .and_then(Value::as_str)
+            == Some(protocol_version)
 }
 
 fn response(status: StatusCode, content_type: &str, body: &str) -> Response<Body> {
@@ -683,6 +760,73 @@ async fn execute_emits_the_selected_protocol_version_in_body_and_headers() {
         observations[1..]
             .iter()
             .all(|value| value.protocol_version.as_deref() == Some(SELECTED_VERSION))
+    );
+}
+
+#[tokio::test]
+async fn execute_runs_the_stateless_dataplane_lifecycle_with_routing_metadata() {
+    let (host, state, server) = spawn_mock_with_options(
+        true,
+        false,
+        false,
+        Some("dataplane"),
+        StatusCode::NO_CONTENT,
+        None,
+        STATELESS_PROTOCOL_VERSION,
+    )
+    .await;
+    let root = repository_root();
+    let config = app_config(root.path(), &environment(&[("MCP_CLI_BASE_URL", &host)]));
+    let settings = load_settings(&config, "1s");
+    let goose = GooseLoadConfig::new_with_protocol_version(
+        &config,
+        StackMode::Dataplane,
+        &settings,
+        TOKEN,
+        Some("server"),
+        STATELESS_PROTOCOL_VERSION,
+    )
+    .expect("stateless Goose configuration should build");
+
+    let outcome = goose
+        .execute()
+        .await
+        .expect("stateless dataplane flow should pass");
+    server.abort();
+    assert_eq!(outcome.failed_requests(), 0);
+    assert_eq!(outcome.failed_transactions(), 0);
+
+    let observations = state
+        .observations
+        .lock()
+        .expect("mock observation lock should not be poisoned");
+    assert_eq!(
+        observations[0].rpc_method.as_deref(),
+        Some("server/discover")
+    );
+    assert!(observations.iter().all(|value| value.session.is_none()));
+    assert!(observations.iter().all(|value| {
+        value.protocol_version.as_deref() == Some(STATELESS_PROTOCOL_VERSION)
+            && value.routing_method == value.rpc_method
+            && value.metadata_protocol_version.as_deref() == Some(STATELESS_PROTOCOL_VERSION)
+    }));
+    assert!(observations.iter().all(|value| {
+        value.routing_name.as_deref()
+            == if value.rpc_method.as_deref() == Some("tools/call") {
+                Some("echo")
+            } else {
+                None
+            }
+    }));
+    assert!(
+        observations
+            .iter()
+            .all(|value| value.http_method == Method::POST)
+    );
+    assert!(
+        observations
+            .iter()
+            .all(|value| value.rpc_method.as_deref() != Some("ping"))
     );
 }
 

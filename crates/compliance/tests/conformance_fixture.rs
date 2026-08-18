@@ -769,6 +769,8 @@ async fn provision_uses_authenticated_admin_api_in_exact_order() {
             "name":OFFICIAL_CONFORMANCE_GATEWAY_NAME,
             "url":OFFICIAL_CONFORMANCE_BACKEND_URL,
             "transport":"STREAMABLEHTTP",
+            "authType":"authheaders",
+            "authHeaders":[{"key":"Host", "value":"localhost:3000"}],
             "description":"Official MCP conformance fixture"
         })
     );

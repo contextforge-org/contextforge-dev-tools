@@ -145,6 +145,49 @@ async fn omits_optional_auth_session_and_protocol_headers() {
 }
 
 #[tokio::test]
+async fn stateless_requests_send_method_and_target_name_headers() {
+    let capture = Capture::default();
+    let (url, shutdown) = server(
+        Router::new()
+            .route("/mcp", any(json_handler))
+            .with_state(capture.clone()),
+    )
+    .await;
+    let mut request = request(url);
+    request.payload = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "echo", "arguments": {}}
+    });
+    request.protocol_version = Some("2026-07-28".to_owned());
+    request.session_id = None;
+
+    ReqwestProbeTransport::new()
+        .expect("transport")
+        .post(request)
+        .await
+        .expect("request should succeed");
+
+    let captured = capture.0.lock().expect("capture lock");
+    let headers = &captured[0].0;
+    assert_eq!(
+        headers
+            .get("mcp-method")
+            .and_then(|value| value.to_str().ok()),
+        Some("tools/call")
+    );
+    assert_eq!(
+        headers
+            .get("mcp-name")
+            .and_then(|value| value.to_str().ok()),
+        Some("echo")
+    );
+    assert!(headers.get("mcp-session-id").is_none());
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
 async fn parses_blank_delimited_multiline_sse() {
     async fn sse() -> Response<Body> {
         Response::builder()

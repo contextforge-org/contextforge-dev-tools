@@ -106,6 +106,7 @@ sse = "data: not-json\r\n\r\n" + sse
 assert adapter.parse_mcp_body(sse, "text/event-stream; charset=utf-8") == {
     "jsonrpc": "2.0", "id": "1", "result": {}
 }
+
 assert adapter.safe_diagnostic("reflected token and session-id") == "reflected <redacted> and session-id"
 
 assert adapter.tool_call_args("echo") == {"message": "cf-integration"}
@@ -153,6 +154,113 @@ assert empty_environment.process_exit_code == 1
     assert!(
         output.status.success(),
         "Python adapter check failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn locust_adapter_emits_stateless_metadata_and_routing_headers() {
+    let stub = locust_stub();
+    let python_path = std::env::join_paths([stub.path(), scripts_dir().as_path()])
+        .expect("Python path should join");
+    let code = r#"
+import json
+import locustfile_mcp as adapter
+
+assert adapter.STATELESS
+assert adapter.PROTOCOL_VERSION == "2026-07-28"
+
+class FakeResponse:
+    def __init__(self, payload):
+        self.status_code = 200
+        self.headers = {
+            "Content-Type": "application/json",
+            "X-CF-Integration-Backend": "dataplane",
+        }
+        self.text = json.dumps({
+            "jsonrpc": "2.0",
+            "id": payload["id"],
+            "result": {"content": [], "isError": False},
+        })
+        self.content = self.text.encode()
+        self.failures = []
+        self.successes = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def failure(self, detail):
+        self.failures.append(detail)
+
+    def success(self):
+        self.successes += 1
+
+class FakeClient:
+    def __init__(self):
+        self.requests = []
+
+    def post(self, path, *, data, headers, **_kwargs):
+        payload = json.loads(data)
+        self.requests.append((path, payload, headers))
+        return FakeResponse(payload)
+
+    def delete(self, *_args, **_kwargs):
+        raise AssertionError("stateless lifecycle must not delete a session")
+
+user = adapter.MCPGatewayUser.__new__(adapter.MCPGatewayUser)
+user._session_id = None
+user._ready = True
+user.client = FakeClient()
+result = user._mcp_request(
+    "tools/call",
+    {"name": "echo", "arguments": {"message": "hello"}},
+    name="tools/call",
+)
+assert result == {"content": [], "isError": False}
+path, payload, headers = user.client.requests[0]
+assert path == "/servers/server-id/mcp"
+assert payload["params"]["_meta"] == {
+    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    "io.modelcontextprotocol/clientInfo": {
+        "name": "cf-integration-locust", "version": "1.0"
+    },
+    "io.modelcontextprotocol/clientCapabilities": {},
+}
+assert headers["Mcp-Protocol-Version"] == "2026-07-28"
+assert headers["Mcp-Method"] == "tools/call"
+assert headers["Mcp-Name"] == "echo"
+assert "Mcp-Session-Id" not in headers
+user.on_stop()
+before = len(user.client.requests)
+user.ping()
+assert len(user.client.requests) == before
+
+adapter.validate_result("server/discover", {
+    "supportedVersions": ["2026-07-28"],
+    "capabilities": {},
+    "resultType": "complete",
+    "cacheScope": "private",
+    "ttlMs": 0,
+})
+"#;
+
+    let output = Command::new(python())
+        .arg("-c")
+        .arg(code)
+        .env("PYTHONPATH", python_path)
+        .env("MCP_SERVER_ID", "server-id")
+        .env("MCPGATEWAY_BEARER_TOKEN", "token")
+        .env("MCP_PROTOCOL_VERSION", "2026-07-28")
+        .output()
+        .expect("Python stateless adapter check should run");
+
+    assert!(
+        output.status.success(),
+        "Python stateless adapter check failed:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );

@@ -167,7 +167,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
     }
 
     pub(super) fn compose_project(&self, mode: StackMode) -> ComposeProject {
-        match mode {
+        let project = match mode {
             StackMode::Dataplane => ComposeProject::dataplane(
                 self.config.root(),
                 self.config.controlplane_dir(),
@@ -180,7 +180,8 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                 self.config.controlplane_project().value.clone(),
                 self.environment_flag("CONTROLPLANE_ENABLE_SSO", false),
             ),
-        }
+        };
+        project.with_conformance_overlay(self.config.root())
     }
 
     pub(super) fn conformance_compose_project(&self, mode: StackMode) -> ComposeProject {
@@ -238,6 +239,10 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             .env(
                 "PLATFORM_ADMIN_EMAIL",
                 self.config.platform_admin_email().value.clone(),
+            )
+            .env(
+                "PLATFORM_ADMIN_PASSWORD",
+                self.config.platform_admin_password().value.clone(),
             )
             .env(
                 "KEY_FILE_PASSWORD",

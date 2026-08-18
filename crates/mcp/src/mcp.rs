@@ -3,8 +3,10 @@
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
-/// MCP protocol version sent by the integration harness.
+/// Legacy session-oriented MCP protocol version used by the control-plane lane.
 pub const PROTOCOL_VERSION: &str = "2025-11-25";
+/// Stateless MCP protocol version used by the modern dataplane lane.
+pub const STATELESS_PROTOCOL_VERSION: &str = "2026-07-28";
 /// Accepted MCP streamable-HTTP response media types.
 pub const ACCEPT: &str = "application/json, text/event-stream";
 
@@ -25,6 +27,72 @@ pub fn jsonrpc_with_id(method: &str, params: Option<Value>, id: Value) -> Value 
         payload.insert("params".to_owned(), params);
     }
     Value::Object(payload)
+}
+
+/// Returns whether a date-based MCP revision uses the stateless request lifecycle.
+#[must_use]
+pub fn is_stateless_protocol(protocol_version: &str) -> bool {
+    protocol_version >= STATELESS_PROTOCOL_VERSION
+}
+
+/// Builds the mandatory per-request metadata for stateless MCP requests.
+#[must_use]
+pub fn request_metadata(protocol_version: &str) -> Value {
+    json!({
+        "io.modelcontextprotocol/protocolVersion": protocol_version,
+        "io.modelcontextprotocol/clientInfo": {
+            "name": "cf-integration",
+            "version": "1.0"
+        },
+        "io.modelcontextprotocol/clientCapabilities": {}
+    })
+}
+
+/// Adds mandatory stateless metadata to an object-shaped request `params` value.
+#[must_use]
+pub fn with_request_metadata(params: Option<Value>, protocol_version: &str) -> Value {
+    let mut params = match params {
+        Some(Value::Object(params)) => params,
+        _ => Map::new(),
+    };
+    let mut metadata = match params.remove("_meta") {
+        Some(Value::Object(metadata)) => metadata,
+        _ => Map::new(),
+    };
+    let required = request_metadata(protocol_version)
+        .as_object()
+        .expect("request metadata is always an object")
+        .clone();
+    metadata.extend(required);
+    params.insert("_meta".to_owned(), Value::Object(metadata));
+    Value::Object(params)
+}
+
+/// Builds a stateless JSON-RPC request with mandatory per-request metadata.
+#[must_use]
+pub fn stateless_jsonrpc_with_id(
+    method: &str,
+    params: Option<Value>,
+    id: Value,
+    protocol_version: &str,
+) -> Value {
+    jsonrpc_with_id(
+        method,
+        Some(with_request_metadata(params, protocol_version)),
+        id,
+    )
+}
+
+/// Returns the MCP routing-name header value for name-targeted methods.
+#[must_use]
+pub fn routing_name<'a>(method: &str, params: Option<&'a Value>) -> Option<&'a str> {
+    let params = params?.as_object()?;
+    match method {
+        "tools/call" | "prompts/get" => params.get("name")?.as_str(),
+        "resources/read" => params.get("uri")?.as_str(),
+        "tasks/get" | "tasks/update" | "tasks/cancel" => params.get("taskId")?.as_str(),
+        _ => None,
+    }
 }
 
 /// Builds an MCP initialize request with a generated v4 UUID string ID.

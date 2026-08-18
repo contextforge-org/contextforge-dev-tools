@@ -1,9 +1,11 @@
 use std::ffi::OsString;
+use std::process::Command as ProcessCommand;
 
 use cf_integration::cli::{
     Cli, CliConformanceServerEra, CliLane, CliLoadEngine, CliTopology, Command, ConformanceArgs,
-    ConformanceCommand, DebugArgs, DebugCommand, LiveGroup, LoadArgs, ProtocolVersion, StackArgs,
-    StackCommand, TokenKind, TopologySelection, WorkflowTargetArgs,
+    ConformanceCommand, DebugArgs, DebugCommand, LiveGroup, LoadArgs, ProtocolVersion,
+    RoutedWorkflowTargetArgs, StackArgs, StackCommand, TokenKind, TopologySelection,
+    WorkflowTargetArgs,
 };
 use clap::{CommandFactory, Parser, error::ErrorKind};
 
@@ -51,6 +53,43 @@ fn command_tree_contains_only_distinct_public_workflows() {
     );
     assert_eq!(subcommands(&["conformance"]), ["run", "report"]);
     assert_eq!(subcommands(&["debug"]), ["inspect", "token"]);
+}
+
+#[test]
+fn every_public_command_renders_help_from_the_binary() {
+    let paths: &[&[&str]] = &[
+        &[],
+        &["stack"],
+        &["stack", "up"],
+        &["stack", "down"],
+        &["stack", "status"],
+        &["stack", "logs"],
+        &["stack", "config"],
+        &["probe"],
+        &["load"],
+        &["live"],
+        &["conformance"],
+        &["conformance", "run"],
+        &["conformance", "report"],
+        &["debug"],
+        &["debug", "inspect"],
+        &["debug", "token"],
+    ];
+
+    for path in paths {
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_cf-integration"))
+            .args(*path)
+            .arg("--help")
+            .output()
+            .expect("help command should start");
+        assert!(
+            output.status.success(),
+            "help failed for {path:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).expect("help should be UTF-8");
+        assert!(stdout.contains("Usage:"), "missing usage for {path:?}");
+    }
 }
 
 #[test]
@@ -235,7 +274,19 @@ fn live_accepts_fixture_lane_and_explicit_protocol_version() {
 
 #[test]
 fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
-    fn assert_target(target: &WorkflowTargetArgs) {
+    fn assert_routed_target(target: &RoutedWorkflowTargetArgs) {
+        assert_eq!(target.lane, Some(CliTopology::Controlplane));
+        assert_eq!(
+            target.protocol_version,
+            Some(
+                "2025-06-18"
+                    .parse::<ProtocolVersion>()
+                    .expect("valid protocol version")
+            )
+        );
+    }
+
+    fn assert_fixture_target(target: &WorkflowTargetArgs) {
         assert_eq!(target.lane, Some(CliLane::Controlplane));
         assert_eq!(
             target.protocol_version,
@@ -258,7 +309,7 @@ fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
     else {
         panic!("expected probe workflow")
     };
-    assert_target(&probe);
+    assert_routed_target(&probe);
 
     let Command::Load(load) = parse(
         &["cf-integration", "load"]
@@ -270,7 +321,7 @@ fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
     else {
         panic!("expected load workflow")
     };
-    assert_target(&load.target);
+    assert_routed_target(&load.target);
 
     let Command::Live(live) = parse(
         &["cf-integration", "live"]
@@ -282,7 +333,7 @@ fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
     else {
         panic!("expected live workflow")
     };
-    assert_target(&live.target);
+    assert_fixture_target(&live.target);
 
     let Command::Debug(DebugArgs {
         command: DebugCommand::Inspect(inspect),
@@ -296,7 +347,25 @@ fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
     else {
         panic!("expected inspect workflow")
     };
-    assert_target(&inspect.target);
+    assert_routed_target(&inspect.target);
+}
+
+#[test]
+fn routed_workflows_reject_the_fixture_lane_during_parsing() {
+    for arguments in [
+        vec!["cf-integration", "probe", "--lane", "fixture-direct"],
+        vec!["cf-integration", "load", "--lane", "fixture-direct"],
+        vec![
+            "cf-integration",
+            "debug",
+            "inspect",
+            "--lane",
+            "fixture-direct",
+        ],
+    ] {
+        let error = Cli::try_parse_from(arguments).expect_err("routed lane should be rejected");
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    }
 }
 
 #[test]

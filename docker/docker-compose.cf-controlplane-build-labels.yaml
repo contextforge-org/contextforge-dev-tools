@@ -4,6 +4,15 @@ services:
   gateway:
     labels:
       name: cf-controlplane
+    environment:
+      # Keep both harness topologies usable through the current email-login
+      # flow. These values are local integration credentials, not production
+      # defaults.
+      PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-admin@example.com}
+      PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:-changeme}
+      PASSWORD_CHANGE_ENFORCEMENT_ENABLED: ${PASSWORD_CHANGE_ENFORCEMENT_ENABLED:-false}
+      ADMIN_REQUIRE_PASSWORD_CHANGE_ON_BOOTSTRAP: ${ADMIN_REQUIRE_PASSWORD_CHANGE_ON_BOOTSTRAP:-false}
+      REQUIRE_PASSWORD_CHANGE_FOR_DEFAULT_PASSWORD: ${REQUIRE_PASSWORD_CHANGE_FOR_DEFAULT_PASSWORD:-false}
     build:
       labels:
         org.opencontainers.image.revision: ${CF_CONTROLPLANE_CHECKOUT_REVISION:-unknown}

@@ -2,7 +2,7 @@
 
 use super::*;
 
-const INSPECTOR_PACKAGE: &str = "@modelcontextprotocol/inspector@0.22.0";
+const INSPECTOR_PACKAGE: &str = "@modelcontextprotocol/inspector@2.2.0";
 pub(super) const NPM_ENV_ALLOWLIST: &[&str] = &[
     "PATH",
     "HOME",
@@ -28,14 +28,18 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         let server_id = server_id
             .unwrap_or_else(|| self.default_server_id())
             .to_owned();
-        self.with_managed_test_target(mode, &server_id, || async {
-            let token = self.bearer_token(mode, &server_id)?;
-            let endpoint =
-                GatewayClient::new(gateway_topology(mode), self.base_url()?, &server_id, &token)
-                    .context("failed to construct the Inspector gateway endpoint")
-                    .map_err(AppFailure::from)?
-                    .endpoint()
-                    .clone();
+        let operation_server_id = server_id.clone();
+        self.with_managed_authenticated_target(mode, &server_id, |token| async move {
+            let endpoint = GatewayClient::new(
+                gateway_topology(mode),
+                self.base_url()?,
+                &operation_server_id,
+                &token,
+            )
+            .context("failed to construct the Inspector gateway endpoint")
+            .map_err(AppFailure::from)?
+            .endpoint()
+            .clone();
             let proxy = AuthProxy::start_with_protocol_version(
                 endpoint,
                 &token,

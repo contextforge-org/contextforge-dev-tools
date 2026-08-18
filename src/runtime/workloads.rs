@@ -25,8 +25,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         protocol_version: &ProtocolVersion,
     ) -> AppResult<()> {
         let server_id = self.default_server_id().to_owned();
-        self.with_managed_test_target(topology, &server_id, || async {
-            let token = self.bearer_token(topology, &server_id)?;
+        self.with_managed_authenticated_target(topology, &server_id, |token| async {
             let config = ProbeConfig {
                 mode: gateway_topology(topology),
                 base_url: self.base_url()?.to_owned(),
@@ -53,8 +52,8 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
 
     pub(super) async fn run_load(&self, args: ResolvedLoadArgs) -> AppResult<()> {
         let server_id = self.default_server_id().to_owned();
-        self.with_managed_test_target(args.topology, &server_id, || async {
-            let token = self.bearer_token(args.topology, &server_id)?;
+        let operation_server_id = server_id.clone();
+        self.with_managed_authenticated_target(args.topology, &server_id, |token| async move {
             let settings =
                 LoadSettings::resolve(&self.config, &args.request).map_err(AppFailure::from)?;
             match args.request.engine {
@@ -64,7 +63,8 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                         args.topology,
                         &settings,
                         &token,
-                        (args.topology == StackMode::Dataplane).then_some(server_id.as_str()),
+                        (args.topology == StackMode::Dataplane)
+                            .then_some(operation_server_id.as_str()),
                         args.protocol_version.as_str(),
                     )
                     .map_err(AppFailure::from)?;
@@ -83,7 +83,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                         args.topology,
                         &settings,
                         &token,
-                        &server_id,
+                        &operation_server_id,
                         &args.protocol_version,
                     )
                     .await
@@ -114,6 +114,24 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             primary.err(),
             self.cleanup(topology_selection(topology), CleanupKind::Down),
         )
+    }
+
+    pub(super) async fn with_managed_authenticated_target<F, Fut>(
+        &self,
+        topology: StackMode,
+        server_id: &str,
+        operation: F,
+    ) -> AppResult<()>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: Future<Output = AppResult<()>>,
+    {
+        self.with_managed_test_target(topology, server_id, || async {
+            let token = self.managed_bearer_token(topology, server_id).await?;
+            let primary = operation(token.value.clone()).await;
+            finish_with_cleanup(primary.err(), self.revoke_managed_token(&token).await)
+        })
+        .await
     }
 
     pub(super) async fn prepare_test_target(

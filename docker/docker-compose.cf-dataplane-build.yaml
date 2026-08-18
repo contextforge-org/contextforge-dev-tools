@@ -4,7 +4,7 @@ services:
   dataplane:
     build:
       context: ${CF_DATAPLANE_DIR:?Set CF_DATAPLANE_DIR to the cf-dataplane checkout}
-      dockerfile: docker/dev.Dockerfile
+      dockerfile: docker/Dockerfile
       labels:
         org.opencontainers.image.revision: ${CF_DATAPLANE_CHECKOUT_REVISION:-unknown}
         org.opencontainers.image.ref.name: ${CF_DATAPLANE_CHECKOUT_REF:-unknown}

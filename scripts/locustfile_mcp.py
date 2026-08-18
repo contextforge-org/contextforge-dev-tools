@@ -24,6 +24,7 @@ from urllib.parse import quote
 from locust import HttpUser, between, events, task
 
 PROTOCOL_VERSION = os.environ.get("MCP_PROTOCOL_VERSION", "2025-11-25")
+STATELESS = PROTOCOL_VERSION >= "2026-07-28"
 ACCEPT = "application/json, text/event-stream"
 _REQUEST_TIMEOUT_ERROR = (
     "LOCUST_REQUEST_TIMEOUT_SECONDS must be a finite number greater than zero"
@@ -60,6 +61,24 @@ def jsonrpc(method: str, params: dict | None = None) -> dict:
     if params is not None:
         payload["params"] = params
     return payload
+
+
+def stateless_params(params: dict | None = None) -> dict:
+    """Add the mandatory 2026 per-request client metadata."""
+    result = dict(params or {})
+    metadata = dict(result.get("_meta") or {})
+    metadata.update(
+        {
+            "io.modelcontextprotocol/protocolVersion": PROTOCOL_VERSION,
+            "io.modelcontextprotocol/clientInfo": {
+                "name": "cf-integration-locust",
+                "version": "1.0",
+            },
+            "io.modelcontextprotocol/clientCapabilities": {},
+        }
+    )
+    result["_meta"] = metadata
+    return result
 
 
 def _sse_data_events(text: str):
@@ -118,6 +137,18 @@ def validate_result(method: str, result) -> dict:
             for field in ("name", "version")
         ):
             raise ValueError("initialize result must include serverInfo name and version")
+    elif method == "server/discover":
+        versions = result.get("supportedVersions")
+        if not isinstance(versions, list) or PROTOCOL_VERSION not in versions:
+            raise ValueError("server/discover must advertise the requested protocol version")
+        if not isinstance(result.get("capabilities"), dict):
+            raise ValueError("server/discover result must include capabilities")
+        if not isinstance(result.get("resultType"), str):
+            raise ValueError("server/discover result must include resultType")
+        if not isinstance(result.get("cacheScope"), str):
+            raise ValueError("server/discover result must include cacheScope")
+        if not isinstance(result.get("ttlMs"), int) or result["ttlMs"] < 0:
+            raise ValueError("server/discover result must include a non-negative ttlMs")
     elif method == "tools/list":
         tools = result.get("tools")
         if not isinstance(tools, list):
@@ -181,6 +212,7 @@ class MCPGatewayUser(HttpUser):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._session_id: str | None = None
+        self._ready = False
         self._tool_names: list[str] = list(TOOL_NAMES)
 
     def on_start(self):
@@ -191,21 +223,31 @@ class MCPGatewayUser(HttpUser):
             raise RuntimeError("MCP_SERVER_ID or MCP_VIRTUAL_SERVER_ID is required")
         if not BEARER_TOKEN:
             raise RuntimeError("MCPGATEWAY_BEARER_TOKEN is required")
-        result = self._mcp_request(
-            "initialize",
-            {
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": {"name": "cf-integration-locust", "version": "1.0"},
-            },
-            name="MCP initialize",
-            include_protocol_version=False,
-        )
+        if STATELESS:
+            result = self._mcp_request(
+                "server/discover", None, name="MCP server/discover"
+            )
+        else:
+            result = self._mcp_request(
+                "initialize",
+                {
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {
+                        "name": "cf-integration-locust",
+                        "version": "1.0",
+                    },
+                },
+                name="MCP initialize",
+                include_protocol_version=False,
+            )
         if result is None:
             return
-        if not self._session_id:
+        self._ready = True
+        if not STATELESS and not self._session_id:
             raise RuntimeError("initialize response did not include Mcp-Session-Id")
-        self._mcp_notification("notifications/initialized", None, name="MCP initialized")
+        if not STATELESS:
+            self._mcp_notification("notifications/initialized", None, name="MCP initialized")
         if not self._tool_names:
             listed = self._mcp_request("tools/list", {}, name="MCP tools/list")
             if listed:
@@ -218,7 +260,7 @@ class MCPGatewayUser(HttpUser):
                 ]
 
     def on_stop(self):
-        if not self._session_id:
+        if STATELESS or not self._session_id:
             return
         with self.client.delete(
             mcp_path(),
@@ -235,14 +277,36 @@ class MCPGatewayUser(HttpUser):
                 return
             response.success()
 
-    def _headers(self, *, include_protocol_version: bool = True) -> dict[str, str]:
+    def _headers(
+        self,
+        *,
+        include_protocol_version: bool = True,
+        method: str | None = None,
+        params: dict | None = None,
+    ) -> dict[str, str]:
         headers = {
             "Content-Type": "application/json",
             "Accept": ACCEPT,
             "Authorization": f"Bearer {BEARER_TOKEN}",
         }
-        if include_protocol_version:
+        if include_protocol_version or STATELESS:
             headers["Mcp-Protocol-Version"] = PROTOCOL_VERSION
+        if STATELESS and method:
+            headers["Mcp-Method"] = method
+            if method in {"tools/call", "prompts/get"} and isinstance(params, dict):
+                name = params.get("name")
+                if isinstance(name, str) and name:
+                    headers["Mcp-Name"] = name
+            elif method == "resources/read" and isinstance(params, dict):
+                uri = params.get("uri")
+                if isinstance(uri, str) and uri:
+                    headers["Mcp-Name"] = uri
+            elif method in {"tasks/get", "tasks/update", "tasks/cancel"} and isinstance(
+                params, dict
+            ):
+                task_id = params.get("taskId")
+                if isinstance(task_id, str) and task_id:
+                    headers["Mcp-Name"] = task_id
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
         return headers
@@ -266,11 +330,16 @@ class MCPGatewayUser(HttpUser):
         include_protocol_version: bool = True,
     ) -> dict | None:
         """Send an MCP JSON-RPC request; return the result field or None."""
-        payload = jsonrpc(method, params)
+        request_params = stateless_params(params) if STATELESS else params
+        payload = jsonrpc(method, request_params)
         with self.client.post(
             mcp_path(),
             data=json.dumps(payload),
-            headers=self._headers(include_protocol_version=include_protocol_version),
+            headers=self._headers(
+                include_protocol_version=include_protocol_version,
+                method=method,
+                params=request_params,
+            ),
             name=name,
             catch_response=True,
             allow_redirects=False,
@@ -353,4 +422,6 @@ class MCPGatewayUser(HttpUser):
 
     @task(2)
     def ping(self):
+        if STATELESS:
+            return
         self._mcp_request("ping", None, name="MCP ping")

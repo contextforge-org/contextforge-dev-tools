@@ -141,6 +141,7 @@ async fn injects_auth_and_preserves_mcp_request_and_response_contract() {
         .header("mcp-session-id", "client-session")
         .header("mcp-protocol-version", "2025-11-25")
         .header("x-end-to-end", "preserve-me")
+        .header("origin", proxy.url().origin().ascii_serialization())
         .header(CONNECTION, "x-remove-me")
         .header("x-remove-me", "must-not-be-forwarded")
         .body(r#"{"jsonrpc":"2.0","id":1}"#)
@@ -213,6 +214,13 @@ async fn injects_auth_and_preserves_mcp_request_and_response_contract() {
     assert_eq!(
         request.headers.get("x-end-to-end"),
         Some(&HeaderValue::from_static("preserve-me"))
+    );
+    assert_eq!(
+        request
+            .headers
+            .get("origin")
+            .and_then(|value| value.to_str().ok()),
+        Some(upstream.url.origin().ascii_serialization().as_str())
     );
     assert!(request.headers.get("x-remove-me").is_none());
     assert_eq!(request.body, r#"{"jsonrpc":"2.0","id":1}"#);

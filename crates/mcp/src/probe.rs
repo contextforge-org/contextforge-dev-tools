@@ -12,7 +12,10 @@ use url::Url;
 use crate::GatewayTopology;
 
 use crate::backend_identity::BackendIdentity;
-use crate::mcp::{initialize_with_id_and_version, jsonrpc_with_id, tool_call_args};
+use crate::mcp::{
+    initialize_with_id_and_version, is_stateless_protocol, jsonrpc_with_id,
+    stateless_jsonrpc_with_id, tool_call_args,
+};
 
 const REDACTED: &str = "<redacted>";
 const INITIALIZE_ID: u64 = 1;
@@ -166,6 +169,10 @@ pub async fn run_probe<T: ProbeTransport, W: Write>(
         &format!("probe url: {}", sanitize_for_output(&url)),
         "failed to write probe URL",
     )?;
+
+    if is_stateless_protocol(&config.protocol_version) {
+        return run_stateless_probe(transport, config, output, url).await;
+    }
 
     let initialize_payload =
         initialize_with_id_and_version(json!(INITIALIZE_ID), &config.protocol_version);
@@ -384,6 +391,225 @@ pub async fn run_probe<T: ProbeTransport, W: Write>(
         "failed to write tool call result",
     )?;
 
+    Ok(())
+}
+
+async fn run_stateless_probe<T: ProbeTransport, W: Write>(
+    transport: &T,
+    config: &ProbeConfig,
+    output: &mut W,
+    url: String,
+) -> Result<()> {
+    let discover_payload = stateless_jsonrpc_with_id(
+        "server/discover",
+        None,
+        json!(INITIALIZE_ID),
+        &config.protocol_version,
+    );
+    let unauthenticated = post_with_timeout(
+        transport,
+        ProbeRequest {
+            url: url.clone(),
+            payload: discover_payload.clone(),
+            bearer_token: None,
+            session_id: None,
+            protocol_version: Some(config.protocol_version.clone()),
+        },
+        config.request_timeout,
+        "auth_negative",
+        config.mode,
+    )
+    .await?;
+    if unauthenticated.status != 401 {
+        bail!(
+            "auth_negative=FAIL expected 401 without Authorization, got {}",
+            unauthenticated.status
+        );
+    }
+    write_line(
+        output,
+        "auth_negative=PASS status=401",
+        "failed to write negative authentication result",
+    )?;
+
+    let started = Instant::now();
+    let authenticated = loop {
+        let attempt_timeout = if config.config_timeout.is_zero() {
+            config.request_timeout
+        } else {
+            config
+                .request_timeout
+                .min(config.config_timeout.saturating_sub(started.elapsed()))
+        };
+        let response = post_with_timeout(
+            transport,
+            ProbeRequest {
+                url: url.clone(),
+                payload: discover_payload.clone(),
+                bearer_token: Some(config.bearer_token.clone()),
+                session_id: None,
+                protocol_version: Some(config.protocol_version.clone()),
+            },
+            attempt_timeout,
+            "server_discover",
+            config.mode,
+        )
+        .await?;
+        if response.status == 200
+            || config.config_timeout.is_zero()
+            || started.elapsed() >= config.config_timeout
+        {
+            break response;
+        }
+        write_line(
+            output,
+            &format!(
+                "server_discover=RETRY status={} (waiting for dataplane config)",
+                response.status
+            ),
+            "failed to write server discovery retry result",
+        )?;
+        let remaining = config.config_timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break response;
+        }
+        tokio::time::sleep(config.retry_interval.max(MIN_RETRY_INTERVAL).min(remaining)).await;
+        if started.elapsed() >= config.config_timeout {
+            break response;
+        }
+    };
+
+    let discovery = result_of("server_discover", &authenticated, INITIALIZE_ID)?;
+    let supports_version = discovery
+        .get("supportedVersions")
+        .and_then(Value::as_array)
+        .is_some_and(|versions| {
+            versions
+                .iter()
+                .any(|version| version.as_str() == Some(config.protocol_version.as_str()))
+        });
+    if !supports_version {
+        bail!("server_discover=FAIL requested protocol version is not advertised by the server");
+    }
+    if discovery
+        .get("capabilities")
+        .and_then(Value::as_object)
+        .is_none()
+        || discovery
+            .get("resultType")
+            .and_then(Value::as_str)
+            .is_none()
+        || discovery
+            .get("cacheScope")
+            .and_then(Value::as_str)
+            .is_none()
+        || discovery.get("ttlMs").and_then(Value::as_u64).is_none()
+    {
+        bail!("server_discover=FAIL response is missing required discovery fields");
+    }
+    write_line(
+        output,
+        "server_discover=PASS status=200 lifecycle=stateless",
+        "failed to write server discovery result",
+    )?;
+
+    let tools_response = post_with_timeout(
+        transport,
+        ProbeRequest {
+            url: url.clone(),
+            payload: stateless_jsonrpc_with_id(
+                "tools/list",
+                Some(json!({})),
+                json!(TOOLS_LIST_ID),
+                &config.protocol_version,
+            ),
+            bearer_token: Some(config.bearer_token.clone()),
+            session_id: None,
+            protocol_version: Some(config.protocol_version.clone()),
+        },
+        config.request_timeout,
+        "tools_list",
+        config.mode,
+    )
+    .await?;
+    let tools_result = result_of("tools_list", &tools_response, TOOLS_LIST_ID)?;
+    let tools = tools_result
+        .get("tools")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("tools_list=FAIL unexpected response: missing tools array"))?;
+    if tools.is_empty() {
+        bail!("tools_list=FAIL no tools returned");
+    }
+    let mut tool_names = Vec::with_capacity(tools.len());
+    for tool in tools {
+        let Some(name) = tool
+            .as_object()
+            .and_then(|tool| tool.get("name"))
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty())
+        else {
+            bail!("tools_list=FAIL every tool must have a nonempty name");
+        };
+        tool_names.push(name);
+    }
+    write_line(
+        output,
+        &format!("tools_list=PASS count={}", tool_names.len()),
+        "failed to write tools list result",
+    )?;
+    for name in &tool_names {
+        write_line(
+            output,
+            &format!("tool={}", sanitize_for_output(name)),
+            "failed to write tool name",
+        )?;
+    }
+
+    let callable = tool_names
+        .iter()
+        .find_map(|name| tool_call_args(name).map(|arguments| (*name, arguments)));
+    let Some((tool_name, arguments)) = callable else {
+        write_line(
+            output,
+            "tool_call=SKIP no echo/get_system_time tool available",
+            "failed to write tool call skip result",
+        )?;
+        return Ok(());
+    };
+    let call_response = post_with_timeout(
+        transport,
+        ProbeRequest {
+            url,
+            payload: stateless_jsonrpc_with_id(
+                "tools/call",
+                Some(json!({"name": tool_name, "arguments": arguments})),
+                json!(TOOL_CALL_ID),
+                &config.protocol_version,
+            ),
+            bearer_token: Some(config.bearer_token.clone()),
+            session_id: None,
+            protocol_version: Some(config.protocol_version.clone()),
+        },
+        config.request_timeout,
+        "tool_call",
+        config.mode,
+    )
+    .await?;
+    let call_result = result_of("tool_call", &call_response, TOOL_CALL_ID)?;
+    if !matches!(call_result.get("content"), Some(Value::Array(_))) {
+        bail!("tool_call=FAIL result must contain a content array");
+    }
+    if call_result
+        .get("isError")
+        .is_some_and(|value| value != &Value::Bool(false))
+    {
+        bail!("tool_call=FAIL tool returned error or a malformed isError value");
+    }
+    write_line(
+        output,
+        &format!("tool_call=PASS tool={}", sanitize_for_output(tool_name)),
+        "failed to write tool call result",
+    )?;
     Ok(())
 }
 

@@ -207,30 +207,6 @@ fn live_fixture_lane_rejects_non_protocol_groups() {
 }
 
 #[test]
-fn fixture_lane_is_rejected_by_workflows_without_a_direct_fixture() {
-    for arguments in [
-        vec!["cf-integration", "probe", "--lane", "fixture-direct"],
-        vec!["cf-integration", "load", "--lane", "fixture-direct"],
-        vec![
-            "cf-integration",
-            "debug",
-            "inspect",
-            "--lane",
-            "fixture-direct",
-        ],
-    ] {
-        let cli = Cli::try_parse_from(arguments).expect("shared lane syntax should parse");
-        let error = resolve_action(cli, &Environment::new())
-            .expect_err("fixture lane should require a direct-fixture workflow");
-        assert!(
-            error
-                .to_string()
-                .contains("only supported by live and conformance run")
-        );
-    }
-}
-
-#[test]
 fn conformance_defaults_to_all_three_ordered_lanes() {
     assert_eq!(
         action(&["cf-integration", "conformance", "run"], &[]),

@@ -149,9 +149,9 @@ fn pinned_server_scenario_catalog_has_exact_suite_differences() {
     let draft_all = expected_server_scenarios("all", "2026-07-28")
         .expect("draft all scenario catalog should be pinned");
 
-    assert_eq!(stable_active.len(), 30);
-    assert_eq!(stable_all.len(), 32);
-    assert_eq!(previous.len(), 26);
+    assert_eq!(stable_active.len(), 31);
+    assert_eq!(stable_all.len(), 33);
+    assert_eq!(previous.len(), 27);
     assert_eq!(draft_active.len(), 20);
     assert_eq!(draft_all.len(), 40);
     assert_eq!(
@@ -185,7 +185,7 @@ fn official_command_is_pinned_complete_and_ordered() {
 
     assert_eq!(
         OFFICIAL_CONFORMANCE_PACKAGE,
-        "@modelcontextprotocol/conformance@0.2.0-alpha.9"
+        "@modelcontextprotocol/conformance@0.2.0-alpha.11"
     );
     assert_eq!(DEFAULT_MCP_SPEC_VERSION, "2026-07-28");
     assert!(!spec.inherits_environment());

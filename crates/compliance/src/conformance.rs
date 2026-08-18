@@ -124,11 +124,12 @@ pub fn is_trusted_official_fixture(fixture: Option<&ConformanceFixtureMetadata>)
     })
 }
 
-// Exact server catalogs emitted by @modelcontextprotocol/conformance@0.2.0-alpha.9.
+// Exact server catalogs emitted by @modelcontextprotocol/conformance@0.2.0-alpha.11.
 // Keep these coupled to OFFICIAL_CONFORMANCE_PACKAGE and verify the pin with
 // the ignored package-backed test before updating either.
-const SERVER_SCENARIOS_2025_06_18: [&str; 26] = [
+const SERVER_SCENARIOS_2025_06_18: [&str; 27] = [
     "server-initialize",
+    "server-session-lifecycle",
     "logging-set-level",
     "ping",
     "completion-complete",

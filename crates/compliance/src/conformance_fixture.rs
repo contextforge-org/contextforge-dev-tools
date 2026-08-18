@@ -13,8 +13,10 @@ use url::Url;
 pub use crate::profile::{OFFICIAL_CONFORMANCE_REPOSITORY, OFFICIAL_CONFORMANCE_REVISION};
 /// Docker Compose service name for the official conformance server.
 pub const OFFICIAL_CONFORMANCE_SERVICE: &str = "mcp_conformance_server";
-/// Backend URL reachable from the control-plane container.
-pub const OFFICIAL_CONFORMANCE_BACKEND_URL: &str = "http://mcp_conformance_server:3000/mcp";
+/// Docker Compose service name for the fixture's backend-only Host proxy.
+pub const OFFICIAL_CONFORMANCE_PROXY_SERVICE: &str = "mcp_conformance_proxy";
+/// Backend URL reachable from the control-plane and dataplane containers.
+pub const OFFICIAL_CONFORMANCE_BACKEND_URL: &str = "http://mcp_conformance_proxy/mcp";
 /// Reserved gateway name used by the fixture.
 ///
 /// `_` intentionally produces an empty gateway slug when paired with the
@@ -221,6 +223,8 @@ impl ConformanceFixtureClient {
                     "name": OFFICIAL_CONFORMANCE_GATEWAY_NAME,
                     "url": backend_url,
                     "transport": GATEWAY_TRANSPORT,
+                    "authType": "authheaders",
+                    "authHeaders": [{"key": "Host", "value": "localhost:3000"}],
                     "description": GATEWAY_DESCRIPTION,
                 }),
             )

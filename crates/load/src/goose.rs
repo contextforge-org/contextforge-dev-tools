@@ -27,8 +27,8 @@ use cf_integration_platform::config::AppConfig;
 
 use cf_integration_mcp::backend_identity::BackendIdentity;
 use cf_integration_mcp::mcp::{
-    ACCEPT, PROTOCOL_VERSION, initialize_with_id_and_version, jsonrpc_with_id, parse_mcp_body,
-    tool_call_args,
+    ACCEPT, PROTOCOL_VERSION, initialize_with_id_and_version, is_stateless_protocol,
+    jsonrpc_with_id, parse_mcp_body, routing_name, stateless_jsonrpc_with_id, tool_call_args,
 };
 
 use super::LoadSettings;
@@ -409,6 +409,7 @@ struct UserSession {
     endpoint: String,
     bearer_token: BearerToken,
     session_id: Option<String>,
+    ready: bool,
     callable_tools: Vec<String>,
     next_tool: usize,
     next_request_id: u64,
@@ -423,6 +424,7 @@ impl fmt::Debug for UserSession {
             .field("endpoint", &self.endpoint)
             .field("bearer_token", &self.bearer_token)
             .field("session_id", &self.session_id.as_ref().map(|_| "[PRESENT]"))
+            .field("ready", &self.ready)
             .field("callable_tools", &self.callable_tools)
             .field("next_tool", &self.next_tool)
             .field("next_request_id", &self.next_request_id)
@@ -448,6 +450,7 @@ enum ExpectedStatus {
 fn build_scenario(
     shared: Arc<SharedRunConfig>,
 ) -> std::result::Result<Scenario, goose::GooseError> {
+    let stateless = is_stateless_protocol(&shared.protocol_version);
     let initialize_config = Arc::clone(&shared);
     let initialize: TransactionFunction = Arc::new(move |user| {
         let config = Arc::clone(&initialize_config);
@@ -465,6 +468,7 @@ fn build_scenario(
                     // can return a diagnostic-rich failure.
                     if let Some(state) = user.get_session_data_mut::<UserSession>() {
                         state.session_id = None;
+                        state.ready = false;
                         state.callable_tools.clear();
                     }
                     Ok(())
@@ -476,7 +480,11 @@ fn build_scenario(
 
     let mut scenario = Scenario::new("MCP streamable HTTP").register_transaction(
         Transaction::new(initialize)
-            .set_name("initialize MCP session")
+            .set_name(if stateless {
+                "discover MCP server"
+            } else {
+                "initialize MCP session"
+            })
             .set_on_start(),
     );
     scenario = scenario.register_transaction(
@@ -489,16 +497,18 @@ fn build_scenario(
             .set_name("call MCP tool")
             .set_weight(6)?,
     );
-    scenario = scenario.register_transaction(
-        transaction(ping_server)
-            .set_name("ping MCP server")
-            .set_weight(1)?,
-    );
-    scenario = scenario.register_transaction(
-        transaction(delete_session)
-            .set_name("delete MCP session")
-            .set_on_stop(),
-    );
+    if !stateless {
+        scenario = scenario.register_transaction(
+            transaction(ping_server)
+                .set_name("ping MCP server")
+                .set_weight(1)?,
+        );
+        scenario = scenario.register_transaction(
+            transaction(delete_session)
+                .set_name("delete MCP session")
+                .set_on_stop(),
+        );
+    }
     Ok(scenario)
 }
 
@@ -526,6 +536,7 @@ async fn initialize_user(user: &mut GooseUser, config: &SharedRunConfig) -> Tran
         endpoint: config.endpoint.clone(),
         bearer_token: config.bearer_token.clone(),
         session_id: None,
+        ready: false,
         callable_tools: Vec::new(),
         next_tool: 0,
         next_request_id: 2,
@@ -535,15 +546,28 @@ async fn initialize_user(user: &mut GooseUser, config: &SharedRunConfig) -> Tran
 
     let state = session(user)?.clone();
     let request_id = json!(1);
-    let payload =
-        initialize_with_id_and_version(request_id.clone(), config.protocol_version.as_str());
+    let stateless = is_stateless_protocol(&config.protocol_version);
+    let payload = if stateless {
+        stateless_jsonrpc_with_id(
+            "server/discover",
+            None,
+            request_id.clone(),
+            &config.protocol_version,
+        )
+    } else {
+        initialize_with_id_and_version(request_id.clone(), config.protocol_version.as_str())
+    };
     let mut response = send_mcp_request(
         user,
         &state,
         GooseMethod::Post,
         Some(&payload),
         false,
-        "initialize",
+        if stateless {
+            "server/discover"
+        } else {
+            "initialize"
+        },
         ExpectedStatus::Ok,
     )
     .await?;
@@ -551,6 +575,34 @@ async fn initialize_user(user: &mut GooseUser, config: &SharedRunConfig) -> Tran
         Ok(result) => result,
         Err(tag) => return fail_request(user, &mut response.request, tag),
     };
+    if stateless {
+        let supported = result
+            .get("supportedVersions")
+            .and_then(Value::as_array)
+            .is_some_and(|versions| {
+                versions
+                    .iter()
+                    .any(|version| version.as_str() == Some(config.protocol_version.as_str()))
+            });
+        if !supported
+            || result
+                .get("capabilities")
+                .and_then(Value::as_object)
+                .is_none()
+            || result.get("resultType").and_then(Value::as_str).is_none()
+            || result.get("cacheScope").and_then(Value::as_str).is_none()
+            || result.get("ttlMs").and_then(Value::as_u64).is_none()
+        {
+            return fail_request(
+                user,
+                &mut response.request,
+                "server/discover response is missing required stateless fields",
+            );
+        }
+        session_mut(user)?.ready = true;
+        return list_tools(user).await;
+    }
+
     if result.get("protocolVersion").and_then(Value::as_str)
         != Some(config.protocol_version.as_str())
     {
@@ -604,7 +656,9 @@ async fn initialize_user(user: &mut GooseUser, config: &SharedRunConfig) -> Tran
             );
         }
     };
-    session_mut(user)?.session_id = Some(session_id);
+    let state = session_mut(user)?;
+    state.session_id = Some(session_id);
+    state.ready = true;
 
     let state = session(user)?.clone();
     let notification = json!({
@@ -627,11 +681,11 @@ async fn initialize_user(user: &mut GooseUser, config: &SharedRunConfig) -> Tran
 
 fn list_tools(user: &mut GooseUser) -> transaction_future::TransactionFuture<'_> {
     Box::pin(async move {
-        if session(user)?.session_id.is_none() {
+        if !session(user)?.ready {
             return dormant_user().await;
         }
         let (state, request_id) = next_request(user)?;
-        let payload = jsonrpc_with_id("tools/list", None, request_id.clone());
+        let payload = request_payload(&state, "tools/list", None, request_id.clone());
         let mut response = send_mcp_request(
             user,
             &state,
@@ -691,7 +745,7 @@ fn list_tools(user: &mut GooseUser) -> transaction_future::TransactionFuture<'_>
 
 fn call_tool(user: &mut GooseUser) -> transaction_future::TransactionFuture<'_> {
     Box::pin(async move {
-        if session(user)?.session_id.is_none() {
+        if !session(user)?.ready {
             return dormant_user().await;
         }
         let (state, request_id, name) = next_tool_call(user)?;
@@ -700,7 +754,8 @@ fn call_tool(user: &mut GooseUser) -> transaction_future::TransactionFuture<'_> 
                 "selected MCP tool is not on the safe allowlist",
             ));
         };
-        let payload = jsonrpc_with_id(
+        let payload = request_payload(
+            &state,
             "tools/call",
             Some(json!({"name": name, "arguments": arguments})),
             request_id.clone(),
@@ -736,7 +791,7 @@ fn call_tool(user: &mut GooseUser) -> transaction_future::TransactionFuture<'_> 
 
 fn ping_server(user: &mut GooseUser) -> transaction_future::TransactionFuture<'_> {
     Box::pin(async move {
-        if session(user)?.session_id.is_none() {
+        if !session(user)?.ready {
             return dormant_user().await;
         }
         let (state, request_id) = next_request(user)?;
@@ -776,6 +831,7 @@ fn delete_session(user: &mut GooseUser) -> transaction_future::TransactionFuture
         .await?;
         let state = session_mut(user)?;
         state.session_id = None;
+        state.ready = false;
         state.callable_tools.clear();
         Ok(())
     })
@@ -837,6 +893,19 @@ fn next_tool_call(
     Ok((state.clone(), json!(request_id), name))
 }
 
+fn request_payload(
+    state: &UserSession,
+    method: &str,
+    params: Option<Value>,
+    request_id: Value,
+) -> Value {
+    if is_stateless_protocol(&state.protocol_version) {
+        stateless_jsonrpc_with_id(method, params, request_id, &state.protocol_version)
+    } else {
+        jsonrpc_with_id(method, params, request_id)
+    }
+}
+
 async fn send_mcp_request(
     user: &mut GooseUser,
     state: &UserSession,
@@ -855,7 +924,20 @@ async fn send_mcp_request(
             .header("content-type", "application/json")
             .body(payload.to_string());
     }
-    if include_session {
+    if is_stateless_protocol(&state.protocol_version) {
+        request_builder =
+            request_builder.header("mcp-protocol-version", state.protocol_version.as_str());
+        if let Some(method) = payload
+            .and_then(|payload| payload.get("method"))
+            .and_then(Value::as_str)
+        {
+            request_builder = request_builder.header("mcp-method", method);
+            if let Some(name) = routing_name(method, payload.and_then(|value| value.get("params")))
+            {
+                request_builder = request_builder.header("mcp-name", name);
+            }
+        }
+    } else if include_session {
         let session_id = state
             .session_id
             .as_deref()

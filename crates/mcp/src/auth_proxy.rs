@@ -8,7 +8,7 @@ use axum::Router;
 use axum::body::{Body, Bytes, to_bytes};
 use axum::extract::{Request, State};
 use axum::http::header::{
-    AUTHORIZATION, CONNECTION, CONTENT_LENGTH, HOST, HeaderName, HeaderValue,
+    AUTHORIZATION, CONNECTION, CONTENT_LENGTH, HOST, HeaderName, HeaderValue, ORIGIN,
 };
 use axum::http::{HeaderMap, Method, Response, StatusCode};
 use reqwest::Client;
@@ -225,6 +225,7 @@ async fn forward(State(state): State<Arc<ProxyState>>, request: Request) -> Resp
         // mutated Host values remain untouched for the rebinding scenario.
         headers.remove(HOST);
     }
+    rewrite_loopback_origin(&mut headers, &state.loopback_authority, &state.upstream);
     headers.insert(AUTHORIZATION, state.authorization.clone());
 
     let upstream_response = match state
@@ -254,6 +255,18 @@ async fn forward(State(state): State<Arc<ProxyState>>, request: Request) -> Resp
     *response.status_mut() = status;
     *response.headers_mut() = headers;
     response
+}
+
+fn rewrite_loopback_origin(headers: &mut HeaderMap, loopback_authority: &str, upstream: &Url) {
+    let Some(origin) = headers.get(ORIGIN).and_then(|value| value.to_str().ok()) else {
+        return;
+    };
+    if origin != format!("http://{loopback_authority}") {
+        return;
+    }
+    if let Ok(value) = HeaderValue::from_str(&upstream.origin().ascii_serialization()) {
+        headers.insert(ORIGIN, value);
+    }
 }
 
 fn rewrite_initialize_protocol_version(body: Bytes, protocol_version: &str) -> Bytes {

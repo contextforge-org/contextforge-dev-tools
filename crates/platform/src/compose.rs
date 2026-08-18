@@ -37,6 +37,7 @@ pub const SERVICE_DISPLAY_NAMES: &[(&str, &str)] = &[
     ("mcp_inspector", "cf-mcp-inspector"),
     ("keycloak", "cf-keycloak"),
     ("mcp_conformance_server", "cf-conformance-server"),
+    ("mcp_conformance_proxy", "cf-conformance-proxy"),
 ];
 
 /// Immutable Compose project invocation.
@@ -117,20 +118,31 @@ impl ComposeProject {
         self
     }
 
-    /// Enables the isolated official MCP conformance server fixture.
+    /// Applies the official MCP conformance fixture's Compose overrides.
+    ///
+    /// This is separate from enabling the fixture profile so services affected
+    /// by the overlay start with the required configuration before the
+    /// profile-gated fixture itself is launched.
     #[must_use]
-    pub fn with_conformance_fixture(mut self, repository_root: &Path) -> Self {
+    pub fn with_conformance_overlay(mut self, repository_root: &Path) -> Self {
         let overlay = repository_root.join("docker/docker-compose.cf-conformance.yaml");
         if !self.files.contains(&overlay) {
             self.files.push(overlay);
         }
+        self
+    }
+
+    /// Enables the isolated official MCP conformance server fixture.
+    #[must_use]
+    pub fn with_conformance_fixture(self, repository_root: &Path) -> Self {
+        let mut project = self.with_conformance_overlay(repository_root);
 
         let profile = OsString::from("conformance");
-        if !self.profiles.contains(&profile) {
-            self.profiles.push(profile);
+        if !project.profiles.contains(&profile) {
+            project.profiles.push(profile);
         }
 
-        self
+        project
     }
 
     /// Creates a `docker compose` command with project, files, and profiles.

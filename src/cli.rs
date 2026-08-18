@@ -86,7 +86,7 @@ pub enum Command {
     /// Manage Compose stacks.
     Stack(StackArgs),
     /// Probe one public MCP route.
-    Probe(WorkflowTargetArgs),
+    Probe(RoutedWorkflowTargetArgs),
     /// Run an MCP load test.
     Load(LoadArgs),
     /// Run upstream live gateway tests.
@@ -152,14 +152,26 @@ pub struct TopologyArgs {
     pub topology: Option<CliTopology>,
 }
 
-/// Shared target selection for MCP workflows.
+/// Target selection for routed MCP workflows.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct RoutedWorkflowTargetArgs {
+    /// Execution lane; defaults to CF_MCP_STACK_MODE, then dataplane.
+    #[arg(long, value_enum, visible_alias = "topology")]
+    pub lane: Option<CliTopology>,
+
+    /// MCP version; defaults to MCP_PROTOCOL_VERSION, then 2025-11-25.
+    #[arg(long)]
+    pub protocol_version: Option<ProtocolVersion>,
+}
+
+/// Target selection for MCP workflows that support a direct fixture lane.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct WorkflowTargetArgs {
     /// Execution lane; defaults to CF_MCP_STACK_MODE, then dataplane.
     #[arg(long, value_enum, visible_alias = "topology")]
     pub lane: Option<CliLane>,
 
-    /// MCP protocol version; defaults to MCP_PROTOCOL_VERSION, then 2025-11-25.
+    /// MCP version; defaults to MCP_PROTOCOL_VERSION, then 2025-11-25.
     #[arg(long)]
     pub protocol_version: Option<ProtocolVersion>,
 }
@@ -208,9 +220,9 @@ pub enum TopologySelection {
 /// Load-test options.
 #[derive(Debug, Clone, PartialEq, Args)]
 pub struct LoadArgs {
-    /// Shared lane and protocol-version selection.
+    /// Routed lane and protocol-version selection.
     #[command(flatten)]
-    pub target: WorkflowTargetArgs,
+    pub target: RoutedWorkflowTargetArgs,
 
     /// Load-test engine.
     #[arg(long, value_enum, default_value = "locust")]
@@ -284,7 +296,7 @@ pub enum LiveGroup {
     Rbac,
     /// Protocol-specific gateway tests.
     Protocol,
-    /// Every upstream live gateway test.
+    /// Run the MCP, RBAC, and protocol groups.
     All,
 }
 
@@ -431,16 +443,16 @@ pub struct DebugArgs {
 pub enum DebugCommand {
     /// Debug a live endpoint with the official MCP Inspector.
     Inspect(InspectArgs),
-    /// Print a gateway-compatible JWT.
+    /// Request and print a token from a running control plane.
     Token(TokenArgs),
 }
 
 /// Official Inspector options.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct InspectArgs {
-    /// Shared lane and protocol-version selection.
+    /// Routed lane and protocol-version selection.
     #[command(flatten)]
-    pub target: WorkflowTargetArgs,
+    pub target: RoutedWorkflowTargetArgs,
 
     /// Inspector method such as tools/list.
     #[arg(long, default_value = "tools/list")]
@@ -466,8 +478,8 @@ pub struct TokenArgs {
 /// Token privilege level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum TokenKind {
-    /// Minimum scopes needed by public MCP tests.
+    /// Catalog token with the minimum scopes needed by public MCP tests.
     Scoped,
-    /// Platform-admin token for fixture setup.
+    /// Authenticated platform-admin session token.
     Admin,
 }

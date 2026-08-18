@@ -3,6 +3,11 @@
 use super::*;
 
 const FAST_TEST_SERVER_ID: &str = "b8e3f1a2c4d5e6f7a1b2c3d4e5f6a7b8";
+const LIVE_ALL_TARGETS: [&str; 3] = [
+    "test-mcp-protocol-e2e",
+    "test-mcp-rbac",
+    "test-protocol-compliance-gateway",
+];
 
 impl<R: ProcessRunner> RuntimeExecutor<R> {
     pub(super) async fn run_live(
@@ -105,47 +110,12 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         topology: StackMode,
         protocol_version: &ProtocolVersion,
     ) -> AppResult<()> {
-        let pass_one = CommandSpec::new("uv")
-            .args([
-                "run",
-                "--extra",
-                "plugins",
-                "pytest",
-                "-p",
-                "no:playwright",
-                "tests/live_gateway/",
-                "--ignore=tests/live_gateway/sso",
-                "--ignore=tests/live_gateway/mcp/test_mcp_rbac_transport.py",
-                "-v",
-                "--tb=short",
-            ])
-            .cwd(self.config.controlplane_dir());
-        let pass_one = self.live_protocol_environment(pass_one, protocol_version)?;
-        let pass_two = CommandSpec::new("uv")
-            .args([
-                "run",
-                "--extra",
-                "plugins",
-                "pytest",
-                "-p",
-                "playwright",
-                "tests/live_gateway/sso",
-                "tests/live_gateway/mcp/test_mcp_rbac_transport.py",
-                "-v",
-                "--tb=short",
-            ])
-            .cwd(self.config.controlplane_dir());
-        let pass_two = self.live_protocol_environment(pass_two, protocol_version)?;
-
-        let first = self
-            .runner
-            .run(&self.compose_environment(pass_one, topology, false)?)
-            .map_err(AppFailure::from);
-        let second = self
-            .runner
-            .run(&self.compose_environment(pass_two, topology, false)?)
-            .map_err(AppFailure::from);
-        combine_live_results(first, second)
+        combine_live_results(LIVE_ALL_TARGETS.map(|target| {
+            (
+                target,
+                self.run_controlplane_make(topology, target, protocol_version),
+            )
+        }))
     }
 
     fn live_protocol_environment(
@@ -192,13 +162,20 @@ const fn live_group_needs_fast_test(group: LiveGroup) -> bool {
     matches!(group, LiveGroup::Mcp | LiveGroup::All)
 }
 
-fn combine_live_results(first: AppResult<()>, second: AppResult<()>) -> AppResult<()> {
-    match (first, second) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-        (Err(first), Err(second)) => Err(AppFailure::from(anyhow!(
-            "first live-test pass failed: {first}; second live-test pass also failed: {second}"
-        ))),
+fn combine_live_results(
+    results: impl IntoIterator<Item = (&'static str, AppResult<()>)>,
+) -> AppResult<()> {
+    let failures = results
+        .into_iter()
+        .filter_map(|(group, result)| result.err().map(|error| format!("{group}: {error}")))
+        .collect::<Vec<_>>();
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(AppFailure::from(anyhow!(
+            "live-test groups failed: {}",
+            failures.join("; ")
+        )))
     }
 }
 
@@ -215,16 +192,29 @@ mod tests {
     }
 
     #[test]
-    fn both_live_all_failures_are_preserved() {
-        let first = Err(AppFailure::from(anyhow!("first failure")));
-        let second = Err(AppFailure::from(anyhow!("second failure")));
+    fn live_all_is_the_exact_union_of_documented_groups() {
+        assert_eq!(
+            LIVE_ALL_TARGETS,
+            [
+                "test-mcp-protocol-e2e",
+                "test-mcp-rbac",
+                "test-protocol-compliance-gateway"
+            ]
+        );
+    }
 
-        let error = combine_live_results(first, second)
-            .expect_err("both failures should fail the live workflow")
-            .to_string();
+    #[test]
+    fn every_live_all_failure_is_preserved() {
+        let error = combine_live_results([
+            ("mcp", Err(AppFailure::from(anyhow!("first failure")))),
+            ("rbac", Ok(())),
+            ("protocol", Err(AppFailure::from(anyhow!("second failure")))),
+        ])
+        .expect_err("multiple failures should fail the live workflow")
+        .to_string();
 
-        assert!(error.contains("first failure"));
-        assert!(error.contains("second failure"));
+        assert!(error.contains("mcp: first failure"));
+        assert!(error.contains("protocol: second failure"));
     }
 
     #[test]
