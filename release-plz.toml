@@ -1,0 +1,38 @@
+[workspace]
+changelog_update = false
+git_release_enable = false
+git_tag_enable = false
+release_always = true
+
+[[package]]
+name = "cf-integration"
+version_group = "cf-integration"
+changelog_include = [
+  "cf-integration-platform",
+  "cf-integration-mcp",
+  "cf-integration-compliance",
+  "cf-integration-load",
+]
+git_release_enable = true
+git_release_draft = true
+git_release_latest = false
+git_release_name = "v{{ version }}"
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+semver_check = false
+
+[[package]]
+name = "cf-integration-platform"
+version_group = "cf-integration"
+
+[[package]]
+name = "cf-integration-mcp"
+version_group = "cf-integration"
+
+[[package]]
+name = "cf-integration-compliance"
+version_group = "cf-integration"
+
+[[package]]
+name = "cf-integration-load"
+version_group = "cf-integration"

@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+authors.workspace = true
+description = "MCP transport and probe primitives for the ContextForge integration harness"
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 anyhow.workspace = true
