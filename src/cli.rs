@@ -10,7 +10,7 @@ use cf_integration_mcp::mcp::PROTOCOL_VERSION;
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
 const RUN_TIME_ERROR: &str =
-    "must be one or more positive integer+unit groups using ms, s, m, h, or d";
+    "must be a positive Locust duration using h, m, and s at most once in that order";
 const PROTOCOL_VERSION_ERROR: &str = "must use the MCP YYYY-MM-DD version format";
 
 fn parse_positive_usize(value: &str) -> Result<usize, String> {
@@ -38,6 +38,7 @@ fn parse_positive_f64(value: &str) -> Result<f64, String> {
 fn parse_run_time(value: &str) -> Result<String, String> {
     let bytes = value.as_bytes();
     let mut position = 0;
+    let mut previous_unit = None;
 
     if bytes.is_empty() {
         return Err(String::from(RUN_TIME_ERROR));
@@ -59,13 +60,17 @@ fn parse_run_time(value: &str) -> Result<String, String> {
             return Err(String::from(RUN_TIME_ERROR));
         }
 
-        if bytes[position..].starts_with(b"ms") {
-            position += 2;
-        } else if matches!(bytes.get(position), Some(b's' | b'm' | b'h' | b'd')) {
-            position += 1;
-        } else {
+        let unit = match bytes.get(position) {
+            Some(b'h') => 0,
+            Some(b'm') => 1,
+            Some(b's') => 2,
+            _ => return Err(String::from(RUN_TIME_ERROR)),
+        };
+        if previous_unit.is_some_and(|previous| unit <= previous) {
             return Err(String::from(RUN_TIME_ERROR));
         }
+        previous_unit = Some(unit);
+        position += 1;
     }
 
     Ok(value.to_owned())
@@ -224,10 +229,6 @@ pub struct LoadArgs {
     #[command(flatten)]
     pub target: RoutedWorkflowTargetArgs,
 
-    /// Load-test engine.
-    #[arg(long, value_enum, default_value = "locust")]
-    pub engine: CliLoadEngine,
-
     /// Use smoke-test settings.
     #[arg(long)]
     pub smoke: bool,
@@ -240,27 +241,9 @@ pub struct LoadArgs {
     #[arg(long, value_parser = parse_positive_f64)]
     pub spawn_rate: Option<f64>,
 
-    /// Duration using positive ms, s, m, h, or d groups, such as 1h30m.
+    /// Locust duration using positive h, m, and s groups, such as 1h30m.
     #[arg(long, value_parser = parse_run_time)]
     pub run_time: Option<String>,
-}
-
-/// Load-test implementation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum CliLoadEngine {
-    /// Python Locust adapter.
-    Locust,
-    /// Native Rust Goose runner.
-    Goose,
-}
-
-impl From<CliLoadEngine> for cf_integration_load::LoadEngine {
-    fn from(engine: CliLoadEngine) -> Self {
-        match engine {
-            CliLoadEngine::Locust => Self::Locust,
-            CliLoadEngine::Goose => Self::Goose,
-        }
-    }
 }
 
 /// Upstream live-test options.

@@ -6,7 +6,7 @@ use cf_integration::app::{
 };
 use cf_integration::cli::{Cli, LiveGroup, ProtocolVersion, TokenKind, TopologySelection};
 use cf_integration_compliance::conformance::{ConformanceServerEra, ConformanceTarget};
-use cf_integration_load::{LoadEngine, LoadRequest};
+use cf_integration_load::LoadRequest;
 use cf_integration_platform::StackMode;
 use cf_integration_platform::config::Environment;
 use clap::Parser;
@@ -99,7 +99,7 @@ fn stack_actions_resolve_freshness_and_volume_cleanup() {
 }
 
 #[test]
-fn load_preserves_both_engines_and_explicit_settings() {
+fn load_preserves_explicit_locust_settings() {
     assert_eq!(
         action(
             &[
@@ -109,8 +109,6 @@ fn load_preserves_both_engines_and_explicit_settings() {
                 "controlplane",
                 "--protocol-version",
                 "2025-06-18",
-                "--engine",
-                "locust",
                 "--smoke",
                 "--users",
                 "2",
@@ -127,7 +125,6 @@ fn load_preserves_both_engines_and_explicit_settings() {
                 .parse::<ProtocolVersion>()
                 .expect("valid protocol version"),
             request: LoadRequest {
-                engine: LoadEngine::Locust,
                 smoke: true,
                 users: Some(2),
                 spawn_rate: Some(0.5),

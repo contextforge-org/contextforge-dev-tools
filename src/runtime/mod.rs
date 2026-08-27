@@ -20,9 +20,7 @@ use cf_integration_compliance::conformance_fixture::{
     OFFICIAL_CONFORMANCE_REPOSITORY, OFFICIAL_CONFORMANCE_REVISION, OFFICIAL_CONFORMANCE_SERVER_ID,
     OFFICIAL_CONFORMANCE_SERVICE,
 };
-use cf_integration_load::{
-    GooseLoadConfig, LoadEngine, LoadSettings, LocustCommand, audit_locust_reports,
-};
+use cf_integration_load::{LoadSettings, LocustCommand, audit_locust_reports};
 use cf_integration_mcp::GatewayTopology;
 use cf_integration_mcp::auth_proxy::AuthProxy;
 use cf_integration_mcp::gateway::GatewayClient;

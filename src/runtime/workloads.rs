@@ -56,39 +56,20 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         self.with_managed_authenticated_target(args.topology, &server_id, |token| async move {
             let settings =
                 LoadSettings::resolve(&self.config, &args.request).map_err(AppFailure::from)?;
-            match args.request.engine {
-                LoadEngine::Locust => {
-                    let command = LocustCommand::new_with_protocol_version(
-                        &self.config,
-                        args.topology,
-                        &settings,
-                        &token,
-                        (args.topology == StackMode::Dataplane)
-                            .then_some(operation_server_id.as_str()),
-                        args.protocol_version.as_str(),
-                    )
-                    .map_err(AppFailure::from)?;
-                    let process_result = self
-                        .runner
-                        .run(&self.compose_environment(
-                            command.command().clone(),
-                            args.topology,
-                            true,
-                        )?)
-                        .map_err(AppFailure::from);
-                    finalize_locust_run(process_result, command.report_dir(), &token)
-                }
-                LoadEngine::Goose => {
-                    self.run_goose(
-                        args.topology,
-                        &settings,
-                        &token,
-                        &operation_server_id,
-                        &args.protocol_version,
-                    )
-                    .await
-                }
-            }
+            let command = LocustCommand::new_with_protocol_version(
+                &self.config,
+                args.topology,
+                &settings,
+                &token,
+                (args.topology == StackMode::Dataplane).then_some(operation_server_id.as_str()),
+                args.protocol_version.as_str(),
+            )
+            .map_err(AppFailure::from)?;
+            let process_result = self
+                .runner
+                .run(&self.compose_environment(command.command().clone(), args.topology, true)?)
+                .map_err(AppFailure::from);
+            finalize_locust_run(process_result, command.report_dir(), &token)
         })
         .await
     }
@@ -198,36 +179,6 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                 .parse::<u64>()
                 .map_err(|_| AppFailure::from(anyhow!("{key} must be a non-negative integer")))
         })
-    }
-
-    async fn run_goose(
-        &self,
-        topology: StackMode,
-        settings: &LoadSettings,
-        token: &str,
-        server_id: &str,
-        protocol_version: &ProtocolVersion,
-    ) -> AppResult<()> {
-        let run = GooseLoadConfig::new_with_protocol_version(
-            &self.config,
-            topology,
-            settings,
-            token,
-            (topology == StackMode::Dataplane).then_some(server_id),
-            protocol_version.as_str(),
-        )
-        .map_err(AppFailure::from)?;
-        let outcome = run
-            .execute()
-            .await
-            .map_err(|error| AppFailure::from(anyhow!(error)))?;
-        println!(
-            "{} {} and {}",
-            OutputStyle::stdout().info("Goose reports:"),
-            outcome.reports().html().display(),
-            outcome.reports().json().display()
-        );
-        Ok(())
     }
 }
 

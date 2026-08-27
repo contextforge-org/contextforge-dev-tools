@@ -6,8 +6,6 @@ use std::num::NonZeroUsize;
 use anyhow::{Context, Result, bail};
 use cf_integration_platform::config::{AppConfig, SourcedValue, ValueOrigin};
 
-use crate::LoadEngine;
-
 const SMOKE_USERS: &str = "1";
 const SMOKE_SPAWN_RATE: &str = "1";
 const SMOKE_RUN_TIME: &str = "10s";
@@ -16,8 +14,6 @@ const RUN_TIME_ERROR: &str = "LOCUST_RUN_TIME must be a positive Locust duration
 /// User-selected settings before configuration precedence is applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoadRequest {
-    /// Selected load generator.
-    pub engine: LoadEngine,
     /// Whether dotenv/default values should use smoke-test replacements.
     pub smoke: bool,
     /// Explicit concurrent-user override.
@@ -46,7 +42,7 @@ impl LoadSettings {
     /// # Errors
     ///
     /// Returns an error for a zero or malformed user count, a non-finite or
-    /// non-positive spawn rate, or an invalid engine-specific run-time expression.
+    /// non-positive spawn rate, or an invalid Locust run-time expression.
     pub fn resolve(config: &AppConfig, request: &LoadRequest) -> Result<Self> {
         let users = match request.users {
             Some(users) => users,
@@ -78,10 +74,7 @@ impl LoadSettings {
             },
             |run_time| Ok(run_time.to_owned()),
         )?;
-        match request.engine {
-            LoadEngine::Locust => validate_locust_run_time(&run_time)?,
-            LoadEngine::Goose => validate_grouped_run_time(&run_time)?,
-        }
+        validate_locust_run_time(&run_time)?;
 
         Ok(Self {
             users,
@@ -176,36 +169,6 @@ fn validate_locust_run_time(value: &str) -> Result<()> {
         }
         previous_unit = Some(unit);
         position += 1;
-    }
-    Ok(())
-}
-
-fn validate_grouped_run_time(value: &str) -> Result<()> {
-    let bytes = value.as_bytes();
-    let mut position = 0;
-    if bytes.is_empty() {
-        bail!("LOCUST_RUN_TIME must be one or more positive integer+unit groups");
-    }
-    while position < bytes.len() {
-        let number_start = position;
-        while position < bytes.len() && bytes[position].is_ascii_digit() {
-            position += 1;
-        }
-        if number_start == position
-            || value[number_start..position]
-                .parse::<u64>()
-                .ok()
-                .is_none_or(|amount| amount == 0)
-        {
-            bail!("LOCUST_RUN_TIME must be one or more positive integer+unit groups");
-        }
-        if bytes[position..].starts_with(b"ms") {
-            position += 2;
-        } else if matches!(bytes.get(position), Some(b's' | b'm' | b'h' | b'd')) {
-            position += 1;
-        } else {
-            bail!("LOCUST_RUN_TIME must be one or more positive integer+unit groups");
-        }
     }
     Ok(())
 }

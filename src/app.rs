@@ -131,7 +131,6 @@ pub fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
                     ProtocolVersion::default(),
                 )?,
                 request: LoadRequest {
-                    engine: args.engine.into(),
                     smoke: args.smoke,
                     users: args.users,
                     spawn_rate: args.spawn_rate,

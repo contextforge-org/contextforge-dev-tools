@@ -15,7 +15,7 @@ aligned with the planned split between legacy slow-path traffic and modern
 Rust dataplane traffic.
 
 The harness owns Docker Compose overlays, nginx routing, reproducible stack
-lifecycle, public-route probes, Locust and Goose load tests, and official MCP
+lifecycle, public-route probes, Locust load tests, and official MCP
 conformance orchestration. Generated checkout, build, and runtime state stays
 under `.integration/` or `CF_INTEGRATION_DIR`.
 
@@ -53,7 +53,7 @@ The workspace has one application package and four internal libraries:
   gateway endpoints, and probes
 - `cf-integration-compliance`: the official conformance fixture, result parser,
   and three-lane comparison report
-- `cf-integration-load`: Locust and Goose load engines
+- `cf-integration-load`: Locust load orchestration
 
 The official TypeScript fixture is the conformance reference target. An
 explicit `stack up` starts it for direct MCP access; conformance runs still own
@@ -186,33 +186,29 @@ legacy control-plane probe retains initialize, `notifications/initialized`,
 and session reuse. It targets `/mcp` in controlplane topology and
 `/servers/{id}/mcp` in dataplane topology.
 
-### Locust and Goose
+### Locust
 
-Both load engines exercise the same MCP lifecycle and remain first-class:
+The load workflow exercises the MCP lifecycle through the framework-required
+Python Locust adapter:
 
 ```bash
 cf-integration load --lane dataplane \
-  --engine locust --smoke
-cf-integration load --lane dataplane \
-  --engine goose --smoke
+  --smoke
 
-cf-integration load --lane dataplane --engine locust \
-  --users 20 --spawn-rate 5 --run-time 2m
-cf-integration load --lane dataplane --engine goose \
+cf-integration load --lane dataplane \
   --users 20 --spawn-rate 5 --run-time 2m
 ```
 
 Default full-run settings are 100 users, 10 users/second, and five minutes.
 CLI settings override `.env`; explicitly exported `LOCUST_USERS`,
-`LOCUST_SPAWN_RATE`, and `LOCUST_RUN_TIME` remain authoritative for both
-engines. Smoke defaults are one user, one user/second, and ten seconds.
+`LOCUST_SPAWN_RATE`, and `LOCUST_RUN_TIME` remain authoritative. Smoke defaults
+are one user, one user/second, and ten seconds.
 
-Locust uses the framework-required Python adapter. Goose is the native Rust
-runner. On the modern dataplane lane both use `server/discover`, attach the
+On the modern dataplane lane Locust uses `server/discover`, attaches the
 mandatory client `_meta` plus `Mcp-Method`/`Mcp-Name` headers to every request,
-and avoid sessions and the removed `ping` method. The legacy control-plane
+and avoids sessions and the removed `ping` method. The legacy control-plane
 lane retains initialize, `notifications/initialized`, session cleanup, and
-ping. Both engines call only a finite allowlist of safe fixture tools and audit
+ping. The adapter calls only a finite allowlist of safe fixture tools and audits
 generated artifacts for credential leakage.
 
 ### Upstream live tests
@@ -464,7 +460,7 @@ src/                                      CLI and workflow composition
 crates/platform/                          platform orchestration library
 crates/mcp/                               MCP transport and probe library
 crates/compliance/                        official conformance library
-crates/load/                              Locust and Goose library
+crates/load/                              Locust orchestration library
 docker/docker-compose.cf-dataplane.yaml   dataplane service and nginx override
 docker/docker-compose.cf-integration.yaml Fast Time and Locust overlay
 docker/docker-compose.cf-conformance.yaml official fixture overlay

@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::process::Command as ProcessCommand;
 
 use cf_integration::cli::{
-    Cli, CliConformanceServerEra, CliLane, CliLoadEngine, CliTopology, Command, ConformanceArgs,
+    Cli, CliConformanceServerEra, CliLane, CliTopology, Command, ConformanceArgs,
     ConformanceCommand, DebugArgs, DebugCommand, LiveGroup, LoadArgs, ProtocolVersion,
     RoutedWorkflowTargetArgs, StackArgs, StackCommand, TokenKind, TopologySelection,
     WorkflowTargetArgs,
@@ -164,43 +164,37 @@ fn stack_logs_preserve_service_arguments() {
 }
 
 #[test]
-fn load_keeps_locust_and_goose_with_validated_settings() {
-    for (engine, expected) in [
-        ("locust", CliLoadEngine::Locust),
-        ("goose", CliLoadEngine::Goose),
-    ] {
-        let Command::Load(LoadArgs {
-            target,
-            engine: actual,
-            users,
-            spawn_rate,
-            run_time,
-            ..
-        }) = parse(&[
-            "cf-integration",
-            "load",
-            "--engine",
-            engine,
-            "--users",
-            "2",
-            "--spawn-rate",
-            "0.5",
-            "--run-time",
-            "1m30s",
-        ])
-        .command
-        else {
-            panic!("expected load")
-        };
-        assert_eq!(actual, expected);
-        assert_eq!(target.lane, None);
-        assert_eq!(target.protocol_version, None);
-        assert_eq!(users, Some(2));
-        assert_eq!(spawn_rate, Some(0.5));
-        assert_eq!(run_time.as_deref(), Some("1m30s"));
-    }
+fn load_keeps_validated_locust_settings() {
+    let Command::Load(LoadArgs {
+        target,
+        users,
+        spawn_rate,
+        run_time,
+        ..
+    }) = parse(&[
+        "cf-integration",
+        "load",
+        "--users",
+        "2",
+        "--spawn-rate",
+        "0.5",
+        "--run-time",
+        "1m30s",
+    ])
+    .command
+    else {
+        panic!("expected load")
+    };
+    assert_eq!(target.lane, None);
+    assert_eq!(target.protocol_version, None);
+    assert_eq!(users, Some(2));
+    assert_eq!(spawn_rate, Some(0.5));
+    assert_eq!(run_time.as_deref(), Some("1m30s"));
+
     rejected(&["cf-integration", "load", "--users", "0"]);
+    rejected(&["cf-integration", "load", "--run-time", "1ms"]);
     rejected(&["cf-integration", "load", "--run-time", "zero"]);
+    rejected(&["cf-integration", "load", "--engine", "locust"]);
 }
 
 #[test]
