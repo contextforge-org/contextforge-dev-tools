@@ -90,10 +90,10 @@ impl fmt::Display for ConformanceServerEra {
 pub enum ConformanceTarget {
     /// Official oracle connected directly to the pinned TypeScript fixture.
     Fixture,
-    /// Official oracle routed through the Python control plane.
-    Controlplane,
-    /// Official oracle routed through the Rust dataplane.
-    Dataplane,
+    /// Official oracle routed through the Python built-in data plane.
+    BuiltInDataPlane,
+    /// Official oracle routed through the external Rust data plane.
+    ExternalDataPlane,
 }
 
 impl ConformanceTarget {
@@ -102,8 +102,8 @@ impl ConformanceTarget {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Fixture => "fixture direct",
-            Self::Controlplane => "control-plane",
-            Self::Dataplane => "dataplane",
+            Self::BuiltInDataPlane => "built-in data-plane route",
+            Self::ExternalDataPlane => "external data-plane route",
         }
     }
 }
@@ -723,13 +723,13 @@ pub enum ComparisonClassification {
     AllCompliant,
     /// Only the direct fixture run fails.
     FixtureOnlyFailure,
-    /// Only the control-plane path fails.
+    /// Only the built-in data-plane route fails.
     ControlplaneOnlyFailure,
-    /// Only the dataplane path fails.
+    /// Only the external data-plane route fails.
     DataplaneOnlyFailure,
-    /// The direct fixture and control-plane path fail.
+    /// The direct fixture and built-in data-plane route fail.
     FixtureAndControlplaneFailure,
-    /// The direct fixture and dataplane path fail.
+    /// The direct fixture and external data-plane route fail.
     FixtureAndDataplaneFailure,
     /// Both gateway paths fail while the direct fixture passes.
     GatewaysOnlyFailure,
@@ -764,10 +764,10 @@ impl ComparisonClassification {
         match self {
             Self::AllCompliant => "all compliant",
             Self::FixtureOnlyFailure => "fixture-only failure",
-            Self::ControlplaneOnlyFailure => "control-plane only failure",
-            Self::DataplaneOnlyFailure => "dataplane only failure",
-            Self::FixtureAndControlplaneFailure => "fixture + control-plane failure",
-            Self::FixtureAndDataplaneFailure => "fixture + dataplane failure",
+            Self::ControlplaneOnlyFailure => "built-in data-plane only failure",
+            Self::DataplaneOnlyFailure => "external data-plane only failure",
+            Self::FixtureAndControlplaneFailure => "fixture + built-in data-plane failure",
+            Self::FixtureAndDataplaneFailure => "fixture + external data-plane failure",
             Self::GatewaysOnlyFailure => "both gateways only failure",
             Self::SharedFailure => "shared failure",
             Self::FixtureFailure => "fixture failure",
@@ -777,7 +777,7 @@ impl ComparisonClassification {
     }
 }
 
-/// Classifies direct-fixture, control-plane, and dataplane scenario outcomes.
+/// Classifies direct-fixture, built-in, and external data-plane route outcomes.
 #[must_use]
 pub fn classify_outcomes(
     fixture: ScenarioOutcome,
@@ -1012,12 +1012,12 @@ pub fn render_comparison_markdown(report: &ComparisonReport) -> String {
             |scenario: &ScenarioComparison| scenario.fixture_failed_checks,
         ),
         (
-            "Control plane",
+            "Built-in data-plane route",
             |scenario: &ScenarioComparison| scenario.controlplane,
             |scenario: &ScenarioComparison| scenario.controlplane_failed_checks,
         ),
         (
-            "Dataplane",
+            "External data-plane route",
             |scenario: &ScenarioComparison| scenario.dataplane,
             |scenario: &ScenarioComparison| scenario.dataplane_failed_checks,
         ),
@@ -1069,7 +1069,7 @@ pub fn render_comparison_markdown(report: &ComparisonReport) -> String {
 
     output.push_str("\n## Scenarios\n\n");
     output.push_str(
-        "| Scenario | Fixture direct | Control plane | Dataplane | Classification | Specification references |\n",
+        "| Scenario | Fixture direct | Built-in data-plane route | External data-plane route | Classification | Specification references |\n",
     );
     output.push_str("|---|---|---|---|---|---|\n");
     let mut scenarios: Vec<_> = report.scenarios.iter().collect();

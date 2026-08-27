@@ -78,10 +78,12 @@ Test server on demand.
 
 ## Lanes and protocol versions
 
-Probe, load, live, and Inspector use the same target options:
-`--lane controlplane|dataplane` and `--protocol-version YYYY-MM-DD`.
-`controlplane` targets the stock control-plane topology and raw `/mcp`;
-`dataplane` targets nginx, the Rust dataplane, and the virtual-server route.
+Probe, load, and Inspector use `--lane controlplane|dataplane` plus
+`--protocol-version YYYY-MM-DD`. `controlplane` targets the stock physical
+control-plane topology and raw `/mcp`; `dataplane` targets nginx, the Rust
+dataplane, and the virtual-server route. Live and conformance use semantic
+workflow lanes: `fixture-direct`, `built-in-data-plane`, and
+`external-data-plane`.
 
 Single-lane commands resolve their lane in this order:
 
@@ -93,10 +95,12 @@ They resolve the protocol version from explicit `--protocol-version`, then
 `MCP_PROTOCOL_VERSION`, then `2025-11-25`. That session-oriented default is
 the working contract of the current `latest` dataplane image. Pass
 `--protocol-version 2026-07-28` explicitly to exercise the implemented
-stateless readiness path as the future architecture lands. Live protocol tests
-and conformance also accept `fixture-direct`; other workflows reject it
-because they have no direct-fixture execution path. Conformance defaults to
-all three lanes and its pinned `2026-07-28` protocol version.
+stateless readiness path as the future architecture lands. For live and
+conformance, a resolved `controlplane` stack selects `built-in-data-plane`,
+while a resolved `dataplane` stack selects `external-data-plane`. Other
+workflows reject `fixture-direct` because they have no direct-fixture execution
+path. Conformance defaults to all three lanes and its pinned `2026-07-28`
+protocol version.
 
 `--topology` remains a compatibility alias for `--lane` on workflows.
 Conformance also retains `--client-version` and `--spec-version` as aliases for
@@ -231,10 +235,10 @@ generated artifacts for credential leakage.
 Run the control-plane repository's live gateway tests against either topology:
 
 ```bash
-cf-integration live --lane dataplane --group mcp
-cf-integration live --lane dataplane --group rbac
-cf-integration live --lane dataplane --group protocol
-cf-integration live --lane dataplane --group all
+cf-integration live --lane external-data-plane --group mcp
+cf-integration live --lane external-data-plane --group rbac
+cf-integration live --lane external-data-plane --group protocol
+cf-integration live --lane external-data-plane --group all
 
 # Run the upstream protocol suite directly against its reference fixture.
 cf-integration live \
@@ -277,9 +281,16 @@ It always:
 - provisions the pinned official fixture;
 - runs every applicable official server scenario;
 - defaults to MCP `2026-07-28`;
-- runs fixture-direct, controlplane, and dataplane lanes;
+- runs fixture-direct, built-in-data-plane, and external-data-plane lanes;
+- routes both gateway lanes through `/servers/{virtual_host_id}/mcp` using the
+  same unscoped ephemeral catalog-token contract as the control-plane job;
+- disables rate limiting and embedded Rust MCP handling, and uses one Gunicorn
+  worker, matching the control-plane conformance job;
+- builds the control plane with `ENABLE_RUST=false` and
+  `ENABLE_RUST_MCP_RMCP=false` when `CF_COMPOSE_BUILD=true`;
 - passes an empty expected-failure file to the official runner;
 - records raw failures without suppression;
+- hides setup and runner output in artifact logs while showing live progress;
 - removes temporary API resources, fixture services, and stacks;
 - writes a comparison report even when a lane reports protocol failures.
 
@@ -323,15 +334,16 @@ dual-era fallback.
 The three lanes are:
 
 1. official oracle directly to the official TypeScript fixture;
-2. official oracle through the control-plane public MCP route;
-3. official oracle through nginx and the Rust dataplane route.
+2. official oracle through the routed Python built-in data-plane endpoint;
+3. official oracle through the same route backed by the external Rust data
+   plane.
 
 Select exact lanes by repeating `--lane`:
 
 ```bash
 cf-integration conformance run \
   --lane fixture-direct \
-  --lane dataplane
+  --lane external-data-plane
 ```
 
 Supported client revisions are explicit and use the same pinned runner and

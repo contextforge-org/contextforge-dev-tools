@@ -94,6 +94,21 @@ impl AuthProxy {
         Self::start_with_protocol_version(upstream, bearer_token, None).await
     }
 
+    /// Starts a proxy for a routed endpoint backed by the built-in data plane.
+    ///
+    /// Unlike [`Self::start`], this does not require the Rust data-plane
+    /// response marker merely because the endpoint uses `/servers/{id}/mcp`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start`].
+    pub async fn start_builtin_data_plane(
+        upstream: Url,
+        bearer_token: impl AsRef<str>,
+    ) -> Result<Self, AuthProxyError> {
+        Self::start_configured(upstream, bearer_token, None, false).await
+    }
+
     /// Starts a proxy that also rewrites MCP initialize requests to one version.
     ///
     /// # Errors
@@ -103,6 +118,22 @@ impl AuthProxy {
         upstream: Url,
         bearer_token: impl AsRef<str>,
         protocol_version: Option<&str>,
+    ) -> Result<Self, AuthProxyError> {
+        let require_dataplane_backend = is_dataplane_endpoint(&upstream);
+        Self::start_configured(
+            upstream,
+            bearer_token,
+            protocol_version,
+            require_dataplane_backend,
+        )
+        .await
+    }
+
+    async fn start_configured(
+        upstream: Url,
+        bearer_token: impl AsRef<str>,
+        protocol_version: Option<&str>,
+        require_dataplane_backend: bool,
     ) -> Result<Self, AuthProxyError> {
         validate_upstream(&upstream)?;
         let mut authorization = HeaderValue::from_str(&format!("Bearer {}", bearer_token.as_ref()))
@@ -125,7 +156,7 @@ impl AuthProxy {
             .map_err(|_| AuthProxyError::EndpointConfiguration)?;
 
         let state = Arc::new(ProxyState {
-            require_dataplane_backend: is_dataplane_endpoint(&upstream),
+            require_dataplane_backend,
             upstream,
             authorization,
             proxy_path,

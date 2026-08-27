@@ -30,11 +30,11 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                     protocol_version,
                 )
             }
-            LiveLane::Controlplane => {
+            LiveLane::BuiltInDataPlane => {
                 self.run_routed_live(StackMode::Controlplane, group, protocol_version)
                     .await
             }
-            LiveLane::Dataplane => {
+            LiveLane::ExternalDataPlane => {
                 self.run_routed_live(StackMode::Dataplane, group, protocol_version)
                     .await
             }

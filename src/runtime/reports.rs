@@ -32,8 +32,9 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
     ) -> AppResult<PathBuf> {
         let fixture = self.load_conformance_artifact(paths, ConformanceTarget::Fixture)?;
         let controlplane =
-            self.load_conformance_artifact(paths, ConformanceTarget::Controlplane)?;
-        let dataplane = self.load_conformance_artifact(paths, ConformanceTarget::Dataplane)?;
+            self.load_conformance_artifact(paths, ConformanceTarget::BuiltInDataPlane)?;
+        let dataplane =
+            self.load_conformance_artifact(paths, ConformanceTarget::ExternalDataPlane)?;
         if fixture.is_none() && controlplane.is_none() && dataplane.is_none() {
             return Err(AppFailure::from(anyhow!(
                 "no official conformance artifacts found beneath {}",
@@ -163,8 +164,8 @@ impl CompliancePaths {
     pub(super) fn clear_conformance(&self) -> AppResult<()> {
         for target in [
             ConformanceTarget::Fixture,
-            ConformanceTarget::Controlplane,
-            ConformanceTarget::Dataplane,
+            ConformanceTarget::BuiltInDataPlane,
+            ConformanceTarget::ExternalDataPlane,
         ] {
             remove_artifact_directory(&self.conformance_lane(target).root)?;
         }
@@ -286,7 +287,7 @@ fn compatible_metadata<'a>(
     for candidate in [fixture, controlplane, dataplane].into_iter().flatten() {
         if candidate.fixture != metadata.fixture {
             return Err(AppFailure::from(anyhow!(
-                "direct fixture, control-plane, and dataplane conformance fixture provenance mismatch"
+                "direct fixture, built-in data-plane, and external data-plane conformance fixture provenance mismatch"
             )));
         }
         if candidate.spec_version != metadata.spec_version
@@ -295,7 +296,7 @@ fn compatible_metadata<'a>(
             || candidate.oracle != metadata.oracle
         {
             return Err(AppFailure::from(anyhow!(
-                "direct fixture, control-plane, and dataplane conformance artifacts were produced by incompatible runs"
+                "direct fixture, built-in data-plane, and external data-plane conformance artifacts were produced by incompatible runs"
             )));
         }
     }
@@ -313,16 +314,16 @@ fn compatible_metadata<'a>(
 
 pub(super) const fn conformance_target(topology: StackMode) -> ConformanceTarget {
     match topology {
-        StackMode::Controlplane => ConformanceTarget::Controlplane,
-        StackMode::Dataplane => ConformanceTarget::Dataplane,
+        StackMode::Controlplane => ConformanceTarget::BuiltInDataPlane,
+        StackMode::Dataplane => ConformanceTarget::ExternalDataPlane,
     }
 }
 
 const fn conformance_target_slug(target: ConformanceTarget) -> &'static str {
     match target {
         ConformanceTarget::Fixture => "fixture-direct",
-        ConformanceTarget::Controlplane => "controlplane",
-        ConformanceTarget::Dataplane => "dataplane",
+        ConformanceTarget::BuiltInDataPlane => "built-in-data-plane",
+        ConformanceTarget::ExternalDataPlane => "external-data-plane",
     }
 }
 
@@ -369,12 +370,16 @@ mod tests {
             PathBuf::from("artifacts/conformance/fixture-direct")
         );
         assert_eq!(
-            paths.conformance_lane(ConformanceTarget::Controlplane).root,
-            PathBuf::from("artifacts/conformance/controlplane")
+            paths
+                .conformance_lane(ConformanceTarget::BuiltInDataPlane)
+                .root,
+            PathBuf::from("artifacts/conformance/built-in-data-plane")
         );
         assert_eq!(
-            paths.conformance_lane(ConformanceTarget::Dataplane).root,
-            PathBuf::from("artifacts/conformance/dataplane")
+            paths
+                .conformance_lane(ConformanceTarget::ExternalDataPlane)
+                .root,
+            PathBuf::from("artifacts/conformance/external-data-plane")
         );
     }
 
@@ -384,8 +389,8 @@ mod tests {
         let paths = CompliancePaths::new(directory.path(), PathBuf::from("reports"));
         for target in [
             ConformanceTarget::Fixture,
-            ConformanceTarget::Controlplane,
-            ConformanceTarget::Dataplane,
+            ConformanceTarget::BuiltInDataPlane,
+            ConformanceTarget::ExternalDataPlane,
         ] {
             fs::create_dir_all(paths.conformance_lane(target).root)
                 .expect("lane directory should be created");
@@ -397,8 +402,8 @@ mod tests {
 
         for target in [
             ConformanceTarget::Fixture,
-            ConformanceTarget::Controlplane,
-            ConformanceTarget::Dataplane,
+            ConformanceTarget::BuiltInDataPlane,
+            ConformanceTarget::ExternalDataPlane,
         ] {
             assert!(!paths.conformance_lane(target).root.exists());
         }
@@ -407,7 +412,7 @@ mod tests {
     #[test]
     fn partial_lane_metadata_is_reportable_when_provenance_matches() {
         let fixture = metadata(ConformanceTarget::Fixture);
-        let dataplane = metadata(ConformanceTarget::Dataplane);
+        let dataplane = metadata(ConformanceTarget::ExternalDataPlane);
 
         let selected = compatible_metadata(
             Some(&fixture),
@@ -423,7 +428,7 @@ mod tests {
     #[test]
     fn mismatched_fixture_provenance_prevents_cross_lane_comparison() {
         let fixture = metadata(ConformanceTarget::Fixture);
-        let mut dataplane = metadata(ConformanceTarget::Dataplane);
+        let mut dataplane = metadata(ConformanceTarget::ExternalDataPlane);
         dataplane
             .fixture
             .as_mut()
@@ -441,7 +446,7 @@ mod tests {
     #[test]
     fn mismatched_server_eras_prevent_cross_lane_comparison() {
         let fixture = metadata(ConformanceTarget::Fixture);
-        let mut dataplane = metadata(ConformanceTarget::Dataplane);
+        let mut dataplane = metadata(ConformanceTarget::ExternalDataPlane);
         dataplane.server_era = ConformanceServerEra::Legacy;
 
         let error = compatible_metadata(Some(&fixture), None, Some(&dataplane), None)

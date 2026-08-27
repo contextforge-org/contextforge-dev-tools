@@ -410,8 +410,8 @@ fn report_renders_raw_counts_and_no_expected_failure_column() {
 
     assert!(markdown.contains("- Client specification: `2026-07-28`"));
     assert!(markdown.contains("- Upstream server era: `modern`"));
-    assert!(markdown.contains("| Control plane | 0 | 1 | 27 |"));
-    assert!(markdown.contains("| Dataplane | 0 | 1 | 28 |"));
+    assert!(markdown.contains("| Built-in data-plane route | 0 | 1 | 27 |"));
+    assert!(markdown.contains("| External data-plane route | 0 | 1 | 28 |"));
     assert!(markdown.contains("server\\|stateless"));
     assert!(!markdown.contains("Expected by"));
 

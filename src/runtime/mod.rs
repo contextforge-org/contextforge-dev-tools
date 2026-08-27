@@ -30,7 +30,7 @@ use cf_integration_mcp::probe::{ProbeConfig, run_probe};
 use cf_integration_platform::checkout::{CheckoutManager, CheckoutRequest};
 use cf_integration_platform::compose::{ComposeProject, validate_integration_contract};
 use cf_integration_platform::config::AppConfig;
-use cf_integration_platform::process::{CommandSpec, ProcessRunner};
+use cf_integration_platform::process::{CommandSpec, LoggingProcessRunner, ProcessRunner};
 use cf_integration_platform::stack::{
     BuildInputs, BuildMode, CleanupKind, FreshnessSnapshot, ServiceSnapshot, StackCommandPlan,
     StackFreshness, resolve_build,
@@ -52,6 +52,7 @@ const STACK_READY_TIMEOUT: Duration = Duration::from_secs(90);
 const STACK_READY_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const STACK_READY_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const MANAGED_TOKEN_DESCRIPTION: &str = "Ephemeral cf-integration dataplane credential";
+const CONFORMANCE_TOKEN_DESCRIPTION: &str = "Ephemeral cf-integration conformance credential";
 
 mod compliance;
 mod inspect;
@@ -241,6 +242,20 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
     }
 
     async fn issue_dataplane_token(&self, server_id: &str) -> AppResult<ManagedBearerToken> {
+        self.issue_catalog_token(Some(server_id), MANAGED_TOKEN_DESCRIPTION)
+            .await
+    }
+
+    async fn issue_conformance_token(&self) -> AppResult<ManagedBearerToken> {
+        self.issue_catalog_token(None, CONFORMANCE_TOKEN_DESCRIPTION)
+            .await
+    }
+
+    async fn issue_catalog_token(
+        &self,
+        server_id: Option<&str>,
+        description: &str,
+    ) -> AppResult<ManagedBearerToken> {
         let endpoint = url::Url::parse(self.base_url()?)
             .context("MCP_CLI_BASE_URL is not a valid URL")
             .and_then(|base| {
@@ -260,26 +275,29 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             .build()
             .context("failed to build token catalog client")
             .map_err(AppFailure::from)?;
+        let mut payload = serde_json::json!({
+            "name": format!("cf-integration-{}", uuid::Uuid::new_v4()),
+            "description": description,
+            "expires_in_days": 1,
+            "user_email": user_email,
+        });
+        if let Some(server_id) = server_id {
+            payload["scope"] = serde_json::json!({
+                "server_id": server_id,
+                "permissions": ["servers.read", "servers.use", "tools.read", "tools.call"],
+            });
+        }
         let response = http
             .post(endpoint)
             .bearer_auth(&admin_token)
-            .json(&serde_json::json!({
-                "name": format!("cf-integration-{}", uuid::Uuid::new_v4()),
-                "description": MANAGED_TOKEN_DESCRIPTION,
-                "expires_in_days": 1,
-                "user_email": user_email,
-                "scope": {
-                    "server_id": server_id,
-                    "permissions": ["servers.read", "servers.use", "tools.read", "tools.call"],
-                },
-            }))
+            .json(&payload)
             .send()
             .await
             .context("token catalog request failed before receiving a response")
             .map_err(AppFailure::from)?;
         if !response.status().is_success() {
             return Err(AppFailure::from(anyhow!(
-                "token catalog returned HTTP {} while issuing a dataplane credential",
+                "token catalog returned HTTP {} while issuing a managed credential",
                 response.status().as_u16()
             )));
         }
@@ -640,5 +658,47 @@ mod tests {
             .revoke_managed_token(&token)
             .await
             .expect("caller token cleanup should be a no-op");
+    }
+
+    #[tokio::test]
+    async fn conformance_tokens_match_the_unscoped_controlplane_lane_contract() {
+        let capture = Capture::default();
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("token catalog listener should bind");
+        let address = listener
+            .local_addr()
+            .expect("token catalog listener should have an address");
+        let server = tokio::spawn(
+            axum::serve(
+                listener,
+                Router::new()
+                    .fallback(any(token_catalog))
+                    .with_state(capture.clone()),
+            )
+            .into_future(),
+        );
+        let root = tempfile::tempdir().expect("temporary repository should be created");
+        let config = app_config(root.path(), &format!("http://{address}"), &[]);
+        let runtime = RuntimeExecutor::new(config, SystemProcessRunner);
+
+        let token = runtime
+            .issue_conformance_token()
+            .await
+            .expect("conformance token should be issued");
+        runtime
+            .revoke_managed_token(&token)
+            .await
+            .expect("conformance token should be revoked");
+        server.abort();
+
+        let requests = capture
+            .0
+            .lock()
+            .expect("token capture lock should not be poisoned");
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[1].1, "/v1/tokens");
+        assert_eq!(requests[1].3["description"], CONFORMANCE_TOKEN_DESCRIPTION);
+        assert!(requests[1].3.get("scope").is_none());
     }
 }

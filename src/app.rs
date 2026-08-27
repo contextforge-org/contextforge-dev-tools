@@ -67,8 +67,8 @@ pub struct ResolvedLoadArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LiveLane {
     Fixture,
-    Controlplane,
-    Dataplane,
+    BuiltInDataPlane,
+    ExternalDataPlane,
 }
 
 /// Fully resolved official conformance operation.
@@ -195,11 +195,11 @@ pub fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
 fn resolve_live_lane(lane: Option<CliLane>, environment: &Environment) -> Result<LiveLane> {
     Ok(match lane {
         Some(CliLane::FixtureDirect) => LiveLane::Fixture,
-        Some(CliLane::Controlplane) => LiveLane::Controlplane,
-        Some(CliLane::Dataplane) => LiveLane::Dataplane,
+        Some(CliLane::BuiltInDataPlane) => LiveLane::BuiltInDataPlane,
+        Some(CliLane::ExternalDataPlane) => LiveLane::ExternalDataPlane,
         None => match resolve_topology(None, environment)? {
-            StackMode::Controlplane => LiveLane::Controlplane,
-            StackMode::Dataplane => LiveLane::Dataplane,
+            StackMode::Controlplane => LiveLane::BuiltInDataPlane,
+            StackMode::Dataplane => LiveLane::ExternalDataPlane,
         },
     })
 }
@@ -254,8 +254,8 @@ fn resolve_lanes(lanes: impl IntoIterator<Item = ConformanceTarget>) -> Vec<Conf
     let selected = lanes.into_iter().collect::<BTreeSet<_>>();
     let all = [
         ConformanceTarget::Fixture,
-        ConformanceTarget::Controlplane,
-        ConformanceTarget::Dataplane,
+        ConformanceTarget::BuiltInDataPlane,
+        ConformanceTarget::ExternalDataPlane,
     ];
     if selected.is_empty() {
         all.into_iter().collect()

@@ -6,7 +6,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
     pub(super) async fn execute_stack(&self, action: StackAction) -> AppResult<()> {
         match action {
             StackAction::Up { topology, fresh } => {
-                self.stack_up(topology, fresh).await?;
+                self.stack_up_for_conformance(topology, fresh).await?;
                 eprintln!(
                     "{}",
                     OutputStyle::stderr().info("Starting the pinned MCP conformance server.")
@@ -63,25 +63,47 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
     }
 
     pub(super) async fn stack_up(&self, mode: StackMode, fresh: bool) -> AppResult<()> {
+        self.stack_up_with_project(mode, fresh, self.compose_project(mode), true)
+            .await
+    }
+
+    pub(super) async fn stack_up_for_conformance(
+        &self,
+        mode: StackMode,
+        fresh: bool,
+    ) -> AppResult<()> {
+        self.stack_up_with_project(mode, fresh, self.conformance_runtime_project(mode), false)
+            .await
+    }
+
+    async fn stack_up_with_project(
+        &self,
+        mode: StackMode,
+        fresh: bool,
+        project: ComposeProject,
+        report_progress: bool,
+    ) -> AppResult<()> {
         self.ensure_mode_sources(mode)?;
         if mode == StackMode::Dataplane {
             self.validate_compose_contract()?;
         }
 
-        let build = self.resolve_build(mode)?;
-        self.pull_images(mode)?;
+        let build = self.resolve_build(mode, report_progress)?;
+        self.pull_images(mode, build, report_progress)?;
         if mode == StackMode::Dataplane
             && !fresh
             && !self.environment_flag("CF_FORCE_STACK_RESTART", false)
             && !build
             && self.integration_freshness()? == StackFreshness::Current
         {
-            println!(
-                "{}",
-                OutputStyle::stdout()
-                    .success("Integration stack already current; skipping Docker Compose up.")
-            );
-            return self.wait_for_public_endpoint(mode).await;
+            if report_progress {
+                println!(
+                    "{}",
+                    OutputStyle::stdout()
+                        .success("Integration stack already current; skipping Docker Compose up.")
+                );
+            }
+            return self.wait_for_public_endpoint(mode, report_progress).await;
         }
 
         if fresh {
@@ -103,39 +125,41 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             .map_err(|_| {
                 AppFailure::from(anyhow!("CONTROLPLANE_LOCUST_WORKERS must be an integer"))
             })?;
-        let command = StackCommandPlan::up(
-            self.compose_project(mode),
-            mode,
-            build,
-            start_locust,
-            locust_workers,
-        );
+        let command = StackCommandPlan::up(project, mode, build, start_locust, locust_workers);
         self.runner
             .run(&self.compose_environment(command.command().clone(), mode, true)?)?;
-        self.wait_for_public_endpoint(mode).await?;
-        println!(
-            "{}",
-            OutputStyle::stdout().success(&format!(
-                "{} stack started.",
-                match mode {
-                    StackMode::Controlplane => "Control-plane",
-                    StackMode::Dataplane => "Dataplane integration",
-                }
-            ))
-        );
+        self.wait_for_public_endpoint(mode, report_progress).await?;
+        if report_progress {
+            println!(
+                "{}",
+                OutputStyle::stdout().success(&format!(
+                    "{} stack started.",
+                    match mode {
+                        StackMode::Controlplane => "Control-plane",
+                        StackMode::Dataplane => "Dataplane integration",
+                    }
+                ))
+            );
+        }
         Ok(())
     }
 
-    async fn wait_for_public_endpoint(&self, mode: StackMode) -> AppResult<()> {
+    async fn wait_for_public_endpoint(
+        &self,
+        mode: StackMode,
+        report_progress: bool,
+    ) -> AppResult<()> {
         let endpoint = self.public_mcp_endpoint(mode)?;
-        eprintln!(
-            "{}",
-            OutputStyle::stderr().info(&format!(
-                "Waiting up to {}s for the public {} MCP endpoint.",
-                STACK_READY_TIMEOUT.as_secs(),
-                stack_mode_label(mode)
-            ))
-        );
+        if report_progress {
+            eprintln!(
+                "{}",
+                OutputStyle::stderr().info(&format!(
+                    "Waiting up to {}s for the public {} MCP endpoint.",
+                    STACK_READY_TIMEOUT.as_secs(),
+                    stack_mode_label(mode)
+                ))
+            );
+        }
         wait_for_http_endpoint(&endpoint, mode, STACK_READY_TIMEOUT).await
     }
 
@@ -185,8 +209,13 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
     }
 
     pub(super) fn conformance_compose_project(&self, mode: StackMode) -> ComposeProject {
-        self.compose_project(mode)
+        self.conformance_runtime_project(mode)
             .with_conformance_fixture(self.config.root())
+    }
+
+    fn conformance_runtime_project(&self, mode: StackMode) -> ComposeProject {
+        self.compose_project(mode)
+            .with_conformance_runtime(self.config.root())
     }
 
     pub(super) fn compose_environment(
@@ -385,7 +414,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         )))
     }
 
-    fn resolve_build(&self, mode: StackMode) -> AppResult<bool> {
+    fn resolve_build(&self, mode: StackMode, report_progress: bool) -> AppResult<bool> {
         let setting = required_text(&self.config.compose_build().value, "CF_COMPOSE_BUILD")?;
         let mode_setting =
             BuildMode::from_str(setting).map_err(|error| AppFailure::from(anyhow!(error)))?;
@@ -421,11 +450,13 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                 dataplane_image_revision,
             },
         );
-        for reason in decision.reasons {
-            println!(
-                "{}",
-                OutputStyle::stdout().info(&format!("CF_COMPOSE_BUILD: {reason}"))
-            );
+        if report_progress {
+            for reason in decision.reasons {
+                println!(
+                    "{}",
+                    OutputStyle::stdout().info(&format!("CF_COMPOSE_BUILD: {reason}"))
+                );
+            }
         }
         Ok(decision.build)
     }
@@ -444,12 +475,13 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         }
     }
 
-    fn pull_images(&self, mode: StackMode) -> AppResult<()> {
-        if self.config.controlplane_image().is_prebuilt() {
+    fn pull_images(&self, mode: StackMode, build: bool, report_progress: bool) -> AppResult<()> {
+        if !build && self.config.controlplane_image().is_prebuilt() {
             self.pull_if_changed(
                 "cf-controlplane",
                 self.config.controlplane_image().resolved(),
                 None,
+                report_progress,
             )?;
         }
         if mode == StackMode::Dataplane && self.config.dataplane_ref().value.is_empty() {
@@ -458,6 +490,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                 "cf-dataplane",
                 self.config.dataplane_image().resolved(),
                 Some(platform.as_os_str()),
+                report_progress,
             )?;
         }
         Ok(())
@@ -468,6 +501,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         label: &str,
         image: &OsStr,
         platform: Option<&OsStr>,
+        report_progress: bool,
     ) -> AppResult<()> {
         let inspect = CommandSpec::new("docker").args([
             OsString::from("buildx"),
@@ -502,20 +536,24 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                     .lines()
                     .any(|value| value.ends_with(&format!("@{digest}")))
             }) {
-                println!(
-                    "{}",
-                    OutputStyle::stdout()
-                        .success(&format!("{label} image digest unchanged: {digest}"))
-                );
+                if report_progress {
+                    println!(
+                        "{}",
+                        OutputStyle::stdout()
+                            .success(&format!("{label} image digest unchanged: {digest}"))
+                    );
+                }
                 return Ok(());
             }
         } else if local_exists {
-            println!(
-                "{}",
-                OutputStyle::stdout().warning(&format!(
-                    "{label} remote digest unavailable; using local image."
-                ))
-            );
+            if report_progress {
+                println!(
+                    "{}",
+                    OutputStyle::stdout().warning(&format!(
+                        "{label} remote digest unavailable; using local image."
+                    ))
+                );
+            }
             return Ok(());
         }
 

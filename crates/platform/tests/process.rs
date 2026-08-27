@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use cf_integration_platform::PlatformError;
 use cf_integration_platform::process::{
-    CapturedOutput, CommandSpec, ProcessRunner, SystemProcessRunner,
+    CapturedOutput, CommandSpec, LoggingProcessRunner, ProcessRunner, SystemProcessRunner,
 };
 use tempfile::TempDir;
 
@@ -43,6 +43,35 @@ impl ProcessRunner for FakeProcessRunner {
     fn run_to_log(&self, _spec: &CommandSpec, _log_path: &Path) -> Result<(), PlatformError> {
         Ok(())
     }
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn logging_runner_hides_ordinary_output_in_an_aggregate_log() {
+    let directory = tempfile::tempdir().expect("temporary directory should be created");
+    let script = executable_script(
+        &directory,
+        "aggregate-log.sh",
+        "printf 'ordinary stdout\\n'; printf 'ordinary stderr\\n' >&2",
+    );
+    let log_path = directory.path().join("setup.log");
+    let system = SystemProcessRunner;
+    let runner = LoggingProcessRunner::new(&system, &log_path);
+
+    runner
+        .run_async(&CommandSpec::new(script))
+        .await
+        .expect("logged child should succeed");
+
+    let log = fs::read(&log_path).expect("aggregate log should be readable");
+    assert!(
+        log.windows(b"ordinary stdout\n".len())
+            .any(|part| part == b"ordinary stdout\n")
+    );
+    assert!(
+        log.windows(b"ordinary stderr\n".len())
+            .any(|part| part == b"ordinary stderr\n")
+    );
 }
 
 #[cfg(unix)]

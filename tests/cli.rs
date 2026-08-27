@@ -216,7 +216,7 @@ fn live_defaults_to_all_and_accepts_the_main_harness_groups() {
             "cf-integration",
             "live",
             "--topology",
-            "dataplane",
+            "external-data-plane",
             "--group",
             name,
         ])
@@ -224,7 +224,7 @@ fn live_defaults_to_all_and_accepts_the_main_harness_groups() {
         else {
             panic!("expected live workflow")
         };
-        assert_eq!(args.target.lane, Some(CliLane::Dataplane));
+        assert_eq!(args.target.lane, Some(CliLane::ExternalDataPlane));
         assert_eq!(args.group, expected);
     }
 }
@@ -281,7 +281,7 @@ fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
     }
 
     fn assert_fixture_target(target: &WorkflowTargetArgs) {
-        assert_eq!(target.lane, Some(CliLane::Controlplane));
+        assert_eq!(target.lane, Some(CliLane::BuiltInDataPlane));
         assert_eq!(
             target.protocol_version,
             Some(
@@ -317,12 +317,14 @@ fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
     };
     assert_routed_target(&load.target);
 
-    let Command::Live(live) = parse(
-        &["cf-integration", "live"]
-            .into_iter()
-            .chain(common)
-            .collect::<Vec<_>>(),
-    )
+    let Command::Live(live) = parse(&[
+        "cf-integration",
+        "live",
+        "--lane",
+        "built-in-data-plane",
+        "--protocol-version",
+        "2025-06-18",
+    ])
     .command
     else {
         panic!("expected live workflow")
@@ -392,7 +394,7 @@ fn conformance_accepts_repeatable_exact_lanes_and_supported_revisions() {
         "--lane",
         "fixture-direct",
         "--lane",
-        "dataplane",
+        "external-data-plane",
         "--protocol-version",
         "2025-11-25",
         "--server-era",
@@ -402,7 +404,10 @@ fn conformance_accepts_repeatable_exact_lanes_and_supported_revisions() {
     else {
         panic!("expected conformance run")
     };
-    assert_eq!(args.lane, [CliLane::FixtureDirect, CliLane::Dataplane]);
+    assert_eq!(
+        args.lane,
+        [CliLane::FixtureDirect, CliLane::ExternalDataPlane]
+    );
     assert_eq!(
         args.protocol_version,
         "2025-11-25"

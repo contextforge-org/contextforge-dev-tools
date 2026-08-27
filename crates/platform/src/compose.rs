@@ -132,6 +132,16 @@ impl ComposeProject {
         self
     }
 
+    /// Applies the control-plane runtime settings used by conformance runs.
+    #[must_use]
+    pub fn with_conformance_runtime(mut self, repository_root: &Path) -> Self {
+        let overlay = repository_root.join("docker/docker-compose.cf-conformance-runtime.yaml");
+        if !self.files.contains(&overlay) {
+            self.files.push(overlay);
+        }
+        self
+    }
+
     /// Enables the isolated official MCP conformance server fixture.
     #[must_use]
     pub fn with_conformance_fixture(self, repository_root: &Path) -> Self {

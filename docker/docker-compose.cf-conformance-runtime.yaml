@@ -1,0 +1,16 @@
+services:
+  gateway:
+    environment:
+      GUNICORN_WORKERS: "1"
+      RATE_LIMITING_ENABLED: "false"
+      RUST_MCP_MODE: "off"
+    build:
+      args:
+        ENABLE_RUST: "false"
+        ENABLE_RUST_MCP_RMCP: "false"
+
+  migration:
+    build:
+      args:
+        ENABLE_RUST: "false"
+        ENABLE_RUST_MCP_RMCP: "false"

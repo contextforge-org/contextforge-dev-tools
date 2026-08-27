@@ -264,10 +264,10 @@ pub enum CliLane {
     /// Run directly against the workflow's reference fixture.
     #[value(alias = "fixture")]
     FixtureDirect,
-    /// Run against the Python control-plane stack.
-    Controlplane,
-    /// Run through nginx and the Rust dataplane.
-    Dataplane,
+    /// Run the routed endpoint through the Python built-in data plane.
+    BuiltInDataPlane,
+    /// Run the routed endpoint through the external Rust data plane.
+    ExternalDataPlane,
 }
 
 /// Upstream live-test group.
@@ -372,8 +372,8 @@ impl From<CliLane> for cf_integration_compliance::conformance::ConformanceTarget
     fn from(lane: CliLane) -> Self {
         match lane {
             CliLane::FixtureDirect => Self::Fixture,
-            CliLane::Controlplane => Self::Controlplane,
-            CliLane::Dataplane => Self::Dataplane,
+            CliLane::BuiltInDataPlane => Self::BuiltInDataPlane,
+            CliLane::ExternalDataPlane => Self::ExternalDataPlane,
         }
     }
 }

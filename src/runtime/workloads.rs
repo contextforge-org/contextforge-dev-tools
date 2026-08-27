@@ -128,6 +128,20 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
     }
 
     pub(super) async fn wait_for_publisher_snapshot(&self, server_id: &str) -> AppResult<()> {
+        self.wait_for_publisher_snapshot_with_status(server_id, true)
+            .await
+    }
+
+    pub(super) async fn wait_for_publisher_snapshot_quiet(&self, server_id: &str) -> AppResult<()> {
+        self.wait_for_publisher_snapshot_with_status(server_id, false)
+            .await
+    }
+
+    async fn wait_for_publisher_snapshot_with_status(
+        &self,
+        server_id: &str,
+        report_progress: bool,
+    ) -> AppResult<()> {
         let timeout_seconds = self.environment_u64("CF_PUBLISHER_WAIT_SECONDS", 90)?;
         let project = required_text(
             &self.config.integration_project().value,
@@ -139,12 +153,14 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             ))
         })?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_seconds);
-        eprintln!(
-            "{}",
-            OutputStyle::stderr().info(&format!(
-                "Waiting up to {timeout_seconds}s for a publisher snapshot containing server {server_id}."
-            ))
-        );
+        if report_progress {
+            eprintln!(
+                "{}",
+                OutputStyle::stderr().info(&format!(
+                    "Waiting up to {timeout_seconds}s for a publisher snapshot containing server {server_id}."
+                ))
+            );
+        }
         loop {
             let command = CommandSpec::new("docker").args([
                 "exec",

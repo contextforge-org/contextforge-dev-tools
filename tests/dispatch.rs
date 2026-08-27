@@ -145,7 +145,7 @@ fn live_resolves_lane_group_and_protocol_version() {
             ],
         ),
         Action::Live {
-            lane: LiveLane::Controlplane,
+            lane: LiveLane::BuiltInDataPlane,
             group: LiveGroup::Mcp,
             protocol_version: "2025-06-18"
                 .parse::<ProtocolVersion>()
@@ -210,8 +210,8 @@ fn conformance_defaults_to_all_three_ordered_lanes() {
         Action::Conformance(ConformanceAction::Run {
             lanes: vec![
                 ConformanceTarget::Fixture,
-                ConformanceTarget::Controlplane,
-                ConformanceTarget::Dataplane,
+                ConformanceTarget::BuiltInDataPlane,
+                ConformanceTarget::ExternalDataPlane,
             ],
             spec_version: "2026-07-28".to_owned(),
             server_era: ConformanceServerEra::Dual,
@@ -229,11 +229,11 @@ fn conformance_lanes_are_deduplicated_and_normalized() {
                 "conformance",
                 "run",
                 "--lane",
-                "dataplane",
+                "external-data-plane",
                 "--lane",
                 "fixture-direct",
                 "--lane",
-                "dataplane",
+                "external-data-plane",
                 "--protocol-version",
                 "2025-06-18",
                 "--server-era",
@@ -244,7 +244,10 @@ fn conformance_lanes_are_deduplicated_and_normalized() {
             &[],
         ),
         Action::Conformance(ConformanceAction::Run {
-            lanes: vec![ConformanceTarget::Fixture, ConformanceTarget::Dataplane],
+            lanes: vec![
+                ConformanceTarget::Fixture,
+                ConformanceTarget::ExternalDataPlane,
+            ],
             spec_version: "2025-06-18".to_owned(),
             server_era: ConformanceServerEra::Modern,
             results_dir: Some(PathBuf::from("results")),

@@ -3,8 +3,9 @@
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::future::Future;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{Command, ExitStatus, Stdio};
@@ -163,6 +164,18 @@ pub trait ProcessRunner {
         Box::pin(async move { self.run(spec) })
     }
 
+    /// Runs asynchronously with both output streams appended to one log file.
+    ///
+    /// The default is intended for fake runners; system-backed runners avoid
+    /// blocking the async executor while the child is active.
+    fn run_async_to_log<'a>(
+        &'a self,
+        spec: &'a CommandSpec,
+        log_path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<(), PlatformError>> + 'a>> {
+        Box::pin(async move { self.run_to_log(spec, log_path) })
+    }
+
     /// Runs asynchronously and returns after cancellation is observed.
     ///
     /// The default is intended for fake runners without owned OS children.
@@ -210,6 +223,80 @@ pub trait ProcessRunner {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemProcessRunner;
 
+/// Process runner that keeps ordinary child output in one aggregate log.
+///
+/// Explicit per-command log paths remain authoritative, allowing callers to
+/// retain separate detailed logs for long-running tools.
+#[derive(Debug, Clone, Copy)]
+pub struct LoggingProcessRunner<'a, R> {
+    inner: &'a R,
+    log_path: &'a Path,
+}
+
+impl<'a, R> LoggingProcessRunner<'a, R> {
+    /// Wraps `inner`, redirecting inherited child output to `log_path`.
+    #[must_use]
+    pub const fn new(inner: &'a R, log_path: &'a Path) -> Self {
+        Self { inner, log_path }
+    }
+}
+
+impl<R: ProcessRunner> ProcessRunner for LoggingProcessRunner<'_, R> {
+    fn run(&self, spec: &CommandSpec) -> Result<(), PlatformError> {
+        self.inner.run_to_log(spec, self.log_path)
+    }
+
+    fn run_async<'a>(
+        &'a self,
+        spec: &'a CommandSpec,
+    ) -> Pin<Box<dyn Future<Output = Result<(), PlatformError>> + 'a>> {
+        self.inner.run_async_to_log(spec, self.log_path)
+    }
+
+    fn run_async_to_log<'a>(
+        &'a self,
+        spec: &'a CommandSpec,
+        log_path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<(), PlatformError>> + 'a>> {
+        self.inner.run_async_to_log(spec, log_path)
+    }
+
+    fn run_async_cancellable<'a>(
+        &'a self,
+        spec: &'a CommandSpec,
+        cancellation: tokio::sync::watch::Receiver<bool>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), PlatformError>> + 'a>> {
+        self.inner
+            .run_async_cancellable_to_log(spec, cancellation, self.log_path)
+    }
+
+    fn run_async_cancellable_to_log<'a>(
+        &'a self,
+        spec: &'a CommandSpec,
+        cancellation: tokio::sync::watch::Receiver<bool>,
+        log_path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<(), PlatformError>> + 'a>> {
+        self.inner
+            .run_async_cancellable_to_log(spec, cancellation, log_path)
+    }
+
+    fn capture_stdout(&self, spec: &CommandSpec) -> Result<Vec<u8>, PlatformError> {
+        let output = self.inner.capture_output(spec)?;
+        append_captured_output(self.log_path, spec, &output)?;
+        Ok(output.stdout)
+    }
+
+    fn capture_output(&self, spec: &CommandSpec) -> Result<CapturedOutput, PlatformError> {
+        let output = self.inner.capture_output(spec)?;
+        append_captured_output(self.log_path, spec, &output)?;
+        Ok(output)
+    }
+
+    fn run_to_log(&self, spec: &CommandSpec, log_path: &Path) -> Result<(), PlatformError> {
+        self.inner.run_to_log(spec, log_path)
+    }
+}
+
 impl ProcessRunner for SystemProcessRunner {
     fn run(&self, spec: &CommandSpec) -> Result<(), PlatformError> {
         let mut command = command(spec);
@@ -230,6 +317,28 @@ impl ProcessRunner for SystemProcessRunner {
         Box::pin(async move {
             let mut command = tokio::process::Command::from(command(spec));
             command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+            let mut child = command
+                .spawn()
+                .with_context(|| operation_context("spawn", spec))?;
+            let status = child
+                .wait()
+                .await
+                .with_context(|| operation_context("wait for", spec))?;
+            require_success(spec, status)
+        })
+    }
+
+    fn run_async_to_log<'a>(
+        &'a self,
+        spec: &'a CommandSpec,
+        log_path: &'a Path,
+    ) -> Pin<Box<dyn Future<Output = Result<(), PlatformError>> + 'a>> {
+        Box::pin(async move {
+            let (log, stderr_log) = log_handles(log_path, spec)?;
+            let mut command = tokio::process::Command::from(command(spec));
+            command
+                .stdout(Stdio::from(log))
+                .stderr(Stdio::from(stderr_log));
             let mut child = command
                 .spawn()
                 .with_context(|| operation_context("spawn", spec))?;
@@ -279,12 +388,8 @@ impl ProcessRunner for SystemProcessRunner {
         log_path: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<(), PlatformError>> + 'a>> {
         Box::pin(async move {
-            let log = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(log_path)
-                .with_context(|| log_context("open", log_path, spec))?;
+            let log =
+                File::create(log_path).with_context(|| log_context("create", log_path, spec))?;
             let stderr_log = log
                 .try_clone()
                 .with_context(|| log_context("clone handle for", log_path, spec))?;
@@ -340,14 +445,7 @@ impl ProcessRunner for SystemProcessRunner {
     }
 
     fn run_to_log(&self, spec: &CommandSpec, log_path: &Path) -> Result<(), PlatformError> {
-        let log = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)
-            .with_context(|| log_context("open", log_path, spec))?;
-        let stderr_log = log
-            .try_clone()
-            .with_context(|| log_context("clone handle for", log_path, spec))?;
+        let (log, stderr_log) = log_handles(log_path, spec)?;
         let mut command = command(spec);
         command
             .stdout(Stdio::from(log))
@@ -360,6 +458,34 @@ impl ProcessRunner for SystemProcessRunner {
             .with_context(|| operation_context("wait for", spec))?;
         require_success(spec, status)
     }
+}
+
+fn log_handles(log_path: &Path, spec: &CommandSpec) -> Result<(File, File), PlatformError> {
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .with_context(|| log_context("open", log_path, spec))?;
+    let stderr_log = log
+        .try_clone()
+        .with_context(|| log_context("clone handle for", log_path, spec))?;
+    Ok((log, stderr_log))
+}
+
+fn append_captured_output(
+    log_path: &Path,
+    spec: &CommandSpec,
+    output: &CapturedOutput,
+) -> Result<(), PlatformError> {
+    let mut log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .with_context(|| log_context("open", log_path, spec))?;
+    log.write_all(output.stdout())
+        .and_then(|()| log.write_all(output.stderr()))
+        .with_context(|| log_context("append output to", log_path, spec))?;
+    Ok(())
 }
 
 fn command(spec: &CommandSpec) -> Command {

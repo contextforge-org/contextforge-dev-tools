@@ -72,7 +72,7 @@ fn readme_documents_the_official_conformance_fixture_contract() {
     for fact in [
         "official TypeScript fixture",
         "Fast Time remains",
-        "runs fixture-direct, controlplane, and dataplane lanes",
+        "runs fixture-direct, built-in-data-plane, and external-data-plane lanes",
         "c321dd32035556e6769d3724a8ee97d87c3faaac",
         "defaults to MCP `2026-07-28`",
         "loopback `MCP_CLI_BASE_URL`",
@@ -124,6 +124,46 @@ fn dataplane_compose_files_are_in_override_order() {
             "json",
         ]
         .map(OsString::from)
+    );
+}
+
+#[test]
+fn conformance_runtime_matches_the_python_builtin_image_contract() {
+    let root = workspace_root();
+    let compose =
+        fs::read_to_string(root.join("docker/docker-compose.cf-conformance-runtime.yaml"))
+            .expect("read conformance runtime overlay");
+    let compose: serde_yaml::Value =
+        serde_yaml::from_str(&compose).expect("parse conformance runtime overlay");
+
+    let gateway = &compose["services"]["gateway"];
+    assert_eq!(gateway["environment"]["GUNICORN_WORKERS"], "1");
+    assert_eq!(gateway["environment"]["RATE_LIMITING_ENABLED"], "false");
+    assert_eq!(gateway["environment"]["RUST_MCP_MODE"], "off");
+    for service in ["gateway", "migration"] {
+        assert_eq!(
+            compose["services"][service]["build"]["args"]["ENABLE_RUST"],
+            "false"
+        );
+        assert_eq!(
+            compose["services"][service]["build"]["args"]["ENABLE_RUST_MCP_RMCP"],
+            "false"
+        );
+    }
+
+    let project = ComposeProject::controlplane(
+        Path::new("/repo"),
+        Path::new("/checkout"),
+        OsString::from("cf"),
+        false,
+    )
+    .with_conformance_overlay(Path::new("/repo"))
+    .with_conformance_runtime(Path::new("/repo"));
+    assert_eq!(
+        project.files().last(),
+        Some(&PathBuf::from(
+            "/repo/docker/docker-compose.cf-conformance-runtime.yaml"
+        ))
     );
 }
 

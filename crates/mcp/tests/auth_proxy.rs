@@ -590,3 +590,33 @@ async fn dataplane_proxy_requires_one_exact_backend_marker_before_forwarding() {
         upstream.shutdown().await;
     }
 }
+
+#[tokio::test]
+async fn builtin_data_plane_proxy_allows_a_routed_controlplane_response() {
+    let upstream = TestServer::start(
+        Router::new()
+            .route("/servers/test/mcp", any(backend_marker_handler))
+            .with_state(BackendMarkerResponse {
+                markers: vec!["controlplane"],
+            }),
+        "servers/test/mcp",
+    )
+    .await;
+    let proxy = AuthProxy::start_builtin_data_plane(upstream.url.clone(), INJECTED_TOKEN)
+        .await
+        .expect("built-in data-plane proxy should start");
+
+    let response = client()
+        .get(proxy.url().clone())
+        .send()
+        .await
+        .expect("routed built-in response should be forwarded");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.text().await.expect("body should read"),
+        "private-upstream-body"
+    );
+
+    proxy.shutdown().await.expect("proxy should shut down");
+    upstream.shutdown().await;
+}
