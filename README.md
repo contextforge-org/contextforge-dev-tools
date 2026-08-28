@@ -240,16 +240,23 @@ supplied token is never revoked by the harness.
 
 ## Package layout
 
-Only `cf-integration` is published:
+One root package publishes exactly one binary, `cf-integration`. All concern
+modules remain private implementation details:
 
 ```text
-src/platform/    configuration, assets, processes, checkouts, Compose plans
-src/mcp/         unified MCP client, protocol messages, auth proxy, probe
-src/compliance/  official fixture, strict baselines, result parsing, comparison
-src/load/        Locust settings and report auditing
-src/runtime/     dispatcher and concrete workflow/session owners
-docker/          embedded Compose and nginx assets
-scripts/         embedded runtime adapters
+src/infrastructure/       config, assets, processes, checkouts, Compose plans
+src/mcp/                  unified MCP client, protocol, auth proxy, probe
+src/conformance/          fixture, strict baselines, results, comparisons
+src/performance/          Locust settings, commands, and report auditing
+src/runtime/live/         upstream live-test workflow
+src/runtime/stack/        stack lifecycle and source ownership
+src/runtime/conformance/  conformance orchestration and reports
+src/runtime/performance/  performance workflow orchestration
+src/runtime/probe.rs       probe workflow orchestration
+src/runtime/session.rs     shared managed stack and credential scope
+src/runtime/mod.rs         thin action dispatcher
+docker/                   embedded Compose and nginx assets
+scripts/                  embedded runtime adapters
 ```
 
 The Bruno collection under `manual-tests/mcp-manual-test-tools/` is an

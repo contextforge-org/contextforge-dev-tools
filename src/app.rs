@@ -5,11 +5,11 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use crate::compliance::DEFAULT_MCP_SPEC_VERSION;
-use crate::compliance::conformance::{ConformanceServerEra, SemanticLane};
-use crate::load::LoadRequest;
-use crate::platform::StackMode;
-use crate::platform::config::Environment;
+use crate::conformance::DEFAULT_MCP_SPEC_VERSION;
+use crate::conformance::results::{ConformanceServerEra, SemanticLane};
+use crate::infrastructure::StackMode;
+use crate::infrastructure::config::Environment;
+use crate::performance::LoadRequest;
 use anyhow::{Result, bail};
 
 use crate::cli::{

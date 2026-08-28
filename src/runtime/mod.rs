@@ -8,37 +8,37 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 
-use crate::compliance::baseline::{
+use crate::conformance::baseline::{
     BaselineUpdate, bless_baselines_transactionally, evaluate_baselines, validate_scored_results,
     write_baseline_report,
 };
-use crate::compliance::conformance::{
+use crate::conformance::fixture::{
+    ConformanceFixtureClient, OFFICIAL_CONFORMANCE_BACKEND_URL, OFFICIAL_CONFORMANCE_PROXY_SERVICE,
+    OFFICIAL_CONFORMANCE_REPOSITORY, OFFICIAL_CONFORMANCE_REVISION, OFFICIAL_CONFORMANCE_SERVER_ID,
+    OFFICIAL_CONFORMANCE_SERVICE,
+};
+use crate::conformance::results::{
     ComparisonFixtureTrust, ComparisonReport, ConformanceFixtureMetadata, ConformanceResults,
     ConformanceRunMetadata, ConformanceServerEra, ConformanceTarget,
     compare_result_sets_with_fixture_trust, expected_server_scenarios, is_trusted_official_fixture,
     load_server_results, official_server_command, validate_server_scenario_set,
     write_comparison_report,
 };
-use crate::compliance::conformance_fixture::{
-    ConformanceFixtureClient, OFFICIAL_CONFORMANCE_BACKEND_URL, OFFICIAL_CONFORMANCE_PROXY_SERVICE,
-    OFFICIAL_CONFORMANCE_REPOSITORY, OFFICIAL_CONFORMANCE_REVISION, OFFICIAL_CONFORMANCE_SERVER_ID,
-    OFFICIAL_CONFORMANCE_SERVICE,
+use crate::infrastructure::checkout::{CheckoutManager, CheckoutRequest};
+use crate::infrastructure::compose::{ComposeProject, validate_integration_contract};
+use crate::infrastructure::config::AppConfig;
+use crate::infrastructure::process::{CommandSpec, LoggingProcessRunner, ProcessRunner};
+use crate::infrastructure::stack::{
+    BuildInputs, BuildMode, CleanupKind, FreshnessSnapshot, ServiceSnapshot, StackCommandPlan,
+    StackFreshness, resolve_build,
 };
-use crate::load::{LoadSettings, LocustCommand, audit_locust_reports};
+use crate::infrastructure::{InfrastructureError, StackMode};
 use crate::mcp::GatewayTopology;
 use crate::mcp::auth_proxy::AuthProxy;
 use crate::mcp::gateway::GatewayClient;
 use crate::mcp::probe::{ProbeConfig, run_probe};
 use crate::mcp::protocol::ACCEPT as MCP_ACCEPT;
-use crate::platform::checkout::{CheckoutManager, CheckoutRequest};
-use crate::platform::compose::{ComposeProject, validate_integration_contract};
-use crate::platform::config::AppConfig;
-use crate::platform::process::{CommandSpec, LoggingProcessRunner, ProcessRunner};
-use crate::platform::stack::{
-    BuildInputs, BuildMode, CleanupKind, FreshnessSnapshot, ServiceSnapshot, StackCommandPlan,
-    StackFreshness, resolve_build,
-};
-use crate::platform::{PlatformError, StackMode};
+use crate::performance::{LoadSettings, LocustCommand, audit_locust_reports};
 use anyhow::{Context, anyhow};
 
 use crate::OutputStyle;
@@ -54,20 +54,19 @@ type AppResult<T> = std::result::Result<T, AppFailure>;
 const STACK_READY_TIMEOUT: Duration = Duration::from_secs(90);
 const STACK_READY_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const STACK_READY_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-mod compliance;
+mod conformance;
 mod control_plane;
 mod inspect;
 mod live;
-mod reports;
-mod sources;
+mod performance;
+mod probe;
+mod session;
 mod stack;
-mod workloads;
 
 #[cfg(test)]
 use control_plane::CONFORMANCE_TOKEN_DESCRIPTION;
 use control_plane::{ControlPlaneClient, ManagedBearerToken};
 use inspect::*;
-use reports::*;
 
 /// Shared dependencies borrowed by concrete workflow owners.
 struct RuntimeContext<R> {
@@ -98,31 +97,33 @@ impl<R> RuntimeDispatcher<R> {
     }
 }
 
-struct StackOrchestrator<'a, R>(&'a RuntimeContext<R>);
-struct McpWorkflow<'a, R>(&'a RuntimeContext<R>);
+struct StackWorkflow<'a, R>(&'a RuntimeContext<R>);
+struct ProbeWorkflow<'a, R>(&'a RuntimeContext<R>);
+struct PerformanceWorkflow<'a, R>(&'a RuntimeContext<R>);
+struct LiveWorkflow<'a, R>(&'a RuntimeContext<R>);
 struct ConformanceWorkflow<'a, R>(&'a RuntimeContext<R>);
 
 impl<R: ProcessRunner> RuntimeDispatcher<R> {
     /// Dispatches one fully resolved operation through its workflow owner.
     pub async fn execute(&self, action: Action) -> AppResult<()> {
         match action {
-            Action::Stack(action) => StackOrchestrator(&self.context).execute(action).await,
+            Action::Stack(action) => StackWorkflow(&self.context).execute(action).await,
             Action::Probe {
                 topology,
                 protocol_version,
             } => {
-                McpWorkflow(&self.context)
-                    .probe(topology, &protocol_version)
+                ProbeWorkflow(&self.context)
+                    .execute(topology, &protocol_version)
                     .await
             }
-            Action::Load(args) => McpWorkflow(&self.context).load(args).await,
+            Action::Load(args) => PerformanceWorkflow(&self.context).execute(args).await,
             Action::Live {
                 lane,
                 group,
                 protocol_version,
             } => {
-                ConformanceWorkflow(&self.context)
-                    .live(lane, group, &protocol_version)
+                LiveWorkflow(&self.context)
+                    .execute(lane, group, &protocol_version)
                     .await
             }
             Action::Conformance(action) => ConformanceWorkflow(&self.context).execute(action).await,
@@ -143,28 +144,30 @@ impl<R: ProcessRunner> RuntimeDispatcher<R> {
     }
 }
 
-impl<'a, R: ProcessRunner> StackOrchestrator<'a, R> {
+impl<'a, R: ProcessRunner> StackWorkflow<'a, R> {
     async fn execute(&self, action: StackAction) -> AppResult<()> {
         self.0.execute_stack(action).await
     }
 }
 
-impl<'a, R: ProcessRunner> McpWorkflow<'a, R> {
-    async fn probe(
+impl<'a, R: ProcessRunner> ProbeWorkflow<'a, R> {
+    async fn execute(
         &self,
         topology: StackMode,
         protocol_version: &ProtocolVersion,
     ) -> AppResult<()> {
         self.0.run_probe(topology, protocol_version).await
     }
+}
 
-    async fn load(&self, args: ResolvedLoadArgs) -> AppResult<()> {
+impl<'a, R: ProcessRunner> PerformanceWorkflow<'a, R> {
+    async fn execute(&self, args: ResolvedLoadArgs) -> AppResult<()> {
         self.0.run_load(args).await
     }
 }
 
-impl<'a, R: ProcessRunner> ConformanceWorkflow<'a, R> {
-    async fn live(
+impl<'a, R: ProcessRunner> LiveWorkflow<'a, R> {
+    async fn execute(
         &self,
         lane: ConformanceTarget,
         group: LiveGroup,
@@ -172,7 +175,9 @@ impl<'a, R: ProcessRunner> ConformanceWorkflow<'a, R> {
     ) -> AppResult<()> {
         self.0.run_live(lane, group, protocol_version).await
     }
+}
 
+impl<'a, R: ProcessRunner> ConformanceWorkflow<'a, R> {
     async fn execute(&self, action: ConformanceAction) -> AppResult<()> {
         self.0.execute_conformance(action).await
     }
@@ -351,8 +356,8 @@ const fn gateway_topology(mode: StackMode) -> GatewayTopology {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use crate::platform::config::{ConfigBootstrap, ConfigRequirements, Environment};
-    use crate::platform::process::SystemProcessRunner;
+    use crate::infrastructure::config::{ConfigBootstrap, ConfigRequirements, Environment};
+    use crate::infrastructure::process::SystemProcessRunner;
     use axum::Router;
     use axum::body::Body;
     use axum::extract::{Request, State};

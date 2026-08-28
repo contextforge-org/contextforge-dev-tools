@@ -5,10 +5,10 @@ use cf_integration::app::{
     Action, ConformanceAction, DebugAction, ResolvedLoadArgs, StackAction, resolve_action,
 };
 use cf_integration::cli::{Cli, LiveGroup, ProtocolVersion, TokenKind, TopologySelection};
-use cf_integration::compliance::conformance::{ConformanceServerEra, ConformanceTarget};
-use cf_integration::load::LoadRequest;
-use cf_integration::platform::StackMode;
-use cf_integration::platform::config::Environment;
+use cf_integration::conformance::results::{ConformanceServerEra, ConformanceTarget};
+use cf_integration::infrastructure::StackMode;
+use cf_integration::infrastructure::config::Environment;
+use cf_integration::performance::LoadRequest;
 use clap::Parser;
 
 fn action(arguments: &[&str], environment: &[(&str, &str)]) -> Action {

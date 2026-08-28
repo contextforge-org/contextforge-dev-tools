@@ -6,7 +6,7 @@ use anyhow::{Context, anyhow};
 use reqwest::{Client, StatusCode};
 use serde::Deserialize;
 
-use crate::platform::config::AppConfig;
+use crate::infrastructure::config::AppConfig;
 
 use super::{AppFailure, AppResult, required_text};
 

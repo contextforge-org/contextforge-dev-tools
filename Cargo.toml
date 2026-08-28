@@ -13,6 +13,7 @@ readme = "README.md"
 keywords = ["contextforge", "mcp", "integration-testing", "conformance"]
 categories = ["command-line-utilities", "development-tools::testing"]
 default-run = "cf-integration"
+autobins = false
 include = [
     "/src/**",
     "/docker/**",
@@ -21,6 +22,10 @@ include = [
     "/README.md",
     "/LICENSE",
 ]
+
+[[bin]]
+name = "cf-integration"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"

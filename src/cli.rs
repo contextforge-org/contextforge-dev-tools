@@ -201,7 +201,7 @@ pub enum CliTopology {
     Dataplane,
 }
 
-impl From<CliTopology> for crate::platform::StackMode {
+impl From<CliTopology> for crate::infrastructure::StackMode {
     fn from(topology: CliTopology) -> Self {
         match topology {
             CliTopology::Controlplane => Self::Controlplane,
@@ -374,7 +374,7 @@ pub struct ConformanceRunArgs {
     pub output_dir: Option<PathBuf>,
 }
 
-impl From<CliLane> for crate::compliance::conformance::ConformanceTarget {
+impl From<CliLane> for crate::conformance::results::ConformanceTarget {
     fn from(lane: CliLane) -> Self {
         match lane {
             CliLane::FixtureDirect => Self::FixtureDirect,
@@ -395,7 +395,7 @@ pub enum CliConformanceServerEra {
     Modern,
 }
 
-impl From<CliConformanceServerEra> for crate::compliance::conformance::ConformanceServerEra {
+impl From<CliConformanceServerEra> for crate::conformance::results::ConformanceServerEra {
     fn from(era: CliConformanceServerEra) -> Self {
         match era {
             CliConformanceServerEra::Dual => Self::Dual,

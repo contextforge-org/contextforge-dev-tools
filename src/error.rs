@@ -3,13 +3,13 @@
 use std::error::Error;
 use std::fmt;
 
-use crate::platform::PlatformError;
+use crate::infrastructure::InfrastructureError;
 
-/// An application operation or platform operation failure.
+/// An application operation or infrastructure operation failure.
 #[derive(Debug)]
 pub enum AppFailure {
-    /// A reusable platform operation failed.
-    Platform(PlatformError),
+    /// A reusable infrastructure operation failed.
+    Infrastructure(InfrastructureError),
     /// An application orchestration operation failed.
     Native(anyhow::Error),
 }
@@ -19,7 +19,7 @@ impl AppFailure {
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::Platform(error) => error.exit_code(),
+            Self::Infrastructure(error) => error.exit_code(),
             Self::Native(_) => 1,
         }
     }
@@ -31,16 +31,16 @@ impl From<anyhow::Error> for AppFailure {
     }
 }
 
-impl From<PlatformError> for AppFailure {
-    fn from(error: PlatformError) -> Self {
-        Self::Platform(error)
+impl From<InfrastructureError> for AppFailure {
+    fn from(error: InfrastructureError) -> Self {
+        Self::Infrastructure(error)
     }
 }
 
 impl fmt::Display for AppFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Platform(error) => write!(formatter, "{error}"),
+            Self::Infrastructure(error) => write!(formatter, "{error}"),
             Self::Native(error) => write!(formatter, "{error:#}"),
         }
     }
@@ -49,7 +49,7 @@ impl fmt::Display for AppFailure {
 impl Error for AppFailure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Platform(error) => Some(error),
+            Self::Infrastructure(error) => Some(error),
             Self::Native(error) => Some(error.as_ref()),
         }
     }

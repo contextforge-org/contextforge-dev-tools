@@ -9,20 +9,20 @@ use clap::Parser;
 
 mod app;
 mod cli;
-mod compliance;
+mod conformance;
 mod error;
-mod load;
+mod infrastructure;
 mod mcp;
 mod output;
-mod platform;
+mod performance;
 mod runtime;
 
 use app::resolve_action;
 use cli::Cli;
 use error::AppFailure;
+use infrastructure::config::{AppConfig, ConfigBootstrap, ConfigRequirements, Environment};
+use infrastructure::process::SystemProcessRunner;
 pub(crate) use output::OutputStyle;
-use platform::config::{AppConfig, ConfigBootstrap, ConfigRequirements, Environment};
-use platform::process::SystemProcessRunner;
 use runtime::RuntimeDispatcher;
 
 /// Runs the CLI using the current process arguments and environment.
@@ -100,17 +100,26 @@ mod app_tests;
 #[path = "cli_public_tests.rs"]
 mod cli_public_tests;
 #[cfg(test)]
-#[path = "compliance/conformance_fixture_integration_tests.rs"]
-mod compliance_conformance_fixture_tests;
+#[path = "conformance/fixture_tests.rs"]
+mod conformance_fixture_tests;
 #[cfg(test)]
-#[path = "compliance/conformance_integration_tests.rs"]
-mod compliance_conformance_tests;
+#[path = "conformance/results_tests.rs"]
+mod conformance_tests;
 #[cfg(test)]
-#[path = "load/locust_integration_tests.rs"]
-mod load_locust_tests;
+#[path = "infrastructure/checkout_integration_tests.rs"]
+mod infrastructure_checkout_tests;
 #[cfg(test)]
-#[path = "load/python_adapter_tests.rs"]
-mod load_python_adapter_tests;
+#[path = "infrastructure/compose_integration_tests.rs"]
+mod infrastructure_compose_tests;
+#[cfg(test)]
+#[path = "infrastructure/config_integration_tests.rs"]
+mod infrastructure_config_tests;
+#[cfg(test)]
+#[path = "infrastructure/process_integration_tests.rs"]
+mod infrastructure_process_tests;
+#[cfg(test)]
+#[path = "infrastructure/stack_integration_tests.rs"]
+mod infrastructure_stack_tests;
 #[cfg(test)]
 #[path = "mcp/auth_proxy_integration_tests.rs"]
 mod mcp_auth_proxy_tests;
@@ -124,17 +133,8 @@ mod mcp_gateway_tests;
 #[path = "mcp/protocol_integration_tests.rs"]
 mod mcp_protocol_tests;
 #[cfg(test)]
-#[path = "platform/checkout_integration_tests.rs"]
-mod platform_checkout_tests;
+#[path = "performance/locust_integration_tests.rs"]
+mod performance_locust_tests;
 #[cfg(test)]
-#[path = "platform/compose_integration_tests.rs"]
-mod platform_compose_tests;
-#[cfg(test)]
-#[path = "platform/config_integration_tests.rs"]
-mod platform_config_tests;
-#[cfg(test)]
-#[path = "platform/process_integration_tests.rs"]
-mod platform_process_tests;
-#[cfg(test)]
-#[path = "platform/stack_integration_tests.rs"]
-mod platform_stack_tests;
+#[path = "performance/python_adapter_tests.rs"]
+mod performance_python_adapter_tests;
