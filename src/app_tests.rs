@@ -21,6 +21,37 @@ fn action(arguments: &[&str], environment: &[(&str, &str)]) -> Action {
 }
 
 #[test]
+fn every_subcommand_has_a_stable_progress_description() {
+    let cases: &[(&[&str], &str)] = &[
+        (&["cf-integration", "stack", "up"], "stack up"),
+        (&["cf-integration", "stack", "down"], "stack down"),
+        (&["cf-integration", "stack", "status"], "stack status"),
+        (&["cf-integration", "stack", "logs"], "stack logs"),
+        (&["cf-integration", "stack", "config"], "stack config"),
+        (&["cf-integration", "probe"], "probe"),
+        (&["cf-integration", "load"], "load test"),
+        (&["cf-integration", "live"], "live tests"),
+        (
+            &["cf-integration", "conformance", "run"],
+            "conformance tests",
+        ),
+        (
+            &["cf-integration", "conformance", "report"],
+            "conformance report",
+        ),
+        (&["cf-integration", "debug", "inspect"], "debug inspect"),
+        (
+            &["cf-integration", "debug", "token", "--kind", "admin"],
+            "debug token",
+        ),
+    ];
+
+    for (arguments, expected) in cases {
+        assert_eq!(action(arguments, &[]).description(), *expected);
+    }
+}
+
+#[test]
 fn topology_precedence_is_cli_then_environment_then_dataplane() {
     assert_eq!(
         action(&["cf-integration", "probe"], &[]),

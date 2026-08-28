@@ -5,65 +5,11 @@ mod reports;
 use super::*;
 use reports::*;
 use std::fmt::Write as _;
-use std::io::{IsTerminal, Write as IoWrite};
 use std::time::Instant;
 
 use crate::conformance::results::{DEFAULT_CONFORMANCE_SUITE, ScenarioOutcome};
 
 const CONFORMANCE_SERVER_ERA_ENV: &str = "CF_CONFORMANCE_SERVER_ERA";
-
-struct ConformanceProgress {
-    task: Option<tokio::task::JoinHandle<()>>,
-    terminal: bool,
-}
-
-impl ConformanceProgress {
-    fn start(description: impl Into<String>) -> Self {
-        let description = description.into();
-        let terminal = std::io::stderr().is_terminal();
-        if !terminal {
-            return Self {
-                task: None,
-                terminal,
-            };
-        }
-
-        let task = tokio::spawn(async move {
-            const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-            let mut frame = 0;
-            loop {
-                {
-                    let mut stderr = std::io::stderr().lock();
-                    let _ = write!(
-                        stderr,
-                        "\r\x1b[2KConformance {} {description}",
-                        FRAMES[frame % FRAMES.len()]
-                    );
-                    let _ = stderr.flush();
-                }
-                frame += 1;
-                tokio::time::sleep(Duration::from_millis(150)).await;
-            }
-        });
-        Self {
-            task: Some(task),
-            terminal,
-        }
-    }
-}
-
-impl Drop for ConformanceProgress {
-    fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
-        if self.terminal {
-            let mut stderr = std::io::stderr().lock();
-            let _ = write!(stderr, "\r\x1b[2K");
-            let _ = stderr.flush();
-        }
-    }
-}
 
 impl<R: ProcessRunner> RuntimeContext<R> {
     fn require_loopback_fixture_base_url(&self) -> AppResult<()> {
@@ -173,6 +119,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     }
                     let quiet_runner = LoggingProcessRunner::new(&self.runner, &setup_log);
                     let executor = RuntimeContext::new(self.config.clone(), quiet_runner);
+                    let matrix_started = Instant::now();
                     if let Err(error) = executor
                         .run_conformance(&lanes, &client_version, server_era, &paths)
                         .await
@@ -188,7 +135,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     let evaluated = executor
                         .load_selected_conformance_results(&paths, &lanes)
                         .and_then(|results| {
-                            evaluate_baselines(
+                            let evaluation = evaluate_baselines(
                                 &results,
                                 &lanes,
                                 &baseline_root,
@@ -196,7 +143,18 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                 server_era,
                                 bless,
                             )
-                            .map_err(AppFailure::from)
+                            .map_err(AppFailure::from)?;
+                            println!(
+                                "{}",
+                                render_conformance_baseline_results(
+                                    &results,
+                                    &evaluation.comparisons,
+                                    matrix_started.elapsed(),
+                                    OutputStyle::stdout(),
+                                    bless,
+                                )
+                            );
+                            Ok(evaluation)
                         });
                     match evaluated {
                         Ok(evaluation) => {
@@ -302,19 +260,18 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         tokio::pin!(interrupt);
         let (cancellation_sender, cancellation_receiver) = tokio::sync::watch::channel(false);
 
-        let cleanup_progress = ConformanceProgress::start("clearing prior integration stacks");
-        self.cleanup(TopologySelection::All, CleanupKind::Reset)?;
-        drop(cleanup_progress);
+        let cleanup_progress = Activity::start("clear prior integration stacks");
+        let cleanup_result = self.cleanup(TopologySelection::All, CleanupKind::Reset);
+        cleanup_progress.finish(cleanup_result.is_ok());
+        cleanup_result?;
 
         for topology in topologies {
             let target = conformance_target(topology);
             let run_routed = lanes.contains(&target);
-            let stack_progress = ConformanceProgress::start(format!(
-                "preparing {}",
-                conformance_topology_label(topology)
-            ));
+            let stack_progress =
+                Activity::start(format!("prepare {}", conformance_topology_label(topology)));
             let mut topology_failure = self.stack_up_for_conformance(topology, true).await.err();
-            drop(stack_progress);
+            stack_progress.finish(topology_failure.is_none());
             let mut fixture_state = None;
             let mut fixture_metadata = None;
             let mut fixture_endpoint = None;
@@ -322,8 +279,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             let mut managed_token = None;
 
             if topology_failure.is_none() {
-                let fixture_progress = ConformanceProgress::start(format!(
-                    "starting the official fixture for {}",
+                let fixture_progress = Activity::start(format!(
+                    "start the official fixture for {}",
                     conformance_topology_label(topology)
                 ));
                 let (start_result, start_interrupted) = finish_phase_after_interrupt(
@@ -331,7 +288,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     interrupt.as_mut(),
                 )
                 .await;
-                drop(fixture_progress);
+                fixture_progress.finish(start_result.is_ok() && !start_interrupted);
                 interrupted |= start_interrupted;
                 match start_result {
                     Ok(()) => {
@@ -413,8 +370,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                         .map_err(AppFailure::from)
                 }) {
                     Ok(client) => {
-                        let provision_progress = ConformanceProgress::start(format!(
-                            "registering the official fixture for {}",
+                        let provision_progress = Activity::start(format!(
+                            "register the official fixture for {}",
                             conformance_topology_label(topology)
                         ));
                         let (provision_result, provision_interrupted) =
@@ -423,7 +380,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                 interrupt.as_mut(),
                             )
                             .await;
-                        drop(provision_progress);
+                        provision_progress
+                            .finish(provision_result.is_ok() && !provision_interrupted);
                         interrupted |= provision_interrupted;
                         match provision_result {
                             Ok(fixture) => {
@@ -431,13 +389,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                     topology_failure = Some(interrupted_conformance_failure());
                                 } else if topology == StackMode::Dataplane
                                     && let Err(error) = {
-                                        let publisher_progress = ConformanceProgress::start(
-                                            "waiting for the external data-plane configuration",
+                                        let publisher_progress = Activity::start(
+                                            "wait for the external data-plane configuration",
                                         );
                                         let result = self
                                             .wait_for_publisher_snapshot_quiet(&fixture.server_id)
                                             .await;
-                                        drop(publisher_progress);
+                                        publisher_progress.finish(result.is_ok());
                                         result
                                     }
                                 {
@@ -716,9 +674,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 style,
             )
         );
-        let started = Instant::now();
-        let runner_progress = ConformanceProgress::start(format!(
-            "running {} scenarios for {}",
+        let runner_progress = Activity::start(format!(
+            "run {} scenarios for {}",
             expected_scenarios.len(),
             run.target
         ));
@@ -731,7 +688,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             )
             .await
             .map_err(AppFailure::from);
-        drop(runner_progress);
+        runner_progress.finish(process_result.is_ok());
 
         let results = load_server_results(&lane_paths.official_results).map_err(AppFailure::from);
         if !conformance_process_completed(&process_result) {
@@ -746,10 +703,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             run.spec_version,
             &lane_paths.completion,
         )?;
-        println!(
-            "{}",
-            render_conformance_lane_results(run.target, &results, started.elapsed(), style)
-        );
         println!(
             "{} {}",
             style.info("   Artifacts"),
@@ -805,48 +758,50 @@ fn render_conformance_lane_header(
     )
 }
 
-fn render_conformance_lane_results(
-    target: ConformanceTarget,
-    results: &ConformanceResults,
+fn render_conformance_baseline_results(
+    results: &BTreeMap<ConformanceTarget, ConformanceResults>,
+    comparisons: &[BaselineComparison],
     elapsed: Duration,
     style: OutputStyle,
+    blessing: bool,
 ) -> String {
-    let total = results.scenarios.len();
     let mut passed = 0;
+    let mut expected_failures = 0;
+    let mut unexpected_passes = 0;
     let mut failed = 0;
     let mut skipped = 0;
     let mut ambiguous = 0;
     let mut output = String::new();
 
-    for (index, result) in results.scenarios.values().enumerate() {
-        let status = match result.outcome_with_trusted_fixture(true) {
-            ScenarioOutcome::Compliant => {
-                passed += 1;
-                style.success(&format!("{:>12}", "PASS"))
-            }
-            ScenarioOutcome::NonCompliant | ScenarioOutcome::FixtureFailure => {
-                failed += 1;
-                style.failure(&format!("{:>12}", "FAIL"))
-            }
-            ScenarioOutcome::NotApplicable => {
-                skipped += 1;
-                style.warning(&format!("{:>12}", "SKIP"))
-            }
-            ScenarioOutcome::Ambiguous | ScenarioOutcome::Missing => {
-                ambiguous += 1;
-                style.unknown(&format!("{:>12}", "UNKNOWN"))
-            }
+    for comparison in comparisons {
+        let Some(lane_results) = results.get(&comparison.lane) else {
+            continue;
         };
-        let _ = writeln!(
-            output,
-            "{status} ({}/{total}) {}",
-            index + 1,
-            result.scenario
-        );
+        let total = lane_results.scenarios.len();
+        let divider = style.info("────────────");
+        let heading = style.heading(&format!(" MCP conformance results: {}", comparison.lane));
+        let _ = writeln!(output, "{divider}\n{heading}");
+        for (index, result) in lane_results.scenarios.values().enumerate() {
+            let status = conformance_test_status(result, comparison, blessing);
+            match status {
+                TestStatus::Pass => passed += 1,
+                TestStatus::ExpectedFailure => expected_failures += 1,
+                TestStatus::UnexpectedPass => unexpected_passes += 1,
+                TestStatus::Fail => failed += 1,
+                TestStatus::Skip => skipped += 1,
+                TestStatus::Unknown | TestStatus::Retry => ambiguous += 1,
+            }
+            let name = format!("{}::{}", comparison.lane.slug(), result.scenario);
+            let _ = writeln!(
+                output,
+                "{}",
+                style.test_result(status, &name, None, Some((index + 1, total)))
+            );
+        }
     }
 
     let divider = style.info("────────────");
-    let summary = if failed > 0 {
+    let summary = if failed > 0 || unexpected_passes > 0 {
         style.failure_heading("Summary")
     } else if ambiguous > 0 {
         style.unknown_heading("Summary")
@@ -855,10 +810,49 @@ fn render_conformance_lane_results(
     };
     let _ = write!(
         output,
-        "{divider}\n     {summary} [{:>8.3}s] {total} scenarios run for {target}: {passed} passed, {failed} failed, {skipped} skipped, {ambiguous} unknown",
+        "{divider}\n     {summary} [{:>8.3}s] {passed} passed, {expected_failures} xfailed, {unexpected_passes} xpassed, {failed} failed, {skipped} skipped, {ambiguous} unknown",
         elapsed.as_secs_f64()
     );
     output
+}
+
+fn conformance_test_status(
+    result: &crate::conformance::results::ConformanceScenarioResult,
+    comparison: &BaselineComparison,
+    blessing: bool,
+) -> TestStatus {
+    let scenario = result.scenario.as_str();
+    if !blessing
+        && comparison
+            .unexpected
+            .iter()
+            .any(|finding| finding.scenario == scenario)
+    {
+        return TestStatus::Fail;
+    }
+    if !blessing
+        && comparison
+            .stale
+            .iter()
+            .any(|finding| finding.scenario == scenario)
+    {
+        return TestStatus::UnexpectedPass;
+    }
+    if comparison
+        .actual
+        .iter()
+        .any(|finding| finding.scenario == scenario)
+    {
+        return TestStatus::ExpectedFailure;
+    }
+    match result.outcome_with_trusted_fixture(true) {
+        ScenarioOutcome::Compliant => TestStatus::Pass,
+        ScenarioOutcome::NonCompliant | ScenarioOutcome::FixtureFailure => {
+            TestStatus::ExpectedFailure
+        }
+        ScenarioOutcome::NotApplicable => TestStatus::Skip,
+        ScenarioOutcome::Ambiguous | ScenarioOutcome::Missing => TestStatus::Unknown,
+    }
 }
 
 fn conformance_topologies(lanes: &[ConformanceTarget]) -> Vec<StackMode> {
@@ -999,6 +993,20 @@ mod tests {
         }
     }
 
+    fn scored_finding(scenario: &str) -> crate::conformance::baseline::ScoredFinding {
+        crate::conformance::baseline::ScoredFinding {
+            scenario: scenario.to_owned(),
+            check: "check".to_owned(),
+            status: crate::conformance::baseline::ScoredStatus::Failure,
+        }
+    }
+
+    fn result_map(results: ConformanceResults) -> BTreeMap<ConformanceTarget, ConformanceResults> {
+        [(ConformanceTarget::ExternalDataPlane, results)]
+            .into_iter()
+            .collect()
+    }
+
     #[test]
     fn lane_selection_uses_only_required_stack_topologies() {
         assert_eq!(
@@ -1101,50 +1109,88 @@ mod tests {
     }
 
     #[test]
-    fn conformance_lane_results_use_one_nextest_style_line_per_scenario() {
-        let results = mixed_conformance_results();
+    fn conformance_baseline_results_render_pass_and_expected_failure_per_scenario() {
+        let results = result_map(mixed_conformance_results());
+        let failing = scored_finding("failing");
+        let comparison = BaselineComparison {
+            lane: ConformanceTarget::ExternalDataPlane,
+            actual: vec![failing.clone()],
+            expected: vec![failing],
+            unexpected: Vec::new(),
+            stale: Vec::new(),
+        };
 
-        let rendered = render_conformance_lane_results(
-            ConformanceTarget::ExternalDataPlane,
+        let rendered = render_conformance_baseline_results(
             &results,
+            &[comparison],
             Duration::from_millis(1_250),
             OutputStyle::plain(),
+            false,
         );
 
         assert_eq!(
             rendered,
-            "        FAIL (1/2) failing\n        PASS (2/2) passing\n────────────\n     Summary [   1.250s] 2 scenarios run for external data-plane route: 1 passed, 1 failed, 0 skipped, 0 unknown"
+            "────────────\n MCP conformance results: external data-plane route\n       XFAIL (1/2) external-data-plane::failing\n        PASS (2/2) external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 1 xfailed, 0 xpassed, 0 failed, 0 skipped, 0 unknown"
         );
-        assert_eq!(
-            rendered.lines().filter(|line| line.contains(" (")).count(),
-            2
-        );
-        assert!(!rendered.contains("Checks:"));
-        assert!(!rendered.contains("Running scenario"));
     }
 
     #[test]
-    fn colored_conformance_output_styles_lane_statuses_and_failed_summary() {
+    fn colored_conformance_output_distinguishes_expected_and_unexpected_results() {
         let header = render_conformance_lane_header(
             ConformanceTarget::ExternalDataPlane,
-            2,
+            4,
             "2026-07-28",
             ConformanceServerEra::Modern,
             OutputStyle::colored(),
         );
-        let results = render_conformance_lane_results(
-            ConformanceTarget::ExternalDataPlane,
-            &mixed_conformance_results(),
+        let results = result_map(ConformanceResults {
+            scenarios: [
+                (
+                    "expected".to_owned(),
+                    conformance_result("expected", CheckStatus::Failure),
+                ),
+                (
+                    "passing".to_owned(),
+                    conformance_result("passing", CheckStatus::Success),
+                ),
+                (
+                    "stale".to_owned(),
+                    conformance_result("stale", CheckStatus::Success),
+                ),
+                (
+                    "unexpected".to_owned(),
+                    conformance_result("unexpected", CheckStatus::Failure),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        });
+        let expected = scored_finding("expected");
+        let unexpected = scored_finding("unexpected");
+        let stale = scored_finding("stale");
+        let comparison = BaselineComparison {
+            lane: ConformanceTarget::ExternalDataPlane,
+            actual: vec![expected.clone(), unexpected.clone()],
+            expected: vec![expected, stale.clone()],
+            unexpected: vec![unexpected],
+            stale: vec![stale],
+        };
+        let rendered = render_conformance_baseline_results(
+            &results,
+            &[comparison],
             Duration::from_millis(1_250),
             OutputStyle::colored(),
+            false,
         );
 
         assert!(header.contains("\x1b[36m────────────\x1b[0m"));
         assert!(
             header.contains("\x1b[1;36m MCP conformance lane: external data-plane route\x1b[0m")
         );
-        assert!(results.contains("\x1b[31m        FAIL\x1b[0m (1/2) failing"));
-        assert!(results.contains("\x1b[32m        PASS\x1b[0m (2/2) passing"));
-        assert!(results.contains("     \x1b[1;31mSummary\x1b[0m [   1.250s]"));
+        assert!(rendered.contains("\x1b[33m       XFAIL\x1b[0m"));
+        assert!(rendered.contains("\x1b[32m        PASS\x1b[0m"));
+        assert!(rendered.contains("\x1b[31m       XPASS\x1b[0m"));
+        assert!(rendered.contains("\x1b[31m        FAIL\x1b[0m"));
+        assert!(rendered.contains("     \x1b[1;31mSummary\x1b[0m [   1.250s]"));
     }
 }

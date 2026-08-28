@@ -9,6 +9,7 @@ use serde_json::{Map, Value, json};
 use url::Url;
 
 use crate::mcp::GatewayTopology;
+use crate::{OutputStyle, TestStatus};
 
 use crate::mcp::backend_identity::BackendIdentity;
 use crate::mcp::gateway::{GatewayClient, GatewayRequest, HeaderOverride};
@@ -46,6 +47,8 @@ pub struct ProbeConfig {
     pub request_timeout: Duration,
     /// MCP protocol revision requested during initialization.
     pub protocol_version: String,
+    /// Terminal-aware styling for human-readable probe results.
+    pub output_style: OutputStyle,
 }
 
 impl fmt::Debug for ProbeConfig {
@@ -239,9 +242,12 @@ pub(crate) async fn run_probe<T: ProbeTransport, W: Write>(
             unauthenticated.status
         );
     }
-    write_line(
+    write_probe_result(
         output,
-        &format!("auth_negative=PASS status={}", unauthenticated.status),
+        config,
+        TestStatus::Pass,
+        "auth_negative",
+        &format!("status={}", unauthenticated.status),
         "failed to write negative authentication result",
     )?;
 
@@ -274,12 +280,12 @@ pub(crate) async fn run_probe<T: ProbeTransport, W: Write>(
         {
             break response;
         }
-        write_line(
+        write_probe_result(
             output,
-            &format!(
-                "initialize=RETRY status={} (waiting for dataplane config)",
-                response.status
-            ),
+            config,
+            TestStatus::Retry,
+            "initialize",
+            &format!("status={} waiting for dataplane config", response.status),
             "failed to write initialize retry result",
         )?;
 
@@ -304,12 +310,12 @@ pub(crate) async fn run_probe<T: ProbeTransport, W: Write>(
         .session_id
         .filter(|session_id| !session_id.trim().is_empty())
         .ok_or_else(|| anyhow::anyhow!("initialize=FAIL no Mcp-Session-Id header in response"))?;
-    write_line(
+    write_probe_result(
         output,
-        &format!(
-            "initialize=PASS status={} session=present",
-            authenticated.status
-        ),
+        config,
+        TestStatus::Pass,
+        "initialize",
+        &format!("status={} session=present", authenticated.status),
         "failed to write initialize result",
     )?;
 
@@ -331,9 +337,12 @@ pub(crate) async fn run_probe<T: ProbeTransport, W: Write>(
     )
     .await?;
     accepted_empty("initialized", &initialized_response)?;
-    write_line(
+    write_probe_result(
         output,
-        "initialized=PASS status=202",
+        config,
+        TestStatus::Pass,
+        "initialized",
+        "status=202",
         "failed to write initialized notification result",
     )?;
 
@@ -373,9 +382,12 @@ pub(crate) async fn run_probe<T: ProbeTransport, W: Write>(
         };
         tool_names.push(name);
     }
-    write_line(
+    write_probe_result(
         output,
-        &format!("tools_list=PASS count={}", tool_names.len()),
+        config,
+        TestStatus::Pass,
+        "tools_list",
+        &format!("count={}", tool_names.len()),
         "failed to write tools list result",
     )?;
     for name in &tool_names {
@@ -390,9 +402,12 @@ pub(crate) async fn run_probe<T: ProbeTransport, W: Write>(
         .iter()
         .find_map(|name| tool_call_args(name).map(|arguments| (*name, arguments)));
     let Some((tool_name, arguments)) = callable else {
-        write_line(
+        write_probe_result(
             output,
-            "tool_call=SKIP no echo/get_system_time tool available",
+            config,
+            TestStatus::Skip,
+            "tool_call",
+            "no echo/get_system_time tool available",
             "failed to write tool call skip result",
         )?;
         return Ok(());
@@ -428,9 +443,12 @@ pub(crate) async fn run_probe<T: ProbeTransport, W: Write>(
     if is_error {
         bail!("tool_call=FAIL tool returned error");
     }
-    write_line(
+    write_probe_result(
         output,
-        &format!("tool_call=PASS tool={}", sanitize_for_output(tool_name)),
+        config,
+        TestStatus::Pass,
+        "tool_call",
+        &format!("tool={}", sanitize_for_output(tool_name)),
         "failed to write tool call result",
     )?;
 
@@ -469,9 +487,12 @@ async fn run_stateless_probe<T: ProbeTransport, W: Write>(
             unauthenticated.status
         );
     }
-    write_line(
+    write_probe_result(
         output,
-        "auth_negative=PASS status=401",
+        config,
+        TestStatus::Pass,
+        "auth_negative",
+        "status=401",
         "failed to write negative authentication result",
     )?;
 
@@ -504,12 +525,12 @@ async fn run_stateless_probe<T: ProbeTransport, W: Write>(
         {
             break response;
         }
-        write_line(
+        write_probe_result(
             output,
-            &format!(
-                "server_discover=RETRY status={} (waiting for dataplane config)",
-                response.status
-            ),
+            config,
+            TestStatus::Retry,
+            "server_discover",
+            &format!("status={} waiting for dataplane config", response.status),
             "failed to write server discovery retry result",
         )?;
         let remaining = config.config_timeout.saturating_sub(started.elapsed());
@@ -550,9 +571,12 @@ async fn run_stateless_probe<T: ProbeTransport, W: Write>(
     {
         bail!("server_discover=FAIL response is missing required discovery fields");
     }
-    write_line(
+    write_probe_result(
         output,
-        "server_discover=PASS status=200 lifecycle=stateless",
+        config,
+        TestStatus::Pass,
+        "server_discover",
+        "status=200 lifecycle=stateless",
         "failed to write server discovery result",
     )?;
 
@@ -595,9 +619,12 @@ async fn run_stateless_probe<T: ProbeTransport, W: Write>(
         };
         tool_names.push(name);
     }
-    write_line(
+    write_probe_result(
         output,
-        &format!("tools_list=PASS count={}", tool_names.len()),
+        config,
+        TestStatus::Pass,
+        "tools_list",
+        &format!("count={}", tool_names.len()),
         "failed to write tools list result",
     )?;
     for name in &tool_names {
@@ -612,9 +639,12 @@ async fn run_stateless_probe<T: ProbeTransport, W: Write>(
         .iter()
         .find_map(|name| tool_call_args(name).map(|arguments| (*name, arguments)));
     let Some((tool_name, arguments)) = callable else {
-        write_line(
+        write_probe_result(
             output,
-            "tool_call=SKIP no echo/get_system_time tool available",
+            config,
+            TestStatus::Skip,
+            "tool_call",
+            "no echo/get_system_time tool available",
             "failed to write tool call skip result",
         )?;
         return Ok(());
@@ -648,9 +678,12 @@ async fn run_stateless_probe<T: ProbeTransport, W: Write>(
     {
         bail!("tool_call=FAIL tool returned error or a malformed isError value");
     }
-    write_line(
+    write_probe_result(
         output,
-        &format!("tool_call=PASS tool={}", sanitize_for_output(tool_name)),
+        config,
+        TestStatus::Pass,
+        "tool_call",
+        &format!("tool={}", sanitize_for_output(tool_name)),
         "failed to write tool call result",
     )?;
     Ok(())
@@ -747,6 +780,26 @@ fn sanitize_for_output(value: &str) -> String {
         }
     }
     sanitized
+}
+
+fn write_probe_result<W: Write>(
+    output: &mut W,
+    config: &ProbeConfig,
+    status: TestStatus,
+    step: &str,
+    detail: &str,
+    error: &'static str,
+) -> Result<()> {
+    let name = if detail.is_empty() {
+        step.to_owned()
+    } else {
+        format!("{step} {detail}")
+    };
+    write_line(
+        output,
+        &config.output_style.test_result(status, &name, None, None),
+        error,
+    )
 }
 
 fn write_line<W: Write>(output: &mut W, line: &str, error: &'static str) -> Result<()> {

@@ -38,6 +38,25 @@ pub enum Action {
 }
 
 impl Action {
+    /// Stable command path used by lifecycle output.
+    #[must_use]
+    pub const fn description(&self) -> &'static str {
+        match self {
+            Self::Stack(StackAction::Up { .. }) => "stack up",
+            Self::Stack(StackAction::Down { .. }) => "stack down",
+            Self::Stack(StackAction::Status(_)) => "stack status",
+            Self::Stack(StackAction::Logs { .. }) => "stack logs",
+            Self::Stack(StackAction::Config(_)) => "stack config",
+            Self::Probe { .. } => "probe",
+            Self::Load(_) => "load test",
+            Self::Live { .. } => "live tests",
+            Self::Conformance(ConformanceAction::Run { .. }) => "conformance tests",
+            Self::Conformance(ConformanceAction::Report { .. }) => "conformance report",
+            Self::Debug(DebugAction::Inspect { .. }) => "debug inspect",
+            Self::Debug(DebugAction::Token { .. }) => "debug token",
+        }
+    }
+
     /// Returns whether this operation needs Compose overlays or runtime scripts.
     #[must_use]
     pub const fn requires_runtime_assets(&self) -> bool {

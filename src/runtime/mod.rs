@@ -9,8 +9,8 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use crate::conformance::baseline::{
-    BaselineUpdate, bless_baselines_transactionally, evaluate_baselines, validate_scored_results,
-    write_baseline_report,
+    BaselineComparison, BaselineUpdate, bless_baselines_transactionally, evaluate_baselines,
+    validate_scored_results, write_baseline_report,
 };
 use crate::conformance::fixture::{
     ConformanceFixtureClient, OFFICIAL_CONFORMANCE_BACKEND_URL, OFFICIAL_CONFORMANCE_PROXY_SERVICE,
@@ -41,13 +41,13 @@ use crate::mcp::protocol::ACCEPT as MCP_ACCEPT;
 use crate::performance::{LoadSettings, LocustCommand, audit_locust_reports};
 use anyhow::{Context, anyhow};
 
-use crate::OutputStyle;
 use crate::app::{
     Action, ConformanceAction, DebugAction, ResolvedLoadArgs, StackAction, selected_topologies,
     topology_selection,
 };
 use crate::cli::{LiveGroup, ProtocolVersion, TokenKind as CliTokenKind, TopologySelection};
 use crate::error::AppFailure;
+use crate::{Activity, OutputStyle, TestStatus};
 
 type AppResult<T> = std::result::Result<T, AppFailure>;
 

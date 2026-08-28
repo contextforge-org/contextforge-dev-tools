@@ -8,6 +8,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
+use crate::OutputStyle;
 use crate::mcp::GatewayTopology;
 use crate::mcp::backend_identity::BackendIdentity;
 
@@ -82,6 +83,7 @@ fn config() -> ProbeConfig {
         retry_interval: Duration::ZERO,
         request_timeout: Duration::from_secs(1),
         protocol_version: "2025-11-25".to_owned(),
+        output_style: OutputStyle::plain(),
     }
 }
 
@@ -95,6 +97,7 @@ async fn controlplane_mode_uses_the_public_raw_mcp_route() {
     ]);
     let mut configured = config();
     configured.mode = GatewayTopology::Direct;
+    configured.output_style = OutputStyle::colored();
     let mut output = Vec::new();
 
     run_probe(&transport, &configured, &mut output)
@@ -107,6 +110,9 @@ async fn controlplane_mode_uses_the_public_raw_mcp_route() {
             .iter()
             .all(|request| request.url == "http://127.0.0.1:8080/mcp")
     );
+    let output = String::from_utf8(output).expect("probe output should be UTF-8");
+    assert!(output.contains("\x1b[32m        PASS\x1b[0m auth_negative"));
+    assert!(output.contains("\x1b[33m        SKIP\x1b[0m tool_call"));
 }
 
 #[tokio::test]
@@ -258,13 +264,13 @@ async fn happy_path_uses_public_route_auth_session_and_deterministic_ids() {
 
     let output = String::from_utf8(output).expect("probe output should be UTF-8");
     assert!(output.contains("probe url: http://127.0.0.1:8080/servers/server-123/mcp"));
-    assert!(output.contains("auth_negative=PASS status=401"));
-    assert!(output.contains("initialize=PASS status=200 session=present"));
-    assert!(output.contains("initialized=PASS status=202"));
+    assert!(output.contains("PASS auth_negative status=401"));
+    assert!(output.contains("PASS initialize status=200 session=present"));
+    assert!(output.contains("PASS initialized status=202"));
     assert!(!output.contains("session-abc"));
-    assert!(output.contains("tools_list=PASS count=1"));
+    assert!(output.contains("PASS tools_list count=1"));
     assert!(output.contains("tool=fast_time_echo"));
-    assert!(output.contains("tool_call=PASS tool=fast_time_echo"));
+    assert!(output.contains("PASS tool_call tool=fast_time_echo"));
 }
 
 #[tokio::test]
@@ -282,7 +288,7 @@ async fn forbidden_unauthenticated_response_is_accepted_as_auth_rejection() {
         .expect("403 should be accepted as an unauthenticated rejection");
 
     let output = String::from_utf8(output).expect("probe output should be UTF-8");
-    assert!(output.contains("auth_negative=PASS status=403"));
+    assert!(output.contains("PASS auth_negative status=403"));
 }
 
 #[tokio::test]
@@ -314,9 +320,9 @@ async fn stateless_happy_path_uses_discovery_request_metadata_and_no_session() {
             == "2026-07-28"));
     assert_eq!(requests[3].payload["params"]["name"], "fast_time_echo");
     let output = String::from_utf8(output).expect("probe output should be UTF-8");
-    assert!(output.contains("server_discover=PASS status=200 lifecycle=stateless"));
-    assert!(!output.contains("initialize=PASS"));
-    assert!(!output.contains("initialized=PASS"));
+    assert!(output.contains("PASS server_discover status=200 lifecycle=stateless"));
+    assert!(!output.contains("PASS initialize"));
+    assert!(!output.contains("PASS initialized"));
 }
 
 #[tokio::test]
@@ -369,7 +375,7 @@ async fn authenticated_initialize_retries_transient_statuses_until_success() {
 
     assert_eq!(transport.requests().len(), 6);
     let output = String::from_utf8(output).expect("probe output should be UTF-8");
-    assert_eq!(output.matches("initialize=RETRY").count(), 2);
+    assert_eq!(output.matches("RETRY initialize").count(), 2);
 }
 
 #[tokio::test]
@@ -778,7 +784,7 @@ async fn malicious_suffix_tool_is_not_called() {
 
     assert_eq!(transport.requests().len(), 4);
     let output = String::from_utf8(output).expect("probe output should be UTF-8");
-    assert!(output.contains("tool_call=SKIP no echo/get_system_time tool available"));
+    assert!(output.contains("SKIP tool_call no echo/get_system_time tool available"));
 }
 
 #[tokio::test]

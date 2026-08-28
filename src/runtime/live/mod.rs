@@ -95,14 +95,32 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         target: &str,
         protocol_version: &ProtocolVersion,
     ) -> AppResult<()> {
-        let command = CommandSpec::new("make")
-            .arg("-C")
-            .arg(self.config.controlplane_dir().as_os_str())
-            .arg(target);
-        let command = self.live_protocol_environment(command, protocol_version)?;
-        Ok(self
-            .runner
-            .run(&self.compose_environment(command, topology, false)?)?)
+        let started = std::time::Instant::now();
+        let result = (|| {
+            let command = CommandSpec::new("make")
+                .arg("-C")
+                .arg(self.config.controlplane_dir().as_os_str())
+                .arg(target);
+            let command = self.live_protocol_environment(command, protocol_version)?;
+            self.runner
+                .run(&self.compose_environment(command, topology, false)?)
+                .map_err(AppFailure::from)
+        })();
+        let status = if result.is_ok() {
+            TestStatus::Pass
+        } else {
+            TestStatus::Fail
+        };
+        println!(
+            "{}",
+            OutputStyle::stdout().test_result(
+                status,
+                &format!("live::{target}"),
+                Some(started.elapsed()),
+                None,
+            )
+        );
+        result
     }
 
     fn run_live_all(

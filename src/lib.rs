@@ -22,7 +22,7 @@ use cli::Cli;
 use error::AppFailure;
 use infrastructure::config::{AppConfig, ConfigBootstrap, ConfigRequirements, Environment};
 use infrastructure::process::SystemProcessRunner;
-pub(crate) use output::OutputStyle;
+pub(crate) use output::{Activity, OutputStyle, TestStatus};
 use runtime::RuntimeDispatcher;
 
 /// Runs the CLI using the current process arguments and environment.
@@ -68,12 +68,18 @@ pub async fn run() -> ExitCode {
     } else {
         ConfigRequirements::READ_ONLY
     };
+    let activity = Activity::start(action.description());
     let config = match AppConfig::load(bootstrap, requirements) {
         Ok(config) => config,
-        Err(error) => return report_failure(AppFailure::from(error)),
+        Err(error) => {
+            activity.finish(false);
+            return report_failure(AppFailure::from(error));
+        }
     };
     let runtime = RuntimeDispatcher::new(config, SystemProcessRunner);
-    match runtime.execute(action).await {
+    let result = runtime.execute(action).await;
+    activity.finish(result.is_ok());
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{}", OutputStyle::stderr().failure(&error.to_string()));

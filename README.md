@@ -90,6 +90,13 @@ cf-integration
 
 Use `--help` at any level for the authoritative interface.
 
+Every resolved command reports its lifecycle on standard error using the same
+description: `⠋` while active, `✓` in green on success, and `✗` in red on
+failure. Test results use aligned nextest-style labels: green `PASS`, yellow
+`XFAIL`, red `XPASS` and `FAIL`, and yellow `SKIP`. `NO_COLOR` and
+`CARGO_TERM_COLOR` control ANSI output. Command data such as tokens, Compose
+configuration, and report paths remains on standard output for scripting.
+
 Stack commands use physical `--topology controlplane|dataplane`:
 
 ```bash
