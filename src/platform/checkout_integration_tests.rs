@@ -406,6 +406,7 @@ impl GitFixture {
         git(Some(&seed), ["add", "state.txt"]);
         git(Some(&seed), ["commit", "-m", "origin commit"]);
         git(Some(&seed), ["push", "-u", "origin", "main"]);
+        git(Some(&origin), ["symbolic-ref", "HEAD", "refs/heads/main"]);
         Self {
             _temporary: temporary,
             root,

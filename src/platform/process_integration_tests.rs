@@ -3,9 +3,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cf_integration::platform::PlatformError;
+#[cfg(unix)]
+use cf_integration::platform::process::LoggingProcessRunner;
 use cf_integration::platform::process::{
-    CapturedOutput, CommandSpec, LoggingProcessRunner, ProcessRunner, SystemProcessRunner,
+    CapturedOutput, CommandSpec, ProcessRunner, SystemProcessRunner,
 };
+#[cfg(unix)]
 use tempfile::TempDir;
 
 #[cfg(unix)]
@@ -378,7 +381,7 @@ fn capture_output_returns_exact_stdout_and_stderr_bytes() {
     );
 
     let output = SystemProcessRunner
-        .capture_output(&CommandSpec::new(script))
+        .capture_output(&CommandSpec::new("/bin/sh").arg(script))
         .expect("both streams should be captured");
 
     assert_eq!(output.stdout(), b"stdout\n");
@@ -486,6 +489,7 @@ fn signaled_child_maps_to_shell_exit_code() {
 #[cfg(windows)]
 #[test]
 fn windows_inherited_mode_preserves_success_and_nonzero_exit_codes() {
+    assert_runner_interface(&SystemProcessRunner);
     SystemProcessRunner
         .run(&CommandSpec::new("cmd.exe").args(["/D", "/S", "/C", "exit /b 0"]))
         .expect("zero exit should succeed");
