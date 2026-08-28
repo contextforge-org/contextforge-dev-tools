@@ -17,8 +17,9 @@ pub(crate) use crate::conformance::profile::{
     DEFAULT_MCP_SPEC_VERSION, OFFICIAL_CONFORMANCE_PACKAGE,
 };
 use crate::conformance::profile::{
-    LEGACY_MCP_SPEC_VERSION, OFFICIAL_CONFORMANCE_REPOSITORY, OFFICIAL_CONFORMANCE_REVISION,
-    STABLE_MCP_SPEC_VERSION,
+    DUAL_SERVER_PROTOCOL_VERSIONS, LEGACY_MCP_SPEC_VERSION, LEGACY_SERVER_PROTOCOL_VERSIONS,
+    MODERN_SERVER_PROTOCOL_VERSIONS, OFFICIAL_CONFORMANCE_REPOSITORY,
+    OFFICIAL_CONFORMANCE_REVISION, STABLE_MCP_SPEC_VERSION,
 };
 
 /// Default official server scenario suite.
@@ -77,6 +78,22 @@ impl ConformanceServerEra {
         }
     }
 
+    /// Exact protocol revisions accepted by this fixture-server era.
+    #[must_use]
+    pub(crate) const fn protocol_versions(self) -> &'static [&'static str] {
+        match self {
+            Self::Dual => DUAL_SERVER_PROTOCOL_VERSIONS,
+            Self::Legacy => LEGACY_SERVER_PROTOCOL_VERSIONS,
+            Self::Modern => MODERN_SERVER_PROTOCOL_VERSIONS,
+        }
+    }
+
+    /// Human-readable accepted protocol list.
+    #[must_use]
+    pub(crate) fn protocol_versions_label(self) -> String {
+        self.protocol_versions().join(", ")
+    }
+
     /// Parses a stable artifact path component.
     #[must_use]
     pub(crate) fn from_label(value: &str) -> Option<Self> {
@@ -100,7 +117,7 @@ impl fmt::Display for ConformanceServerEra {
 pub(crate) enum SemanticLane {
     /// Official oracle connected directly to the pinned TypeScript fixture.
     FixtureDirect,
-    /// Official oracle routed through the Python built-in data plane.
+    /// Official oracle routed through the Python built-in dataplane.
     BuiltInDataPlane,
     /// Official oracle routed through the external Rust data plane.
     ExternalDataPlane,
@@ -112,8 +129,8 @@ impl SemanticLane {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::FixtureDirect => "fixture direct",
-            Self::BuiltInDataPlane => "built-in data-plane route",
-            Self::ExternalDataPlane => "external data-plane route",
+            Self::BuiltInDataPlane => "built-in dataplane",
+            Self::ExternalDataPlane => "external dataplane",
         }
     }
 
@@ -712,13 +729,13 @@ pub(crate) enum ComparisonClassification {
     AllCompliant,
     /// Only the direct fixture run fails.
     FixtureOnlyFailure,
-    /// Only the built-in data-plane route fails.
+    /// Only the built-in dataplane fails.
     BuiltInDataPlaneOnlyFailure,
-    /// Only the external data-plane route fails.
+    /// Only the external dataplane fails.
     ExternalDataPlaneOnlyFailure,
-    /// The direct fixture and built-in data-plane route fail.
+    /// The direct fixture and built-in dataplane fail.
     FixtureAndBuiltInDataPlaneFailure,
-    /// The direct fixture and external data-plane route fail.
+    /// The direct fixture and external dataplane fail.
     FixtureAndExternalDataPlaneFailure,
     /// Both gateway paths fail while the direct fixture passes.
     GatewaysOnlyFailure,
@@ -753,10 +770,10 @@ impl ComparisonClassification {
         match self {
             Self::AllCompliant => "all compliant",
             Self::FixtureOnlyFailure => "fixture-only failure",
-            Self::BuiltInDataPlaneOnlyFailure => "built-in data-plane only failure",
-            Self::ExternalDataPlaneOnlyFailure => "external data-plane only failure",
-            Self::FixtureAndBuiltInDataPlaneFailure => "fixture + built-in data-plane failure",
-            Self::FixtureAndExternalDataPlaneFailure => "fixture + external data-plane failure",
+            Self::BuiltInDataPlaneOnlyFailure => "built-in dataplane only failure",
+            Self::ExternalDataPlaneOnlyFailure => "external dataplane only failure",
+            Self::FixtureAndBuiltInDataPlaneFailure => "fixture + built-in dataplane failure",
+            Self::FixtureAndExternalDataPlaneFailure => "fixture + external dataplane failure",
             Self::GatewaysOnlyFailure => "both gateways only failure",
             Self::SharedFailure => "shared failure",
             Self::FixtureFailure => "fixture failure",
@@ -766,7 +783,7 @@ impl ComparisonClassification {
     }
 }
 
-/// Classifies direct-fixture, built-in, and external data-plane route outcomes.
+/// Classifies direct-fixture, built-in, and external dataplane outcomes.
 #[must_use]
 pub(crate) fn classify_outcomes(
     fixture: ScenarioOutcome,
@@ -821,11 +838,11 @@ pub(crate) struct ScenarioComparison {
     pub(crate) fixture_failed_checks: usize,
     /// Built-in data-plane result.
     pub(crate) built_in_data_plane: ScenarioOutcome,
-    /// Raw failed checks in the built-in data-plane result.
+    /// Raw failed checks in the built-in dataplane result.
     pub(crate) built_in_data_plane_failed_checks: usize,
     /// External data-plane result.
     pub(crate) external_data_plane: ScenarioOutcome,
-    /// Raw failed checks in the external data-plane result.
+    /// Raw failed checks in the external dataplane result.
     pub(crate) external_data_plane_failed_checks: usize,
     /// Reduced report classification.
     pub(crate) classification: ComparisonClassification,

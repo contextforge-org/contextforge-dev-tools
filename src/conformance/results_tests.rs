@@ -22,13 +22,32 @@ const SPEC_REFERENCE: &str =
 #[test]
 fn semantic_lanes_have_one_shared_stable_vocabulary() {
     assert_eq!(SemanticLane::FixtureDirect.label(), "fixture direct");
-    assert_eq!(
-        SemanticLane::BuiltInDataPlane.label(),
-        "built-in data-plane route"
-    );
+    assert_eq!(SemanticLane::BuiltInDataPlane.label(), "built-in dataplane");
     assert_eq!(
         SemanticLane::ExternalDataPlane.label(),
-        "external data-plane route"
+        "external dataplane"
+    );
+}
+
+#[test]
+fn fixture_server_eras_report_their_exact_protocol_sets() {
+    assert_eq!(
+        ConformanceServerEra::Legacy.protocol_versions(),
+        &["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]
+    );
+    assert_eq!(
+        ConformanceServerEra::Modern.protocol_versions(),
+        &["2026-07-28"]
+    );
+    assert_eq!(
+        ConformanceServerEra::Dual.protocol_versions(),
+        &[
+            "2024-11-05",
+            "2025-03-26",
+            "2025-06-18",
+            "2025-11-25",
+            "2026-07-28"
+        ]
     );
 }
 

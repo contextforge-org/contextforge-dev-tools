@@ -282,8 +282,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         for topology in topologies {
             let target = conformance_target(topology);
             let run_routed = lanes.contains(&target);
-            let stack_progress =
-                Activity::start(format!("prepare {}", conformance_topology_label(topology)));
+            let stack_progress = Activity::start(format!("prepare {}", topology.topology_label()));
             let mut topology_failure = self.stack_up_for_conformance(topology, true).await.err();
             stack_progress.finish(topology_failure.is_none());
             let mut fixture_state = None;
@@ -295,7 +294,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             if topology_failure.is_none() {
                 let fixture_progress = Activity::start(format!(
                     "start the official fixture for {}",
-                    conformance_topology_label(topology)
+                    topology.topology_label()
                 ));
                 let (start_result, start_interrupted) = finish_phase_after_interrupt(
                     self.start_conformance_service(topology, server_era),
@@ -389,7 +388,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     Ok(client) => {
                         let provision_progress = Activity::start(format!(
                             "register the official fixture for {}",
-                            conformance_topology_label(topology)
+                            topology.topology_label()
                         ));
                         let (provision_result, provision_interrupted) =
                             finish_phase_after_interrupt(
@@ -407,7 +406,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                 } else if topology == StackMode::Dataplane
                                     && let Err(error) = {
                                         let publisher_progress = Activity::start(
-                                            "wait for the external data-plane configuration",
+                                            "wait for the external dataplane configuration",
                                         );
                                         let result = self
                                             .wait_for_publisher_snapshot_quiet(&fixture.server_id)
@@ -513,7 +512,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             )
             .err();
             if let Some(error) = topology_failure {
-                let failure = format!("{} topology: {error}", conformance_topology_label(topology));
+                let failure = format!("{} topology: {error}", topology.topology_label());
                 eprintln!(
                     "{}",
                     OutputStyle::stderr().failure(&format!("Conformance failure: {failure}"))
@@ -769,8 +768,9 @@ fn render_conformance_lane_header(
 ) -> String {
     let divider = style.info("────────────");
     let lane = style.heading(&format!(" MCP conformance lane: {target}"));
+    let server_protocols = server_era.protocol_versions_label();
     format!(
-        "{divider}\n{lane}\n    Starting {scenario_count} scenarios with {} (client {spec_version}, server {server_era})",
+        "{divider}\n{lane}\n    Client protocol version: {spec_version}\n    Server protocol versions ({server_era}): {server_protocols}\n    Starting {scenario_count} scenarios with {}",
         crate::conformance::results::OFFICIAL_CONFORMANCE_PACKAGE
     )
 }
@@ -884,13 +884,6 @@ fn conformance_topologies(lanes: &[SemanticLane]) -> Vec<StackMode> {
         topologies.push(StackMode::Controlplane);
     }
     topologies
-}
-
-const fn conformance_topology_label(topology: StackMode) -> &'static str {
-    match topology {
-        StackMode::Controlplane => "built-in data-plane route",
-        StackMode::Dataplane => "external data-plane route",
-    }
 }
 
 fn parse_conformance_fixture_endpoint(output: &[u8]) -> anyhow::Result<url::Url> {
@@ -1104,7 +1097,7 @@ mod tests {
                 ConformanceServerEra::Legacy,
                 OutputStyle::plain(),
             ),
-            "────────────\n MCP conformance lane: fixture direct\n    Starting 40 scenarios with @modelcontextprotocol/conformance@0.2.0-alpha.11 (client 2026-07-28, server legacy)"
+            "────────────\n MCP conformance lane: fixture direct\n    Client protocol version: 2026-07-28\n    Server protocol versions (legacy): 2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25\n    Starting 40 scenarios with @modelcontextprotocol/conformance@0.2.0-alpha.11"
         );
     }
 
@@ -1146,7 +1139,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "────────────\n MCP conformance results: external data-plane route\n       XFAIL (1/2) external-data-plane::failing\n        PASS (2/2) external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 1 xfailed, 0 xpassed, 0 failed, 0 skipped, 0 unknown"
+            "────────────\n MCP conformance results: external dataplane\n       XFAIL (1/2) external-data-plane::failing\n        PASS (2/2) external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 1 xfailed, 0 xpassed, 0 failed, 0 skipped, 0 unknown"
         );
     }
 
@@ -1200,9 +1193,7 @@ mod tests {
         );
 
         assert!(header.contains("\x1b[36m────────────\x1b[0m"));
-        assert!(
-            header.contains("\x1b[1;36m MCP conformance lane: external data-plane route\x1b[0m")
-        );
+        assert!(header.contains("\x1b[1;36m MCP conformance lane: external dataplane\x1b[0m"));
         assert!(rendered.contains("\x1b[33m       XFAIL\x1b[0m"));
         assert!(rendered.contains("\x1b[32m        PASS\x1b[0m"));
         assert!(rendered.contains("\x1b[31m       XPASS\x1b[0m"));

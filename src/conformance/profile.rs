@@ -14,3 +14,21 @@ pub(crate) const DEFAULT_MCP_SPEC_VERSION: &str = "2026-07-28";
 pub(crate) const STABLE_MCP_SPEC_VERSION: &str = "2025-11-25";
 /// Oldest revision supported by the pinned official conformance package.
 pub(crate) const LEGACY_MCP_SPEC_VERSION: &str = "2025-06-18";
+
+/// Stateful protocol revisions accepted by the pinned fixture in legacy mode.
+pub(crate) const LEGACY_SERVER_PROTOCOL_VERSIONS: &[&str] = &[
+    "2024-11-05",
+    "2025-03-26",
+    LEGACY_MCP_SPEC_VERSION,
+    STABLE_MCP_SPEC_VERSION,
+];
+/// Per-request protocol revisions accepted by the pinned fixture in modern mode.
+pub(crate) const MODERN_SERVER_PROTOCOL_VERSIONS: &[&str] = &[DEFAULT_MCP_SPEC_VERSION];
+/// Complete protocol set accepted by the pinned fixture in dual mode.
+pub(crate) const DUAL_SERVER_PROTOCOL_VERSIONS: &[&str] = &[
+    "2024-11-05",
+    "2025-03-26",
+    LEGACY_MCP_SPEC_VERSION,
+    STABLE_MCP_SPEC_VERSION,
+    DEFAULT_MCP_SPEC_VERSION,
+];

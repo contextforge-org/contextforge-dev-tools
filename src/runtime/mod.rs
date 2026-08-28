@@ -299,7 +299,7 @@ async fn wait_for_http_endpoint(
         if now >= deadline {
             return Err(AppFailure::from(anyhow!(
                 "{} public MCP endpoint {} was not ready within {:.3}s; last result: {last_failure}",
-                stack_mode_label(mode),
+                mode.topology_label(),
                 endpoint,
                 timeout.as_secs_f64()
             )));
@@ -337,13 +337,6 @@ async fn wait_for_http_endpoint(
 
 const fn is_expected_readiness_status(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 401 | 403 | 405)
-}
-
-const fn stack_mode_label(mode: StackMode) -> &'static str {
-    match mode {
-        StackMode::Controlplane => "controlplane",
-        StackMode::Dataplane => "dataplane",
-    }
 }
 
 const fn gateway_topology(mode: StackMode) -> GatewayTopology {

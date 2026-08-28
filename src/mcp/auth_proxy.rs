@@ -94,7 +94,7 @@ impl AuthProxy {
         Self::start_with_protocol_version(upstream, bearer_token, None).await
     }
 
-    /// Starts a proxy for a routed endpoint backed by the built-in data plane.
+    /// Starts a proxy for a routed endpoint backed by the built-in dataplane.
     ///
     /// Unlike [`Self::start`], this does not require the Rust data-plane
     /// response marker merely because the endpoint uses `/servers/{id}/mcp`.

@@ -262,7 +262,7 @@ pub(crate) struct LiveArgs {
 pub(crate) enum CliLane {
     /// Run directly against the workflow's reference fixture.
     FixtureDirect,
-    /// Run the routed endpoint through the Python built-in data plane.
+    /// Run the routed endpoint through the Python built-in dataplane.
     BuiltInDataPlane,
     /// Run the routed endpoint through the external Rust data plane.
     ExternalDataPlane,

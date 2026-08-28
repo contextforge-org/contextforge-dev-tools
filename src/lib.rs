@@ -68,6 +68,7 @@ pub async fn run() -> ExitCode {
     } else {
         ConfigRequirements::READ_ONLY
     };
+    eprintln!("{}", OutputStyle::stderr().info(&action.startup_summary()));
     let activity = action
         .uses_global_activity()
         .then(|| Activity::start(action.description()));

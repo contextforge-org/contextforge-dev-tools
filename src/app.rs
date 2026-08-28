@@ -57,6 +57,49 @@ impl Action {
         }
     }
 
+    /// Resolved execution context printed before the command starts.
+    #[must_use]
+    pub(crate) fn startup_summary(&self) -> String {
+        match self {
+            Self::Stack(action) => action.startup_summary(),
+            Self::Probe {
+                topology,
+                protocol_version,
+            }
+            | Self::Debug(DebugAction::Inspect {
+                topology,
+                protocol_version,
+                ..
+            }) => topology_and_protocol(*topology, protocol_version),
+            Self::Load(args) => topology_and_protocol(args.topology, &args.protocol_version),
+            Self::Live {
+                lane,
+                protocol_version,
+                ..
+            } => format!(
+                "Topology: {}\nProtocol version: {protocol_version}",
+                lane.label()
+            ),
+            Self::Conformance(ConformanceAction::Run {
+                lanes,
+                client_versions,
+                server_eras,
+                ..
+            }) => format!(
+                "Topology: {}\nClient protocol versions: {}\nServer protocol versions: {}",
+                join_lane_labels(lanes),
+                client_versions.join(", "),
+                join_server_protocols(server_eras),
+            ),
+            Self::Conformance(ConformanceAction::Report { .. }) => String::from(
+                "Topology: recorded conformance results\nClient protocol versions: recorded conformance results\nServer protocol versions: recorded conformance results",
+            ),
+            Self::Debug(DebugAction::Token { .. }) => {
+                String::from("Topology: not applicable (token only)")
+            }
+        }
+    }
+
     /// Returns whether the dispatcher should own one command-wide activity line.
     #[must_use]
     pub(crate) const fn uses_global_activity(&self) -> bool {
@@ -72,6 +115,56 @@ impl Action {
                 | Self::Debug(DebugAction::Token { .. })
         )
     }
+}
+
+impl StackAction {
+    fn startup_summary(&self) -> String {
+        let topology = match self {
+            Self::Up { topology, .. }
+            | Self::Status(topology)
+            | Self::Logs { topology, .. }
+            | Self::Config(topology) => topology.topology_label().to_owned(),
+            Self::Down { topology, .. } => match topology {
+                TopologySelection::Controlplane => {
+                    StackMode::Controlplane.topology_label().to_owned()
+                }
+                TopologySelection::Dataplane => StackMode::Dataplane.topology_label().to_owned(),
+                TopologySelection::All => format!(
+                    "{}, {}",
+                    StackMode::Controlplane.topology_label(),
+                    StackMode::Dataplane.topology_label()
+                ),
+            },
+        };
+        if matches!(self, Self::Up { .. }) {
+            format!("Topology: {topology}\nProtocol version: {DEFAULT_MCP_SPEC_VERSION}")
+        } else {
+            format!("Topology: {topology}")
+        }
+    }
+}
+
+fn topology_and_protocol(topology: StackMode, protocol_version: &ProtocolVersion) -> String {
+    format!(
+        "Topology: {}\nProtocol version: {protocol_version}",
+        topology.topology_label()
+    )
+}
+
+fn join_lane_labels(lanes: &[SemanticLane]) -> String {
+    lanes
+        .iter()
+        .map(|lane| lane.label())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn join_server_protocols(server_eras: &[ConformanceServerEra]) -> String {
+    server_eras
+        .iter()
+        .map(|era| format!("{} [{}]", era.label(), era.protocol_versions_label()))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Fully resolved stack operation.

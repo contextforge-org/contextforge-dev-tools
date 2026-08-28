@@ -3,7 +3,6 @@
 mod sources;
 
 use super::*;
-use crate::conformance::profile::DEFAULT_MCP_SPEC_VERSION;
 
 impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn execute_stack(&self, action: StackAction) -> AppResult<()> {
@@ -154,13 +153,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         if report_progress {
             println!(
                 "{}",
-                OutputStyle::stdout().success(&format!(
-                    "{} stack started.",
-                    match mode {
-                        StackMode::Controlplane => "Control-plane",
-                        StackMode::Dataplane => "Dataplane integration",
-                    }
-                ))
+                OutputStyle::stdout().success(&format!("{} stack started.", mode.topology_label()))
             );
         }
         Ok(())
@@ -178,7 +171,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 OutputStyle::stderr().info(&format!(
                     "Waiting up to {}s for the public {} MCP endpoint.",
                     STACK_READY_TIMEOUT.as_secs(),
-                    stack_mode_label(mode)
+                    mode.topology_label()
                 ))
             );
         }
@@ -203,9 +196,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         mode: StackMode,
         conformance_endpoint: &url::Url,
     ) -> AppResult<()> {
-        let summary = format_stack_summary(
-            mode,
-            DEFAULT_MCP_SPEC_VERSION,
+        let summary = format_stack_endpoint_summary(
             self.base_url()?,
             &self.public_mcp_endpoint(mode)?,
             conformance_endpoint,
@@ -748,14 +739,14 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     &self.config.controlplane_project().value,
                     "CF_CONTROLPLANE_PROJECT",
                 )?,
-                "control-plane",
+                StackMode::Controlplane.topology_label(),
             ),
             StackMode::Controlplane => (
                 required_text(
                     &self.config.integration_project().value,
                     "CF_INTEGRATION_PROJECT",
                 )?,
-                "dataplane integration",
+                StackMode::Dataplane.topology_label(),
             ),
         };
         if self.project_has_running_containers(other)? {
@@ -920,16 +911,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     }
 }
 
-fn format_stack_summary(
-    mode: StackMode,
-    protocol_version: &str,
+fn format_stack_endpoint_summary(
     public_origin: &str,
     public_mcp_endpoint: &url::Url,
     conformance_endpoint: &url::Url,
 ) -> String {
     format!(
-        "Topology: {}\nProtocol version: {protocol_version}\nGateway/API: {public_origin}\nPublic MCP: {public_mcp_endpoint}\nConformance MCP (direct): {conformance_endpoint}",
-        stack_mode_label(mode)
+        "Gateway/API: {public_origin}\nPublic MCP: {public_mcp_endpoint}\nConformance MCP (direct): {conformance_endpoint}"
     )
 }
 
@@ -991,22 +979,17 @@ mod tests {
     }
 
     #[test]
-    fn stack_summary_lists_topology_protocol_and_endpoints() {
+    fn stack_endpoint_summary_preserves_the_three_connection_addresses() {
         let public_mcp =
             url::Url::parse("http://127.0.0.1:8080/servers/server-id/mcp").expect("public URL");
         let conformance = url::Url::parse("http://127.0.0.1:49152/mcp").expect("conformance URL");
 
-        let summary = format_stack_summary(
-            StackMode::Dataplane,
-            DEFAULT_MCP_SPEC_VERSION,
-            "http://127.0.0.1:8080",
-            &public_mcp,
-            &conformance,
-        );
+        let summary =
+            format_stack_endpoint_summary("http://127.0.0.1:8080", &public_mcp, &conformance);
 
         assert_eq!(
             summary,
-            "Topology: dataplane\nProtocol version: 2026-07-28\nGateway/API: http://127.0.0.1:8080\nPublic MCP: http://127.0.0.1:8080/servers/server-id/mcp\nConformance MCP (direct): http://127.0.0.1:49152/mcp"
+            "Gateway/API: http://127.0.0.1:8080\nPublic MCP: http://127.0.0.1:8080/servers/server-id/mcp\nConformance MCP (direct): http://127.0.0.1:49152/mcp"
         );
     }
 

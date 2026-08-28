@@ -8,7 +8,7 @@ The routing contract is fixed:
 
 - `/servers/{virtual_host_id}/mcp` routes through `cf-dataplane`.
 - Raw `/mcp`, UI, and API traffic route to `cf-controlplane`.
-- The external data-plane route fails closed and never falls back to the
+- The external dataplane fails closed and never falls back to the
   control plane.
 
 The CLI owns Docker Compose overlays, nginx routing, source checkout
@@ -153,7 +153,7 @@ The session-oriented probe performs initialize, `notifications/initialized`,
 `tools/list`, and one safe `tools/call`. The stateless probe performs
 `server/discover`, attaches `Mcp-Method` and `Mcp-Name` routing headers, and
 performs the same safe checks without a session. Both verify unauthenticated
-rejection and external data-plane backend identity.
+rejection and external dataplane backend identity.
 
 The official runner is pinned to
 `@modelcontextprotocol/conformance@0.2.0-alpha.11`. Its TypeScript fixture is

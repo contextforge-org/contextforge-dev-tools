@@ -9,7 +9,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             return Err(AppFailure::from(anyhow!(
                 "control-plane checkout is unavailable at {}; run `cf-integration stack up --topology {}` first",
                 self.config.controlplane_dir().display(),
-                stack_mode_label(mode)
+                mode.cli_value()
             )));
         }
         if mode == StackMode::Dataplane

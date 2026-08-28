@@ -70,10 +70,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             AppFailure::from(anyhow!("missing fixture-direct conformance artifact"))
         })?;
         let built_in = built_in.ok_or_else(|| {
-            AppFailure::from(anyhow!("missing built-in data-plane conformance artifact"))
+            AppFailure::from(anyhow!("missing built-in dataplane conformance artifact"))
         })?;
         let external = external.ok_or_else(|| {
-            AppFailure::from(anyhow!("missing external data-plane conformance artifact"))
+            AppFailure::from(anyhow!("missing external dataplane conformance artifact"))
         })?;
         let metadata = compatible_metadata(
             Some(&fixture.metadata),
@@ -433,7 +433,7 @@ fn compatible_metadata<'a>(
     for candidate in [fixture, built_in, external].into_iter().flatten() {
         if candidate.fixture != metadata.fixture {
             return Err(AppFailure::from(anyhow!(
-                "direct fixture, built-in data-plane, and external data-plane conformance fixture provenance mismatch"
+                "direct fixture, built-in dataplane, and external dataplane conformance fixture provenance mismatch"
             )));
         }
         if candidate.client_version != metadata.client_version
@@ -442,7 +442,7 @@ fn compatible_metadata<'a>(
             || candidate.oracle != metadata.oracle
         {
             return Err(AppFailure::from(anyhow!(
-                "direct fixture, built-in data-plane, and external data-plane conformance artifacts were produced by incompatible runs"
+                "direct fixture, built-in dataplane, and external dataplane conformance artifacts were produced by incompatible runs"
             )));
         }
     }

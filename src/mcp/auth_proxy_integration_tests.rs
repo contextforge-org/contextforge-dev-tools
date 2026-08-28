@@ -605,7 +605,7 @@ async fn builtin_data_plane_proxy_allows_a_routed_controlplane_response() {
     .await;
     let proxy = AuthProxy::start_builtin_data_plane(upstream.url.clone(), INJECTED_TOKEN)
         .await
-        .expect("built-in data-plane proxy should start");
+        .expect("built-in dataplane proxy should start");
 
     let response = client()
         .get(proxy.url().clone())

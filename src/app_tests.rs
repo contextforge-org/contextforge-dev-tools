@@ -52,6 +52,89 @@ fn every_subcommand_has_a_stable_progress_description() {
 }
 
 #[test]
+fn every_subcommand_reports_its_resolved_topology_at_startup() {
+    let cases: &[(&[&str], &str)] = &[
+        (
+            &["cf-integration", "stack", "up"],
+            "Topology: external dataplane\nProtocol version: 2026-07-28",
+        ),
+        (
+            &["cf-integration", "stack", "down"],
+            "Topology: built-in dataplane, external dataplane",
+        ),
+        (
+            &["cf-integration", "stack", "status"],
+            "Topology: external dataplane",
+        ),
+        (
+            &["cf-integration", "stack", "logs"],
+            "Topology: external dataplane",
+        ),
+        (
+            &["cf-integration", "stack", "config"],
+            "Topology: external dataplane",
+        ),
+        (
+            &["cf-integration", "probe"],
+            "Topology: external dataplane\nProtocol version: 2025-11-25",
+        ),
+        (
+            &["cf-integration", "load"],
+            "Topology: external dataplane\nProtocol version: 2025-11-25",
+        ),
+        (
+            &["cf-integration", "live"],
+            "Topology: external dataplane\nProtocol version: 2025-11-25",
+        ),
+        (
+            &["cf-integration", "conformance", "run"],
+            "Topology: fixture direct, built-in dataplane, external dataplane\nClient protocol versions: 2026-07-28\nServer protocol versions: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]; modern [2026-07-28]",
+        ),
+        (
+            &["cf-integration", "conformance", "report"],
+            "Topology: recorded conformance results\nClient protocol versions: recorded conformance results\nServer protocol versions: recorded conformance results",
+        ),
+        (
+            &["cf-integration", "debug", "inspect"],
+            "Topology: external dataplane\nProtocol version: 2025-11-25",
+        ),
+        (
+            &["cf-integration", "debug", "token", "--kind", "admin"],
+            "Topology: not applicable (token only)",
+        ),
+    ];
+
+    for (arguments, expected) in cases {
+        assert_eq!(action(arguments, &[]).startup_summary(), *expected);
+    }
+}
+
+#[test]
+fn conformance_startup_reports_every_selected_client_and_server_protocol() {
+    let resolved = action(
+        &[
+            "cf-integration",
+            "conformance",
+            "run",
+            "--lane",
+            "built-in-data-plane",
+            "--protocol-version",
+            "2025-11-25",
+            "--protocol-version",
+            "2026-07-28",
+            "--server-era",
+            "dual",
+        ],
+        &[],
+    );
+
+    assert_eq!(
+        resolved.startup_summary(),
+        "Topology: built-in dataplane\nClient protocol versions: 2025-11-25, 2026-07-28\nServer protocol versions: dual [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25, 2026-07-28]"
+    );
+}
+
+#[test]
 fn stack_up_owns_its_detailed_progress_while_other_commands_use_global_progress() {
     assert!(!action(&["cf-integration", "stack", "up"], &[]).uses_global_activity());
     assert!(action(&["cf-integration", "stack", "down"], &[]).uses_global_activity());
