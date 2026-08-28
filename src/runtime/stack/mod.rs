@@ -3,6 +3,7 @@
 mod sources;
 
 use super::*;
+use crate::conformance::profile::DEFAULT_MCP_SPEC_VERSION;
 
 impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn execute_stack(&self, action: StackAction) -> AppResult<()> {
@@ -35,7 +36,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     .await?;
                 let conformance_endpoint = self.conformance_fixture_endpoint(topology)?;
                 Activity::completed("Integration stack ready");
-                self.print_stack_endpoints(topology, &conformance_endpoint)
+                self.print_stack_summary(topology, &conformance_endpoint)
             }
             StackAction::Down { topology, volumes } => self.cleanup(
                 topology,
@@ -197,12 +198,14 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         .map(|client| client.endpoint().clone())
     }
 
-    fn print_stack_endpoints(
+    fn print_stack_summary(
         &self,
         mode: StackMode,
         conformance_endpoint: &url::Url,
     ) -> AppResult<()> {
-        let summary = format_stack_endpoint_summary(
+        let summary = format_stack_summary(
+            mode,
+            DEFAULT_MCP_SPEC_VERSION,
             self.base_url()?,
             &self.public_mcp_endpoint(mode)?,
             conformance_endpoint,
@@ -917,13 +920,16 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     }
 }
 
-fn format_stack_endpoint_summary(
+fn format_stack_summary(
+    mode: StackMode,
+    protocol_version: &str,
     public_origin: &str,
     public_mcp_endpoint: &url::Url,
     conformance_endpoint: &url::Url,
 ) -> String {
     format!(
-        "Gateway/API: {public_origin}\nPublic MCP: {public_mcp_endpoint}\nConformance MCP (direct): {conformance_endpoint}"
+        "Topology: {}\nProtocol version: {protocol_version}\nGateway/API: {public_origin}\nPublic MCP: {public_mcp_endpoint}\nConformance MCP (direct): {conformance_endpoint}",
+        stack_mode_label(mode)
     )
 }
 
@@ -985,17 +991,22 @@ mod tests {
     }
 
     #[test]
-    fn stack_endpoint_summary_lists_public_and_conformance_addresses() {
+    fn stack_summary_lists_topology_protocol_and_endpoints() {
         let public_mcp =
             url::Url::parse("http://127.0.0.1:8080/servers/server-id/mcp").expect("public URL");
         let conformance = url::Url::parse("http://127.0.0.1:49152/mcp").expect("conformance URL");
 
-        let summary =
-            format_stack_endpoint_summary("http://127.0.0.1:8080", &public_mcp, &conformance);
+        let summary = format_stack_summary(
+            StackMode::Dataplane,
+            DEFAULT_MCP_SPEC_VERSION,
+            "http://127.0.0.1:8080",
+            &public_mcp,
+            &conformance,
+        );
 
         assert_eq!(
             summary,
-            "Gateway/API: http://127.0.0.1:8080\nPublic MCP: http://127.0.0.1:8080/servers/server-id/mcp\nConformance MCP (direct): http://127.0.0.1:49152/mcp"
+            "Topology: dataplane\nProtocol version: 2026-07-28\nGateway/API: http://127.0.0.1:8080\nPublic MCP: http://127.0.0.1:8080/servers/server-id/mcp\nConformance MCP (direct): http://127.0.0.1:49152/mcp"
         );
     }
 
