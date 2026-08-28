@@ -39,11 +39,11 @@ cargo binstall cf-integration
 cf-integration --help
 ```
 
-The release archives cover x86-64 and ARM64 Linux, x86-64 and Apple Silicon
-macOS, and x86-64 Windows. `cargo-binstall` is required because Cargo's native
-`cargo install` command always compiles a crate locally. The CLI still uses the
-tracked Compose overlays and scripts at runtime, so run it from this repository
-checkout or set `CF_INTEGRATION_ROOT` to the checkout path.
+The release archives cover x86-64 and ARM64 Linux, macOS, and Windows.
+`cargo-binstall` is required because Cargo's native `cargo install` command
+always compiles a crate locally. The CLI still uses the tracked Compose overlays
+and scripts at runtime, so run it from this repository checkout or set
+`CF_INTEGRATION_ROOT` to the checkout path.
 
 The checked-in `rust-toolchain.toml` selects Rust 1.97.0 with rustfmt and
 Clippy. To build and install the locked CLI from this checkout instead:
