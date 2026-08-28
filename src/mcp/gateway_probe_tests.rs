@@ -1,12 +1,14 @@
 use std::sync::{Arc, Mutex};
 
+use crate::mcp::backend_identity::is_dataplane_endpoint;
+use crate::mcp::probe::{ProbeRequest, ProbeResponse, ProbeTransport};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, Response, StatusCode};
 use axum::routing::any;
-use cf_integration::mcp::http_transport::{MAX_MCP_RESPONSE_BYTES, ReqwestProbeTransport};
-use cf_integration::mcp::probe::{ProbeRequest, ProbeTransport};
+
+use super::{GatewayClient, MAX_RESPONSE_BODY_BYTES};
 use serde_json::json;
 use tokio::net::TcpListener;
 
@@ -58,6 +60,30 @@ fn request(url: String) -> ProbeRequest {
     }
 }
 
+async fn send(request: ProbeRequest) -> anyhow::Result<ProbeResponse> {
+    let endpoint = url::Url::parse(&request.url)?;
+    let mode = if is_dataplane_endpoint(&endpoint) {
+        crate::mcp::GatewayTopology::Dataplane
+    } else {
+        crate::mcp::GatewayTopology::Direct
+    };
+    let server_id = endpoint
+        .path_segments()
+        .and_then(|mut segments| {
+            (segments.next() == Some("servers"))
+                .then(|| segments.next())
+                .flatten()
+        })
+        .unwrap_or("test")
+        .to_owned();
+    let mut base_url = endpoint;
+    base_url.set_path("/");
+    base_url.set_query(None);
+    base_url.set_fragment(None);
+    let client = GatewayClient::new(mode, base_url.as_str(), &server_id, "test-secret-token")?;
+    client.post(request).await
+}
+
 #[tokio::test]
 async fn sends_exact_mcp_headers_and_parses_json_response() {
     let capture = Capture::default();
@@ -68,11 +94,7 @@ async fn sends_exact_mcp_headers_and_parses_json_response() {
     )
     .await;
 
-    let response = ReqwestProbeTransport::new()
-        .expect("transport")
-        .post(request(url))
-        .await
-        .expect("request should succeed");
+    let response = send(request(url)).await.expect("request should succeed");
 
     assert_eq!(response.status, 200);
     assert_eq!(response.session_id.as_deref(), Some("session-from-server"));
@@ -131,11 +153,7 @@ async fn omits_optional_auth_session_and_protocol_headers() {
     request.session_id = None;
     request.protocol_version = None;
 
-    ReqwestProbeTransport::new()
-        .expect("transport")
-        .post(request)
-        .await
-        .expect("request should succeed");
+    send(request).await.expect("request should succeed");
 
     let captured = capture.0.lock().expect("capture lock");
     assert!(captured[0].0.get("authorization").is_none());
@@ -163,11 +181,7 @@ async fn stateless_requests_send_method_and_target_name_headers() {
     request.protocol_version = Some("2026-07-28".to_owned());
     request.session_id = None;
 
-    ReqwestProbeTransport::new()
-        .expect("transport")
-        .post(request)
-        .await
-        .expect("request should succeed");
+    send(request).await.expect("request should succeed");
 
     let captured = capture.0.lock().expect("capture lock");
     let headers = &captured[0].0;
@@ -205,11 +219,7 @@ async fn parses_blank_delimited_multiline_sse() {
     }
     let (url, shutdown) = server(Router::new().route("/mcp", any(sse))).await;
 
-    let response = ReqwestProbeTransport::new()
-        .expect("transport")
-        .post(request(url))
-        .await
-        .expect("SSE should parse");
+    let response = send(request(url)).await.expect("SSE should parse");
 
     assert_eq!(
         response.message,
@@ -229,9 +239,7 @@ async fn non_success_responses_are_returned_without_parsing_untrusted_bodies() {
     }
     let (url, shutdown) = server(Router::new().route("/mcp", any(unauthorized))).await;
 
-    let response = ReqwestProbeTransport::new()
-        .expect("transport")
-        .post(request(url))
+    let response = send(request(url))
         .await
         .expect("HTTP status should be returned");
 
@@ -251,9 +259,7 @@ async fn successful_nonempty_response_requires_mcp_content_type() {
     }
     let (url, shutdown) = server(Router::new().route("/mcp", any(wrong_type))).await;
 
-    let error = ReqwestProbeTransport::new()
-        .expect("transport")
-        .post(request(url))
+    let error = send(request(url))
         .await
         .expect_err("wrong content type must fail");
 
@@ -271,14 +277,12 @@ async fn response_body_is_bounded() {
         Response::builder()
             .status(StatusCode::OK)
             .header("content-type", "application/json")
-            .body(Body::from(vec![b'x'; MAX_MCP_RESPONSE_BYTES + 1]))
+            .body(Body::from(vec![b'x'; MAX_RESPONSE_BODY_BYTES + 1]))
             .expect("response")
     }
     let (url, shutdown) = server(Router::new().route("/mcp", any(oversized))).await;
 
-    let error = ReqwestProbeTransport::new()
-        .expect("transport")
-        .post(request(url))
+    let error = send(request(url))
         .await
         .expect_err("oversized response must fail");
 
@@ -292,9 +296,7 @@ async fn invalid_sensitive_headers_fail_without_leaking_values() {
     let mut request = request("http://127.0.0.1:9/mcp".to_owned());
     request.bearer_token = Some(secret.to_owned());
 
-    let error = ReqwestProbeTransport::new()
-        .expect("transport")
-        .post(request)
+    let error = send(request)
         .await
         .expect_err("invalid token header must fail");
 
@@ -334,9 +336,7 @@ async fn dataplane_transport_accepts_one_exact_backend_marker() {
     )
     .await;
 
-    let response = ReqwestProbeTransport::new()
-        .expect("transport")
-        .post(request(dataplane_url(&url)))
+    let response = send(request(dataplane_url(&url)))
         .await
         .expect("exact dataplane marker should pass");
 
@@ -359,9 +359,7 @@ async fn dataplane_transport_rejects_absent_fallback_forged_and_duplicate_marker
         )
         .await;
 
-        let error = ReqwestProbeTransport::new()
-            .expect("transport")
-            .post(request(dataplane_url(&url)))
+        let error = send(request(dataplane_url(&url)))
             .await
             .expect_err("invalid dataplane identity must fail closed");
         let diagnostic = error.to_string();

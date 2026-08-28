@@ -6,13 +6,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use async_trait::async_trait;
-use cf_integration::mcp::GatewayTopology;
-use cf_integration::mcp::backend_identity::BackendIdentity;
-use cf_integration::mcp::probe::{
-    ProbeConfig, ProbeRequest, ProbeResponse, ProbeTransport, run_probe,
-};
 use serde_json::{Value, json};
+
+use crate::mcp::GatewayTopology;
+use crate::mcp::backend_identity::BackendIdentity;
+
+use super::{ProbeConfig, ProbeRequest, ProbeResponse, ProbeTransport, run_probe};
 
 const INITIALIZE_ID: u64 = 1;
 const TOOLS_LIST_ID: u64 = 2;
@@ -54,7 +53,6 @@ impl FakeTransport {
     }
 }
 
-#[async_trait]
 impl ProbeTransport for FakeTransport {
     async fn post(&self, request: ProbeRequest) -> Result<ProbeResponse> {
         self.requests
@@ -396,7 +394,6 @@ struct AlwaysUnavailableTransport {
     attempts: AtomicUsize,
 }
 
-#[async_trait]
 impl ProbeTransport for AlwaysUnavailableTransport {
     async fn post(&self, request: ProbeRequest) -> Result<ProbeResponse> {
         self.attempts.fetch_add(1, Ordering::SeqCst);

@@ -7,7 +7,7 @@ parses either response form.
 
 Env:
   MCP_STACK_MODE                         controlplane or dataplane
-  MCP_SERVER_ID / MCP_VIRTUAL_SERVER_ID  virtual server id (dataplane only)
+  MCP_SERVER_ID                         virtual server id (dataplane only)
   MCPGATEWAY_BEARER_TOKEN                bearer token (required)
   MCP_TOOL_NAMES                         optional comma-separated tools to call
   LOCUST_REQUEST_TIMEOUT_SECONDS         positive finite per-request timeout (default 60)
@@ -178,7 +178,7 @@ def validate_result(method: str, result) -> dict:
             raise ValueError("tools/call result contains invalid content")
     return result
 
-MCP_SERVER_ID = os.environ.get("MCP_SERVER_ID") or os.environ.get("MCP_VIRTUAL_SERVER_ID", "")
+MCP_SERVER_ID = os.environ.get("MCP_SERVER_ID", "")
 MCP_STACK_MODE = os.environ.get("MCP_STACK_MODE", "dataplane")
 BEARER_TOKEN = os.environ.get("MCPGATEWAY_BEARER_TOKEN", "")
 TOOL_NAMES = [name.strip() for name in os.environ.get("MCP_TOOL_NAMES", "").split(",") if name.strip()]
@@ -220,7 +220,7 @@ class MCPGatewayUser(HttpUser):
         if MCP_STACK_MODE not in {"controlplane", "dataplane"}:
             raise RuntimeError("MCP_STACK_MODE must be controlplane or dataplane")
         if MCP_STACK_MODE == "dataplane" and not MCP_SERVER_ID:
-            raise RuntimeError("MCP_SERVER_ID or MCP_VIRTUAL_SERVER_ID is required")
+            raise RuntimeError("MCP_SERVER_ID is required")
         if not BEARER_TOKEN:
             raise RuntimeError("MCPGATEWAY_BEARER_TOKEN is required")
         if STATELESS:

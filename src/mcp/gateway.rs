@@ -13,8 +13,8 @@ use crate::mcp::GatewayTopology;
 
 use crate::mcp::backend_identity::{BACKEND_HEADER, BackendIdentity, sanitized_backend_value};
 use crate::mcp::protocol::{
-    ACCEPT as MCP_ACCEPT, PROTOCOL_VERSION, initialize_with_id_and_version, jsonrpc_with_id,
-    parse_mcp_body,
+    ACCEPT as MCP_ACCEPT, PROTOCOL_VERSION, initialize_with_id_and_version, is_stateless_protocol,
+    jsonrpc_with_id, parse_mcp_body, routing_name,
 };
 
 /// Default MCP protocol version used in request bodies and HTTP headers.
@@ -27,7 +27,12 @@ pub const MCP_SESSION_ID: &str = "mcp-session-id";
 const JSON_CONTENT_TYPE: &str = "application/json";
 const SSE_ACCEPT: &str = "text/event-stream";
 const REDACTED: &str = "<redacted>";
-const MAX_RESPONSE_BODY_BYTES: usize = 8 * 1024 * 1024;
+/// Maximum response body buffered by the MCP client.
+pub const MAX_RESPONSE_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+#[cfg(test)]
+#[path = "gateway_probe_tests.rs"]
+mod probe_tests;
 
 /// Controls one request header without changing the client's stored defaults.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -81,6 +86,7 @@ impl fmt::Debug for ResponseExpectation {
 pub struct GatewayRequest {
     method: Method,
     payload: Payload,
+    authorization: HeaderOverride,
     protocol_version: HeaderOverride,
     session: HeaderOverride,
     expectation: ResponseExpectation,
@@ -98,6 +104,7 @@ impl fmt::Debug for GatewayRequest {
             .debug_struct("GatewayRequest")
             .field("method", &self.method)
             .field("payload", &payload)
+            .field("authorization", &self.authorization)
             .field("protocol_version", &self.protocol_version)
             .field("session", &self.session)
             .field("expectation", &self.expectation)
@@ -153,6 +160,7 @@ impl GatewayRequest {
         Self {
             method: Method::GET,
             payload: Payload::None,
+            authorization: HeaderOverride::Automatic,
             protocol_version: HeaderOverride::Automatic,
             session: HeaderOverride::Automatic,
             expectation: ResponseExpectation::Unchecked,
@@ -165,6 +173,7 @@ impl GatewayRequest {
         Self {
             method: Method::DELETE,
             payload: Payload::None,
+            authorization: HeaderOverride::Automatic,
             protocol_version: HeaderOverride::Automatic,
             session: HeaderOverride::Automatic,
             expectation: ResponseExpectation::Unchecked,
@@ -178,6 +187,19 @@ impl GatewayRequest {
             Payload::Raw(body.as_ref().to_vec()),
             ResponseExpectation::Unchecked,
         )
+    }
+
+    /// Builds an unchecked JSON POST for workflow-level validation.
+    #[must_use]
+    pub(crate) fn probe(payload: Value) -> Self {
+        Self::post(Payload::Json(payload), ResponseExpectation::Unchecked)
+    }
+
+    /// Overrides or omits the configured authorization header.
+    #[must_use]
+    pub(crate) fn authorization(mut self, authorization: HeaderOverride) -> Self {
+        self.authorization = authorization;
+        self
     }
 
     /// Overrides or omits the configured protocol-version header.
@@ -205,6 +227,7 @@ impl GatewayRequest {
         Self {
             method: Method::POST,
             payload,
+            authorization: HeaderOverride::Automatic,
             protocol_version: HeaderOverride::Automatic,
             session: HeaderOverride::Automatic,
             expectation,
@@ -404,7 +427,7 @@ impl GatewayClientBuilder {
         }
         validate_header_value(
             self.mode,
-            AUTHORIZATION.as_str(),
+            "Authorization",
             &format!("Bearer {}", self.bearer_token),
         )?;
         if self.protocol_version.trim().is_empty() {
@@ -644,7 +667,6 @@ impl GatewayClient {
         let mut builder = self
             .http
             .request(request.method.clone(), self.endpoint.clone())
-            .bearer_auth(&self.bearer_token)
             .header(
                 ACCEPT,
                 if request.method == Method::GET {
@@ -653,6 +675,14 @@ impl GatewayClient {
                     MCP_ACCEPT
                 },
             );
+        let automatic_authorization = format!("Bearer {}", self.bearer_token);
+        builder = apply_header(
+            self.mode,
+            builder,
+            "Authorization",
+            &request.authorization,
+            Some(&automatic_authorization),
+        )?;
         if request.method == Method::POST {
             builder = builder.header(CONTENT_TYPE, JSON_CONTENT_TYPE);
         }
@@ -663,6 +693,22 @@ impl GatewayClient {
             &request.protocol_version,
             Some(&self.protocol_version),
         )?;
+        if request.method == Method::POST {
+            let protocol_version = match &request.protocol_version {
+                HeaderOverride::Automatic => Some(self.protocol_version.as_str()),
+                HeaderOverride::Omit => None,
+                HeaderOverride::Value(value) => Some(value.as_str()),
+            };
+            if protocol_version.is_some_and(is_stateless_protocol)
+                && let Payload::Json(payload) = &request.payload
+                && let Some(method) = payload.get("method").and_then(Value::as_str)
+            {
+                builder = apply_literal_header(self.mode, builder, "mcp-method", method)?;
+                if let Some(name) = routing_name(method, payload.get("params")) {
+                    builder = apply_literal_header(self.mode, builder, "mcp-name", name)?;
+                }
+            }
+        }
         builder = apply_header(
             self.mode,
             builder,
@@ -748,6 +794,16 @@ impl GatewayClient {
         }
         Ok(())
     }
+}
+
+fn apply_literal_header(
+    mode: GatewayTopology,
+    builder: reqwest::RequestBuilder,
+    name: &'static str,
+    value: &str,
+) -> Result<reqwest::RequestBuilder, GatewayError> {
+    validate_header_value(mode, name, value)?;
+    Ok(builder.header(name, value))
 }
 
 async fn bounded_response_body(response: &mut reqwest::Response) -> Result<Vec<u8>, String> {

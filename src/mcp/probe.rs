@@ -5,13 +5,13 @@ use std::io::Write;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
-use async_trait::async_trait;
 use serde_json::{Map, Value, json};
 use url::Url;
 
 use crate::mcp::GatewayTopology;
 
 use crate::mcp::backend_identity::BackendIdentity;
+use crate::mcp::gateway::{GatewayClient, GatewayRequest, HeaderOverride};
 use crate::mcp::protocol::{
     initialize_with_id_and_version, is_stateless_protocol, jsonrpc_with_id,
     stateless_jsonrpc_with_id, tool_call_args,
@@ -22,6 +22,10 @@ const INITIALIZE_ID: u64 = 1;
 const TOOLS_LIST_ID: u64 = 2;
 const TOOL_CALL_ID: u64 = 3;
 const MIN_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+
+#[cfg(test)]
+#[path = "probe_tests.rs"]
+mod tests;
 
 /// Runtime values needed by the public MCP probe.
 #[derive(Clone, PartialEq, Eq)]
@@ -140,8 +144,7 @@ impl ProbeResponse {
 }
 
 /// Async boundary used to send probe requests.
-#[async_trait]
-pub trait ProbeTransport: Send + Sync {
+pub(crate) trait ProbeTransport: Send + Sync {
     /// Sends one MCP request and returns its parsed response.
     ///
     /// # Errors
@@ -151,6 +154,46 @@ pub trait ProbeTransport: Send + Sync {
     async fn post(&self, request: ProbeRequest) -> Result<ProbeResponse>;
 }
 
+impl ProbeTransport for GatewayClient {
+    async fn post(&self, request: ProbeRequest) -> Result<ProbeResponse> {
+        if request.url != self.endpoint().as_str() {
+            bail!("probe request endpoint does not match the MCP client endpoint");
+        }
+        let authorization = request.bearer_token.map_or(HeaderOverride::Omit, |token| {
+            HeaderOverride::Value(format!("Bearer {token}"))
+        });
+        let protocol_version = request
+            .protocol_version
+            .map_or(HeaderOverride::Omit, HeaderOverride::Value);
+        let session = request
+            .session_id
+            .map_or(HeaderOverride::Omit, HeaderOverride::Value);
+        let gateway_request = GatewayRequest::probe(request.payload)
+            .authorization(authorization)
+            .protocol_version(protocol_version)
+            .session(session);
+        let mut client = self.clone();
+        let exchange = client.send(gateway_request).await?;
+        if (200..300).contains(&exchange.status())
+            && !exchange.body().is_empty()
+            && exchange.message().is_none()
+        {
+            bail!("unsupported MCP response content type");
+        }
+        let backend_identity = if exchange.mode().requires_dataplane() {
+            BackendIdentity::Dataplane
+        } else {
+            BackendIdentity::Missing
+        };
+        Ok(ProbeResponse::new(
+            exchange.status(),
+            exchange.session_id().map(str::to_owned),
+            exchange.message().cloned(),
+        )
+        .with_backend_identity(backend_identity))
+    }
+}
+
 /// Runs the end-to-end protocol probe against the public MCP route.
 ///
 /// # Errors
@@ -158,7 +201,7 @@ pub trait ProbeTransport: Send + Sync {
 /// Returns an error on transport failures, unexpected HTTP or JSON-RPC
 /// responses, a missing MCP session ID, an empty tool list, output failures, or
 /// a tool response whose `isError` field is true.
-pub async fn run_probe<T: ProbeTransport, W: Write>(
+pub(crate) async fn run_probe<T: ProbeTransport, W: Write>(
     transport: &T,
     config: &ProbeConfig,
     output: &mut W,

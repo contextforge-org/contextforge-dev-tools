@@ -436,31 +436,6 @@ pub struct ConformanceResults {
     pub scenarios: BTreeMap<String, ConformanceScenarioResult>,
 }
 
-/// Rejects fresh runs when an unknown or caller-managed fixture prevented checks.
-///
-/// # Errors
-///
-/// Returns an error listing every scenario with a fixture-failure outcome.
-/// Pinned fixtures with recorded provenance are handled by the runtime as
-/// gateway failures instead of calling this compatibility validator.
-pub fn validate_no_fixture_failures(results: &ConformanceResults) -> Result<()> {
-    let fixture_failures = results
-        .scenarios
-        .iter()
-        .filter_map(|(scenario, result)| {
-            (result.outcome() == ScenarioOutcome::FixtureFailure).then_some(scenario.as_str())
-        })
-        .collect::<Vec<_>>();
-
-    if !fixture_failures.is_empty() {
-        bail!(
-            "official fixture setup failed for conformance scenarios: {}",
-            fixture_failures.join(", ")
-        );
-    }
-    Ok(())
-}
-
 /// Returns the exact pinned server scenario set for one supported suite/spec pair.
 ///
 /// # Errors
@@ -850,21 +825,6 @@ pub struct ComparisonFixtureTrust {
     pub controlplane: bool,
     /// Dataplane fixture provenance is the exact pinned source revision.
     pub dataplane: bool,
-}
-
-/// Compares direct and routed official results.
-#[must_use]
-pub fn compare_result_sets(
-    fixture: &ConformanceResults,
-    controlplane: &ConformanceResults,
-    dataplane: &ConformanceResults,
-) -> Vec<ScenarioComparison> {
-    compare_result_sets_with_fixture_trust(
-        fixture,
-        controlplane,
-        dataplane,
-        ComparisonFixtureTrust::default(),
-    )
 }
 
 /// Compares results while independently attributing trusted fixture failures.

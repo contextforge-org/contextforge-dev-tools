@@ -161,7 +161,7 @@ pub struct TopologyArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct RoutedWorkflowTargetArgs {
     /// Execution lane; defaults to CF_MCP_STACK_MODE, then dataplane.
-    #[arg(long, value_enum, visible_alias = "topology")]
+    #[arg(long, value_enum)]
     pub lane: Option<CliTopology>,
 
     /// MCP version; defaults to MCP_PROTOCOL_VERSION, then 2025-11-25.
@@ -173,7 +173,7 @@ pub struct RoutedWorkflowTargetArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct WorkflowTargetArgs {
     /// Execution lane; defaults to CF_MCP_STACK_MODE, then dataplane.
-    #[arg(long, value_enum, visible_alias = "topology")]
+    #[arg(long, value_enum)]
     pub lane: Option<CliLane>,
 
     /// MCP version; defaults to MCP_PROTOCOL_VERSION, then 2025-11-25.
@@ -262,7 +262,6 @@ pub struct LiveArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum CliLane {
     /// Run directly against the workflow's reference fixture.
-    #[value(alias = "fixture")]
     FixtureDirect,
     /// Run the routed endpoint through the Python built-in data plane.
     BuiltInDataPlane,
@@ -352,11 +351,7 @@ pub struct ConformanceRunArgs {
     pub lane: Vec<CliLane>,
 
     /// MCP protocol version used by the official client.
-    #[arg(
-        long = "protocol-version",
-        visible_aliases = ["client-version", "spec-version"],
-        default_value = DEFAULT_MCP_SPEC_VERSION
-    )]
+    #[arg(long = "protocol-version", default_value = DEFAULT_MCP_SPEC_VERSION)]
     pub protocol_version: ProtocolVersion,
 
     /// Protocol era exposed by the upstream fixture server.

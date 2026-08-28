@@ -9,6 +9,5 @@ pub mod mcp;
 mod output;
 pub mod platform;
 pub mod runtime;
-pub mod token;
 
 pub use output::OutputStyle;

@@ -255,6 +255,10 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                 self.config.controlplane_image().resolved().to_owned(),
             )
             .env(
+                "FAST_TIME_IMAGE",
+                self.config.fast_time_expected_image().value.clone(),
+            )
+            .env(
                 "CF_DATAPLANE_IMAGE",
                 self.config.dataplane_image().resolved().to_owned(),
             )

@@ -12,8 +12,6 @@ use crate::platform::compose::ComposeProject;
 use crate::platform::config::AppConfig;
 use crate::platform::process::CommandSpec;
 
-use crate::mcp::protocol::PROTOCOL_VERSION;
-
 use crate::load::LoadSettings;
 
 const LOCUST_ADAPTER_NAME: &str = "locustfile_mcp.py";
@@ -30,40 +28,12 @@ pub struct LocustCommand {
 }
 
 impl LocustCommand {
-    /// Builds a mode-specific Locust invocation and creates its report directory.
-    ///
-    /// The caller supplies an already-generated bearer token. This boundary
-    /// never mints credentials or writes them to disk.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an empty token, a missing dataplane server ID, an
-    /// invalid request timeout, or when the report directory cannot be created.
-    pub fn new(
-        config: &AppConfig,
-        mode: StackMode,
-        settings: &LoadSettings,
-        bearer_token: &str,
-        server_id: Option<&str>,
-    ) -> Result<Self> {
-        let protocol_version =
-            configured_text(config, "MCP_PROTOCOL_VERSION").unwrap_or(PROTOCOL_VERSION);
-        Self::new_with_protocol_version(
-            config,
-            mode,
-            settings,
-            bearer_token,
-            server_id,
-            protocol_version,
-        )
-    }
-
     /// Builds a Locust invocation with an explicit MCP protocol version.
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`Self::new`] and rejects an empty protocol
-    /// version.
+    /// Rejects an empty token or protocol version, a missing dataplane server
+    /// ID, an invalid timeout, or an inaccessible report directory.
     pub fn new_with_protocol_version(
         config: &AppConfig,
         mode: StackMode,

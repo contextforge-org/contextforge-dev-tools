@@ -215,7 +215,7 @@ fn live_defaults_to_all_and_accepts_the_main_harness_groups() {
         let Command::Live(args) = parse(&[
             "cf-integration",
             "live",
-            "--topology",
+            "--lane",
             "external-data-plane",
             "--group",
             name,
@@ -259,11 +259,7 @@ fn live_accepts_fixture_lane_and_explicit_protocol_version() {
 
     rejected(&["cf-integration", "live", "--protocol-version", "latest"]);
 
-    let Command::Live(alias) = parse(&["cf-integration", "live", "--lane", "fixture"]).command
-    else {
-        panic!("expected live workflow")
-    };
-    assert_eq!(alias.target.lane, Some(CliLane::FixtureDirect));
+    rejected(&["cf-integration", "live", "--lane", "fixture"]);
 }
 
 #[test]
@@ -415,26 +411,20 @@ fn conformance_accepts_repeatable_exact_lanes_and_supported_revisions() {
             .expect("valid protocol version")
     );
     assert_eq!(args.server_era, CliConformanceServerEra::Legacy);
-    let Command::Conformance(ConformanceArgs {
-        command: ConformanceCommand::Run(compatibility_args),
-    }) = parse(&[
+    rejected(&[
         "cf-integration",
         "conformance",
         "run",
         "--spec-version",
         "2025-11-25",
-    ])
-    .command
-    else {
-        panic!("expected conformance run")
-    };
-    assert_eq!(
-        compatibility_args.protocol_version,
-        "2025-11-25"
-            .parse::<ProtocolVersion>()
-            .expect("valid protocol version")
-    );
-    assert_eq!(compatibility_args.server_era, CliConformanceServerEra::Dual);
+    ]);
+    rejected(&[
+        "cf-integration",
+        "conformance",
+        "run",
+        "--client-version",
+        "2025-11-25",
+    ]);
     rejected(&["cf-integration", "conformance", "run", "--suite", "active"]);
     rejected(&[
         "cf-integration",

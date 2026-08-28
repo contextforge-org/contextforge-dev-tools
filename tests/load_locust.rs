@@ -154,12 +154,13 @@ fn dataplane_locust_command_has_exact_compose_shape_and_environment() {
     let config = config(root.path(), &Environment::new());
     let settings = LoadSettings::resolve(&config, &args(false)).expect("settings should resolve");
 
-    let run = LocustCommand::new(
+    let run = LocustCommand::new_with_protocol_version(
         &config,
         StackMode::Dataplane,
         &settings,
         "scoped.jwt.value",
         Some("server-id"),
+        "2025-11-25",
     )
     .expect("dataplane Locust command should build");
 
@@ -341,8 +342,15 @@ fn locust_request_timeout_rejects_empty_non_finite_and_non_positive_values() {
         let settings =
             LoadSettings::resolve(&config, &args(false)).expect("load settings should resolve");
 
-        let error = LocustCommand::new(&config, StackMode::Controlplane, &settings, "token", None)
-            .expect_err("invalid request timeout should fail before launch");
+        let error = LocustCommand::new_with_protocol_version(
+            &config,
+            StackMode::Controlplane,
+            &settings,
+            "token",
+            None,
+            "2025-11-25",
+        )
+        .expect_err("invalid request timeout should fail before launch");
 
         assert!(
             error.to_string().contains(
@@ -359,13 +367,26 @@ fn dataplane_requires_nonempty_server_id_and_all_modes_require_a_token() {
     let config = config(root.path(), &Environment::new());
     let settings = LoadSettings::resolve(&config, &args(false)).expect("settings should resolve");
 
-    let missing_server =
-        LocustCommand::new(&config, StackMode::Dataplane, &settings, "token", None)
-            .expect_err("dataplane server ID should be required");
+    let missing_server = LocustCommand::new_with_protocol_version(
+        &config,
+        StackMode::Dataplane,
+        &settings,
+        "token",
+        None,
+        "2025-11-25",
+    )
+    .expect_err("dataplane server ID should be required");
     assert!(missing_server.to_string().contains("server ID"));
 
-    let missing_token = LocustCommand::new(&config, StackMode::Controlplane, &settings, "", None)
-        .expect_err("bearer token should be required");
+    let missing_token = LocustCommand::new_with_protocol_version(
+        &config,
+        StackMode::Controlplane,
+        &settings,
+        "",
+        None,
+        "2025-11-25",
+    )
+    .expect_err("bearer token should be required");
     assert!(missing_token.to_string().contains("bearer token"));
 }
 

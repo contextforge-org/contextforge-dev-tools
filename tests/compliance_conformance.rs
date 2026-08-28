@@ -8,7 +8,7 @@ use cf_integration::compliance::conformance::{
     ConformanceCheck, ConformanceFixtureMetadata, ConformanceResults, ConformanceRunMetadata,
     ConformanceScenarioResult, ConformanceServerEra, DEFAULT_CONFORMANCE_SUITE,
     DEFAULT_MCP_SPEC_VERSION, OFFICIAL_CONFORMANCE_PACKAGE, ScenarioComparison, ScenarioOutcome,
-    SpecReference, classify_outcomes, compare_result_sets, compare_result_sets_with_fixture_trust,
+    SpecReference, classify_outcomes, compare_result_sets_with_fixture_trust,
     expected_server_scenarios, is_trusted_official_fixture, load_server_results,
     official_server_command, render_comparison_markdown, validate_server_scenario_set,
     write_comparison_report,
@@ -338,7 +338,12 @@ fn comparison_counts_raw_failures_without_expected_failure_suppression() {
     )]);
     let dataplane = results([result("scenario", [CheckStatus::Failure])]);
 
-    let compared = compare_result_sets(&fixture, &controlplane, &dataplane);
+    let compared = compare_result_sets_with_fixture_trust(
+        &fixture,
+        &controlplane,
+        &dataplane,
+        ComparisonFixtureTrust::default(),
+    );
 
     assert_eq!(compared.len(), 1);
     assert_eq!(

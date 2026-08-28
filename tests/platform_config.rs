@@ -301,7 +301,6 @@ fn app_config_exposes_resolved_paths_and_image_settings() {
         loaded.config.controlplane_image().resolved(),
         OsStr::new("example/controlplane:test")
     );
-    assert!(loaded.config.controlplane_image().is_explicitly_set());
 }
 
 #[test]
@@ -320,13 +319,11 @@ fn explicit_empty_process_images_use_fallbacks_but_remain_explicit() {
         loaded.config.controlplane_image().resolved(),
         OsStr::new("ghcr.io/ibm/mcp-context-forge:test")
     );
-    assert!(loaded.config.controlplane_image().is_explicitly_set());
     assert!(loaded.config.controlplane_image().is_prebuilt());
     assert_eq!(
         loaded.config.dataplane_image().resolved(),
         OsStr::new("contextforge-org/contextforge-data-plane:local")
     );
-    assert!(loaded.config.dataplane_image().is_explicitly_set());
 }
 
 #[test]

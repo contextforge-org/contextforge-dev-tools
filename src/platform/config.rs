@@ -47,11 +47,10 @@ pub struct LoadedEnvironment {
     warnings: Vec<String>,
 }
 
-/// Resolved container image and whether the process explicitly overrode it.
+/// Resolved container image and whether it is prebuilt.
 #[derive(Clone, PartialEq, Eq)]
 pub struct ImageSetting {
     resolved: OsString,
-    explicitly_set: bool,
     prebuilt: bool,
 }
 
@@ -60,12 +59,6 @@ impl ImageSetting {
     #[must_use]
     pub fn resolved(&self) -> &OsStr {
         &self.resolved
-    }
-
-    /// Returns whether the process supplied the image override, including empty values.
-    #[must_use]
-    pub fn is_explicitly_set(&self) -> bool {
-        self.explicitly_set
     }
 
     /// Returns whether the selected image should be pulled instead of auto-built.
@@ -153,7 +146,6 @@ impl fmt::Debug for ImageSetting {
         formatter
             .debug_struct("ImageSetting")
             .field("resolved", &REDACTED)
-            .field("explicitly_set", &self.explicitly_set)
             .field("prebuilt", &self.prebuilt)
             .finish()
     }
@@ -340,10 +332,11 @@ impl AppConfig {
             "CF_FAST_TIME_SERVER_ID",
             OsString::from("9779b6698cbd4b4995ee04a4fab38737"),
         );
-        let fast_time_expected_image = first_nonempty(&environment, "CF_FAST_TIME_EXPECTED_IMAGE")
-            .or_else(|| first_nonempty(&environment, "FAST_TIME_IMAGE"))
-            .cloned()
-            .unwrap_or_else(|| default_value("ghcr.io/ibm/cfex-mcp-fast-time-server:latest"));
+        let fast_time_expected_image = shell_value(
+            &environment,
+            "CF_FAST_TIME_EXPECTED_IMAGE",
+            OsString::from("ghcr.io/ibm/cfex-mcp-fast-time-server:latest"),
+        );
         let base_url = base_url(&environment);
         let platform_admin_email = shell_value(
             &environment,
@@ -598,10 +591,7 @@ fn prefixed_value(prefix: &str, suffix: &OsStr) -> OsString {
 }
 
 fn controlplane_image(environment: &LoadedEnvironment) -> ImageSetting {
-    let explicitly_set = is_configured_value(environment, "CF_CONTROLPLANE_IMAGE")
-        || is_configured_value(environment, "IMAGE_LOCAL");
     let resolved = first_nonempty(environment, "CF_CONTROLPLANE_IMAGE")
-        .or_else(|| first_nonempty(environment, "IMAGE_LOCAL"))
         .map(|value| value.value.clone())
         .unwrap_or_else(|| {
             let version = shell_value(
@@ -614,7 +604,6 @@ fn controlplane_image(environment: &LoadedEnvironment) -> ImageSetting {
 
     ImageSetting {
         resolved,
-        explicitly_set,
         prebuilt: true,
     }
 }
@@ -644,7 +633,6 @@ fn dataplane_image(environment: &LoadedEnvironment, dataplane_ref: &SourcedValue
 
     ImageSetting {
         resolved,
-        explicitly_set,
         prebuilt: explicitly_set || dataplane_ref.value.is_empty(),
     }
 }
@@ -952,13 +940,11 @@ mod tests {
             config.controlplane_image.resolved,
             OsStr::new("ghcr.io/ibm/mcp-context-forge:latest")
         );
-        assert!(!config.controlplane_image.explicitly_set);
         assert!(config.controlplane_image.prebuilt);
         assert_eq!(
             config.dataplane_image.resolved,
             OsStr::new("ghcr.io/contextforge-org/contextforge-data-plane:latest")
         );
-        assert!(!config.dataplane_image.explicitly_set);
         assert_sourced(
             &config.dataplane_platform,
             OsStr::new("auto"),
@@ -1061,40 +1047,32 @@ mod tests {
             config.controlplane_image.resolved,
             OsStr::new("dotenv/image:tag")
         );
-        assert!(config.controlplane_image.explicitly_set);
     }
 
     #[test]
-    fn controlplane_image_uses_primary_then_image_local_then_official_version_default() {
+    fn controlplane_image_uses_canonical_override_and_ignores_image_local() {
         let root = repository_root();
         let primary = environment(&[
             ("CF_CONTROLPLANE_IMAGE", "primary/image:tag"),
             ("IMAGE_LOCAL", "legacy/image:tag"),
         ]);
-        let image_local = environment(&[("IMAGE_LOCAL", "legacy/image:tag")]);
-        let empty_image_local =
-            environment(&[("IMAGE_LOCAL", ""), ("CF_CONTROLPLANE_VERSION", "edge")]);
+        let image_local = environment(&[
+            ("IMAGE_LOCAL", "legacy/image:tag"),
+            ("CF_CONTROLPLANE_VERSION", "edge"),
+        ]);
 
         let primary_config = load_app_config(root.path(), &primary);
         let local_config = load_app_config(root.path(), &image_local);
-        let empty_config = load_app_config(root.path(), &empty_image_local);
 
         assert_eq!(
             primary_config.controlplane_image.resolved,
             OsStr::new("primary/image:tag")
         );
-        assert!(primary_config.controlplane_image.explicitly_set);
         assert_eq!(
             local_config.controlplane_image.resolved,
-            OsStr::new("legacy/image:tag")
-        );
-        assert!(local_config.controlplane_image.explicitly_set);
-        assert_eq!(
-            empty_config.controlplane_image.resolved,
             OsStr::new("ghcr.io/ibm/mcp-context-forge:edge")
         );
-        assert!(empty_config.controlplane_image.explicitly_set);
-        assert!(empty_config.controlplane_image.prebuilt);
+        assert!(local_config.controlplane_image.prebuilt);
     }
 
     #[test]
@@ -1172,22 +1150,19 @@ mod tests {
             explicit_config.dataplane_image.resolved,
             OsStr::new("direct/image:tag")
         );
-        assert!(explicit_config.dataplane_image.explicitly_set);
     }
 
     #[test]
-    fn fast_time_image_uses_new_override_then_legacy_override_then_default() {
+    fn fast_time_image_uses_canonical_override_and_ignores_legacy_input() {
         let root = repository_root();
         let expected = environment(&[
             ("CF_FAST_TIME_EXPECTED_IMAGE", "expected/image:tag"),
             ("FAST_TIME_IMAGE", "legacy/image:tag"),
         ]);
         let legacy = environment(&[("FAST_TIME_IMAGE", "legacy/image:tag")]);
-        let empty = environment(&[("CF_FAST_TIME_EXPECTED_IMAGE", ""), ("FAST_TIME_IMAGE", "")]);
 
         let expected_config = load_app_config(root.path(), &expected);
         let legacy_config = load_app_config(root.path(), &legacy);
-        let empty_config = load_app_config(root.path(), &empty);
 
         assert_sourced(
             &expected_config.fast_time_expected_image,
@@ -1196,11 +1171,6 @@ mod tests {
         );
         assert_sourced(
             &legacy_config.fast_time_expected_image,
-            OsStr::new("legacy/image:tag"),
-            ValueOrigin::Process,
-        );
-        assert_sourced(
-            &empty_config.fast_time_expected_image,
             OsStr::new("ghcr.io/ibm/cfex-mcp-fast-time-server:latest"),
             ValueOrigin::Default,
         );

@@ -23,7 +23,6 @@ use crate::load::{LoadSettings, LocustCommand, audit_locust_reports};
 use crate::mcp::GatewayTopology;
 use crate::mcp::auth_proxy::AuthProxy;
 use crate::mcp::gateway::GatewayClient;
-use crate::mcp::http_transport::ReqwestProbeTransport;
 use crate::mcp::probe::{ProbeConfig, run_probe};
 use crate::mcp::protocol::ACCEPT as MCP_ACCEPT;
 use crate::platform::checkout::{CheckoutManager, CheckoutRequest};
@@ -99,12 +98,6 @@ impl<R> RuntimeExecutor<R> {
     pub fn new(config: AppConfig, runner: R) -> Self {
         Self { config, runner }
     }
-
-    /// Returns the loaded application configuration.
-    #[must_use]
-    pub fn config(&self) -> &AppConfig {
-        &self.config
-    }
 }
 
 impl<R: ProcessRunner> RuntimeExecutor<R> {
@@ -155,10 +148,6 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
     fn default_server_id(&self) -> &str {
         self.environment_text("MCP_SERVER_ID")
             .filter(|value| !value.is_empty())
-            .or_else(|| {
-                self.environment_text("MCP_VIRTUAL_SERVER_ID")
-                    .filter(|value| !value.is_empty())
-            })
             .or_else(|| self.config.fast_time_server_id().value.to_str())
             .unwrap_or("9779b6698cbd4b4995ee04a4fab38737")
     }

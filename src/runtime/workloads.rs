@@ -40,7 +40,15 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                 ),
                 protocol_version: protocol_version.to_string(),
             };
-            let transport = ReqwestProbeTransport::new().map_err(AppFailure::from)?;
+            let transport = GatewayClient::builder(
+                config.mode,
+                &config.base_url,
+                &config.server_id,
+                &config.bearer_token,
+            )
+            .protocol_version(config.protocol_version.clone())
+            .build()
+            .map_err(|error| AppFailure::from(anyhow!(error)))?;
             let stdout = std::io::stdout();
             let mut output = stdout.lock();
             run_probe(&transport, &config, &mut output)
