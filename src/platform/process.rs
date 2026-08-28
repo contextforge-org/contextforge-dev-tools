@@ -146,6 +146,7 @@ impl CapturedOutput {
 
     /// Splits captured output into owned standard output and error bytes.
     #[must_use]
+    #[cfg(test)]
     pub fn into_parts(self) -> (Vec<u8>, Vec<u8>) {
         (self.stdout, self.stderr)
     }

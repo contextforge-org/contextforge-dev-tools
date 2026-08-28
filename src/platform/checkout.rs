@@ -56,24 +56,6 @@ impl CheckoutRequest {
         }
     }
 
-    /// Returns the checkout directory.
-    #[must_use]
-    pub fn directory(&self) -> &Path {
-        &self.directory
-    }
-
-    /// Returns the configured source repository.
-    #[must_use]
-    pub fn repository(&self) -> &OsStr {
-        &self.repository
-    }
-
-    /// Returns the configured source ref.
-    #[must_use]
-    pub fn reference(&self) -> &OsStr {
-        &self.reference
-    }
-
     fn is_disabled(&self) -> bool {
         self.kind == CheckoutKind::Dataplane && self.reference.is_empty()
     }
@@ -105,7 +87,6 @@ pub struct CheckoutPlan {
     generated: bool,
     clone: CommandSpec,
     fetch: CommandSpec,
-    remote_branch_probe: Option<CommandSpec>,
     plain_checkout: CommandSpec,
     remote_checkout: Option<CommandSpec>,
     generated_cleanup: Vec<CommandSpec>,
@@ -136,8 +117,7 @@ impl CheckoutPlan {
             OsString::from("-q"),
             request.reference.clone(),
         ]);
-        let (remote_branch_probe, remote_checkout, generated_cleanup) = if generated {
-            let remote_ref = prefixed("refs/remotes/origin/", &request.reference);
+        let (remote_checkout, generated_cleanup) = if generated {
             let remote_target = prefixed("origin/", &request.reference);
             let cleanup = vec![
                 git_in(&request.directory).args([
@@ -154,12 +134,6 @@ impl CheckoutPlan {
             ];
             (
                 Some(git_in(&request.directory).args([
-                    OsString::from("show-ref"),
-                    OsString::from("--verify"),
-                    OsString::from("--quiet"),
-                    remote_ref,
-                ])),
-                Some(git_in(&request.directory).args([
                     OsString::from("checkout"),
                     OsString::from("-q"),
                     OsString::from("-B"),
@@ -169,14 +143,13 @@ impl CheckoutPlan {
                 cleanup,
             )
         } else {
-            (None, None, Vec::new())
+            (None, Vec::new())
         };
 
         Self {
             generated,
             clone,
             fetch,
-            remote_branch_probe,
             plain_checkout,
             remote_checkout,
             generated_cleanup,
@@ -187,12 +160,6 @@ impl CheckoutPlan {
     #[must_use]
     pub fn is_generated(&self) -> bool {
         self.generated
-    }
-
-    /// Returns the generated-checkout remote-branch probe, when one is needed.
-    #[must_use]
-    pub fn remote_branch_probe(&self) -> Option<&CommandSpec> {
-        self.remote_branch_probe.as_ref()
     }
 
     /// Selects the reset or plain checkout command from the remote probe result.

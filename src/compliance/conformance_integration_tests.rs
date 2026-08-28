@@ -8,7 +8,7 @@ use cf_integration::compliance::conformance::{
     ConformanceCheck, ConformanceFixtureMetadata, ConformanceResults, ConformanceRunMetadata,
     ConformanceScenarioResult, ConformanceServerEra, DEFAULT_CONFORMANCE_SUITE,
     DEFAULT_MCP_SPEC_VERSION, OFFICIAL_CONFORMANCE_PACKAGE, ScenarioComparison, ScenarioOutcome,
-    SpecReference, classify_outcomes, compare_result_sets_with_fixture_trust,
+    SemanticLane, SpecReference, classify_outcomes, compare_result_sets_with_fixture_trust,
     expected_server_scenarios, is_trusted_official_fixture, load_server_results,
     official_server_command, render_comparison_markdown, validate_server_scenario_set,
     write_comparison_report,
@@ -19,6 +19,19 @@ use cf_integration::compliance::conformance_fixture::{
 
 const SPEC_REFERENCE: &str =
     "https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle#initialization";
+
+#[test]
+fn semantic_lanes_have_one_shared_stable_vocabulary() {
+    assert_eq!(SemanticLane::FixtureDirect.label(), "fixture direct");
+    assert_eq!(
+        SemanticLane::BuiltInDataPlane.label(),
+        "built-in data-plane route"
+    );
+    assert_eq!(
+        SemanticLane::ExternalDataPlane.label(),
+        "external data-plane route"
+    );
+}
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

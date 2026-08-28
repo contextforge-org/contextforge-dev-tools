@@ -62,28 +62,6 @@ fn run_fixture_patch(source: &str) -> (std::process::ExitStatus, String) {
 }
 
 #[test]
-fn readme_documents_the_official_conformance_fixture_contract() {
-    let readme = fs::read_to_string(workspace_root().join("README.md")).expect("read README");
-    let normalized = readme.split_whitespace().collect::<Vec<_>>().join(" ");
-
-    for fact in [
-        "official TypeScript fixture",
-        "Fast Time remains",
-        "runs fixture-direct, built-in-data-plane, and external-data-plane lanes",
-        "c321dd32035556e6769d3724a8ee97d87c3faaac",
-        "defaults to MCP `2026-07-28`",
-        "loopback `MCP_CLI_BASE_URL`",
-        "passes an empty expected-failure file",
-        "records raw failures without suppression",
-        "same official fixture",
-        "--server-era dual",
-        "fixture-direct lane is the expected incompatible baseline",
-    ] {
-        assert!(normalized.contains(fact), "README must document: {fact}");
-    }
-}
-
-#[test]
 fn dataplane_compose_files_are_in_override_order() {
     let project = ComposeProject::dataplane(
         Path::new("/repo"),

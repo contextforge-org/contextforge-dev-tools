@@ -82,30 +82,35 @@ impl fmt::Debug for ConformanceFixtureClientBuilder {
 
 impl ConformanceFixtureClientBuilder {
     /// Sets the delay between unsuccessful catalog polling attempts.
+    #[cfg(test)]
     pub fn poll_interval(mut self, poll_interval: Duration) -> Self {
         self.poll_interval = poll_interval;
         self
     }
 
     /// Sets the maximum number of catalog polling attempts.
+    #[cfg(test)]
     pub fn max_attempts(mut self, max_attempts: usize) -> Self {
         self.max_attempts = max_attempts;
         self
     }
 
     /// Sets the total timeout for each admin HTTP request. Defaults to 30 seconds.
+    #[cfg(test)]
     pub fn request_timeout(mut self, request_timeout: Duration) -> Self {
         self.request_timeout = request_timeout;
         self
     }
 
     /// Sets the bounded number of gateway reconciliation polls. Defaults to five.
+    #[cfg(test)]
     pub fn reconciliation_attempts(mut self, reconciliation_attempts: usize) -> Self {
         self.reconciliation_attempts = reconciliation_attempts;
         self
     }
 
     /// Sets the delay between gateway reconciliation polls. Defaults to 100ms.
+    #[cfg(test)]
     pub fn reconciliation_interval(mut self, reconciliation_interval: Duration) -> Self {
         self.reconciliation_interval = reconciliation_interval;
         self

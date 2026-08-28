@@ -90,18 +90,6 @@ fn generated_branch_plan_resets_to_the_matching_remote_head() {
 
     assert!(plan.is_generated());
     assert_command(
-        plan.remote_branch_probe()
-            .expect("generated checkout should probe its remote branch"),
-        &[
-            OsStr::new("-C"),
-            directory.as_os_str(),
-            OsStr::new("show-ref"),
-            OsStr::new("--verify"),
-            OsStr::new("--quiet"),
-            OsStr::new("refs/remotes/origin/main"),
-        ],
-    );
-    assert_command(
         &plan.checkout_command(true),
         &[
             OsStr::new("-C"),
@@ -186,7 +174,6 @@ fn external_branch_plan_never_probes_or_resets_the_branch() {
     let plan = CheckoutPlan::new(integration, &request);
 
     assert!(!plan.is_generated());
-    assert!(plan.remote_branch_probe().is_none());
     assert!(plan.generated_cleanup_commands().is_empty());
     assert_command(
         &plan.checkout_command(true),

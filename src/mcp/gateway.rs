@@ -5,7 +5,9 @@ use std::fmt;
 
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Method, StatusCode};
-use serde_json::{Map, Value};
+#[cfg(test)]
+use serde_json::Map;
+use serde_json::Value;
 use thiserror::Error;
 use url::Url;
 
@@ -13,9 +15,10 @@ use crate::mcp::GatewayTopology;
 
 use crate::mcp::backend_identity::{BACKEND_HEADER, BackendIdentity, sanitized_backend_value};
 use crate::mcp::protocol::{
-    ACCEPT as MCP_ACCEPT, PROTOCOL_VERSION, initialize_with_id_and_version, is_stateless_protocol,
-    jsonrpc_with_id, parse_mcp_body, routing_name,
+    ACCEPT as MCP_ACCEPT, PROTOCOL_VERSION, is_stateless_protocol, parse_mcp_body, routing_name,
 };
+#[cfg(test)]
+use crate::mcp::protocol::{initialize_with_id_and_version, jsonrpc_with_id};
 
 /// Default MCP protocol version used in request bodies and HTTP headers.
 pub const DEFAULT_PROTOCOL_VERSION: &str = PROTOCOL_VERSION;
@@ -58,15 +61,24 @@ impl fmt::Debug for HeaderOverride {
 
 #[derive(Clone, Debug, PartialEq)]
 enum Payload {
-    Initialize { id: Value },
+    #[cfg(test)]
+    Initialize {
+        id: Value,
+    },
     Json(Value),
+    #[cfg(test)]
     Raw(Vec<u8>),
+    #[cfg(test)]
     None,
 }
 
 #[derive(Clone, PartialEq)]
 enum ResponseExpectation {
-    JsonRpc { id: Value },
+    #[cfg(test)]
+    JsonRpc {
+        id: Value,
+    },
+    #[cfg(test)]
     NotificationAccepted,
     Unchecked,
 }
@@ -74,7 +86,9 @@ enum ResponseExpectation {
 impl fmt::Debug for ResponseExpectation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            #[cfg(test)]
             Self::JsonRpc { .. } => formatter.write_str("JsonRpc { id: <redacted> }"),
+            #[cfg(test)]
             Self::NotificationAccepted => formatter.write_str("NotificationAccepted"),
             Self::Unchecked => formatter.write_str("Unchecked"),
         }
@@ -95,9 +109,12 @@ pub struct GatewayRequest {
 impl fmt::Debug for GatewayRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let payload = match &self.payload {
+            #[cfg(test)]
             Payload::Initialize { .. } => "initialize",
             Payload::Json(_) => "json:<redacted>",
+            #[cfg(test)]
             Payload::Raw(_) => "raw:<redacted>",
+            #[cfg(test)]
             Payload::None => "none",
         };
         formatter
@@ -115,6 +132,7 @@ impl fmt::Debug for GatewayRequest {
 impl GatewayRequest {
     /// Builds an MCP initialize request.
     #[must_use]
+    #[cfg(test)]
     pub fn initialize(id: Value) -> Self {
         let mut request = Self::post(
             Payload::Initialize { id: id.clone() },
@@ -128,12 +146,14 @@ impl GatewayRequest {
 
     /// Builds the required `notifications/initialized` notification.
     #[must_use]
+    #[cfg(test)]
     pub fn initialized() -> Self {
         Self::notification("notifications/initialized", None)
     }
 
     /// Builds a generic JSON-RPC request whose response must match `id`.
     #[must_use]
+    #[cfg(test)]
     pub fn request(method: &str, params: Option<Value>, id: Value) -> Self {
         Self::post(
             Payload::Json(jsonrpc_with_id(method, params, id.clone())),
@@ -143,6 +163,7 @@ impl GatewayRequest {
 
     /// Builds a generic JSON-RPC notification.
     #[must_use]
+    #[cfg(test)]
     pub fn notification(method: &str, params: Option<Value>) -> Self {
         Self::post(
             Payload::Json(notification_message(method, params)),
@@ -156,6 +177,7 @@ impl GatewayRequest {
     /// Streamable HTTP GET can remain open indefinitely. The returned exchange
     /// contains the status and headers with an empty body.
     #[must_use]
+    #[cfg(test)]
     pub fn get() -> Self {
         Self {
             method: Method::GET,
@@ -169,6 +191,7 @@ impl GatewayRequest {
 
     /// Builds an unchecked streamable-HTTP DELETE request.
     #[must_use]
+    #[cfg(test)]
     pub fn delete() -> Self {
         Self {
             method: Method::DELETE,
@@ -182,6 +205,7 @@ impl GatewayRequest {
 
     /// Builds an unchecked JSON POST with an arbitrary, potentially malformed body.
     #[must_use]
+    #[cfg(test)]
     pub fn raw_post(body: impl AsRef<[u8]>) -> Self {
         Self::post(
             Payload::Raw(body.as_ref().to_vec()),
@@ -216,13 +240,6 @@ impl GatewayRequest {
         self
     }
 
-    /// Disables status and JSON-RPC validation for an intentional negative case.
-    #[must_use]
-    pub fn unchecked(mut self) -> Self {
-        self.expectation = ResponseExpectation::Unchecked;
-        self
-    }
-
     fn post(payload: Payload, expectation: ResponseExpectation) -> Self {
         Self {
             method: Method::POST,
@@ -237,6 +254,7 @@ impl GatewayRequest {
 
 /// Builds a JSON-RPC 2.0 notification without an `id` member.
 #[must_use]
+#[cfg(test)]
 pub fn notification_message(method: &str, params: Option<Value>) -> Value {
     let mut payload = Map::new();
     payload.insert("jsonrpc".to_owned(), Value::String("2.0".to_owned()));
@@ -260,30 +278,21 @@ pub struct RequestCapture {
 impl RequestCapture {
     /// Stack mode used for this request.
     #[must_use]
+    #[cfg(test)]
     pub fn mode(&self) -> GatewayTopology {
         self.mode
     }
 
-    /// HTTP method.
-    #[must_use]
-    pub fn method(&self) -> &str {
-        &self.method
-    }
-
-    /// Fully resolved public endpoint.
-    #[must_use]
-    pub fn url(&self) -> &str {
-        &self.url
-    }
-
     /// Sanitized headers; authentication, cookies, and sessions are redacted.
     #[must_use]
+    #[cfg(test)]
     pub fn headers(&self) -> &BTreeMap<String, String> {
         &self.headers
     }
 
     /// Sanitized request body.
     #[must_use]
+    #[cfg(test)]
     pub fn body(&self) -> Option<&str> {
         self.body.as_deref()
     }
@@ -325,6 +334,7 @@ impl Exchange {
 
     /// Safe outbound request diagnostic.
     #[must_use]
+    #[cfg(test)]
     pub fn request(&self) -> &RequestCapture {
         &self.request
     }
@@ -337,6 +347,7 @@ impl Exchange {
 
     /// Sanitized response headers.
     #[must_use]
+    #[cfg(test)]
     pub fn headers(&self) -> &BTreeMap<String, String> {
         &self.headers
     }
@@ -358,23 +369,6 @@ impl Exchange {
     #[must_use]
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
-    }
-
-    /// Verifies an exact status while retaining the full exchange on failure.
-    ///
-    /// # Errors
-    ///
-    /// Returns a mode-aware error containing a clone of this exchange when the
-    /// status differs.
-    pub fn require_status(&self, expected: u16) -> Result<(), GatewayError> {
-        if self.status == expected {
-            return Ok(());
-        }
-        Err(GatewayError::with_exchange(
-            self.mode,
-            format!("expected status {expected}, got status {}", self.status),
-            self.clone(),
-        ))
     }
 }
 
@@ -523,14 +517,9 @@ impl GatewayClient {
         &self.endpoint
     }
 
-    /// Configured MCP protocol version.
-    #[must_use]
-    pub fn protocol_version(&self) -> &str {
-        &self.protocol_version
-    }
-
     /// Most recent non-empty session ID received in a successful response.
     #[must_use]
+    #[cfg(test)]
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
     }
@@ -735,6 +724,7 @@ impl GatewayClient {
         exchange: &Exchange,
     ) -> Result<(), GatewayError> {
         match expectation {
+            #[cfg(test)]
             ResponseExpectation::JsonRpc { id } => {
                 if status != StatusCode::OK {
                     return Err(GatewayError::with_exchange(
@@ -761,6 +751,7 @@ impl GatewayClient {
                     GatewayError::with_exchange(self.mode, message, exchange.clone())
                 })?;
             }
+            #[cfg(test)]
             ResponseExpectation::NotificationAccepted => {
                 if status != StatusCode::ACCEPTED {
                     return Err(GatewayError::with_exchange(
@@ -857,6 +848,7 @@ pub enum GatewayError {
 impl GatewayError {
     /// Stack mode in which the failure occurred.
     #[must_use]
+    #[cfg(test)]
     pub fn mode(&self) -> GatewayTopology {
         match self {
             Self::Configuration { mode, .. }
@@ -867,6 +859,7 @@ impl GatewayError {
 
     /// Full exchange for response-time failures.
     #[must_use]
+    #[cfg(test)]
     pub fn exchange(&self) -> Option<&Exchange> {
         match self {
             Self::Exchange { exchange, .. } => Some(exchange),
@@ -951,14 +944,18 @@ fn gateway_endpoint(
 fn materialize_payload(
     mode: GatewayTopology,
     payload: &Payload,
-    protocol_version: &str,
+    _protocol_version: &str,
 ) -> Result<Option<Vec<u8>>, GatewayError> {
     let value = match payload {
-        Payload::Initialize { id } => {
-            Some(initialize_with_id_and_version(id.clone(), protocol_version))
-        }
+        #[cfg(test)]
+        Payload::Initialize { id } => Some(initialize_with_id_and_version(
+            id.clone(),
+            _protocol_version,
+        )),
         Payload::Json(value) => Some(value.clone()),
+        #[cfg(test)]
         Payload::Raw(body) => return Ok(Some(body.clone())),
+        #[cfg(test)]
         Payload::None => None,
     };
     value
@@ -1099,6 +1096,7 @@ fn parse_response_body(body: &[u8], headers: &HeaderMap) -> Result<Option<Value>
         .map_err(|_| "response body is not valid JSON or SSE".to_owned())
 }
 
+#[cfg(test)]
 fn validate_jsonrpc_response(message: &Value, expected_id: &Value) -> Result<(), String> {
     let object = message
         .as_object()

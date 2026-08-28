@@ -97,12 +97,14 @@ impl ComposeProject {
 
     /// Ordered Compose override files.
     #[must_use]
+    #[cfg(test)]
     pub fn files(&self) -> &[PathBuf] {
         &self.files
     }
 
     /// Explicitly enabled Compose profiles.
     #[must_use]
+    #[cfg(test)]
     pub fn profiles(&self) -> &[OsString] {
         &self.profiles
     }

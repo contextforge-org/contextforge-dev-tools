@@ -15,9 +15,9 @@ categories = ["command-line-utilities", "development-tools::testing"]
 default-run = "cf-integration"
 include = [
     "/src/**",
-    "/tests/**",
     "/docker/**",
-    "/scripts/**",
+    "/scripts/locustfile_mcp.py",
+    "/scripts/live_protocol/sitecustomize.py",
     "/README.md",
     "/LICENSE",
 ]

@@ -1,6 +1,7 @@
 //! Shared MCP streamable-HTTP protocol helpers.
 
 use serde_json::{Map, Value, json};
+#[cfg(test)]
 use uuid::Uuid;
 
 /// Legacy session-oriented MCP protocol version used by the control-plane lane.
@@ -12,6 +13,7 @@ pub const ACCEPT: &str = "application/json, text/event-stream";
 
 /// Builds a JSON-RPC request with a generated v4 UUID string ID.
 #[must_use]
+#[cfg(test)]
 pub fn jsonrpc(method: &str, params: Option<Value>) -> Value {
     jsonrpc_with_id(method, params, Value::String(Uuid::new_v4().to_string()))
 }
@@ -97,12 +99,14 @@ pub fn routing_name<'a>(method: &str, params: Option<&'a Value>) -> Option<&'a s
 
 /// Builds an MCP initialize request with a generated v4 UUID string ID.
 #[must_use]
+#[cfg(test)]
 pub fn initialize() -> Value {
     initialize_with_id(Value::String(Uuid::new_v4().to_string()))
 }
 
 /// Builds a deterministic MCP initialize request with an explicit ID.
 #[must_use]
+#[cfg(test)]
 pub fn initialize_with_id(id: Value) -> Value {
     initialize_with_id_and_version(id, PROTOCOL_VERSION)
 }

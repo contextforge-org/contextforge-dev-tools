@@ -138,6 +138,7 @@ assert empty_environment.process_exit_code == 1
 "#;
 
     let output = Command::new(python())
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .arg("-c")
         .arg(code)
         .env("PYTHONPATH", python_path)
@@ -245,6 +246,7 @@ adapter.validate_result("server/discover", {
 "#;
 
     let output = Command::new(python())
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .arg("-c")
         .arg(code)
         .env("PYTHONPATH", python_path)
@@ -324,6 +326,7 @@ assert user.client.timeouts == [
 "#;
 
     let output = Command::new(python())
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .arg("-c")
         .arg(code)
         .env("PYTHONPATH", &python_path)
@@ -342,6 +345,7 @@ assert user.client.timeouts == [
 
     for invalid in ["", "0", "-1", "nan", "inf"] {
         let output = Command::new(python())
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .arg("-c")
             .arg("import locustfile_mcp")
             .env("PYTHONPATH", &python_path)
@@ -446,6 +450,7 @@ assert user.client.response.failures and user.client.response.successes == 0
 "#;
 
     let output = Command::new(python())
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .arg("-c")
         .arg(code)
         .env("PYTHONPATH", python_path)
@@ -532,6 +537,7 @@ assert response.successes == 1 and not response.failures
 "#;
 
     let output = Command::new(python())
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .arg("-c")
         .arg(code)
         .env("PYTHONPATH", python_path)

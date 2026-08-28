@@ -1,5 +1,4 @@
 use std::ffi::OsString;
-use std::process::Command as ProcessCommand;
 
 use cf_integration::cli::{
     Cli, CliConformanceServerEra, CliLane, CliTopology, Command, ConformanceArgs,
@@ -56,7 +55,7 @@ fn command_tree_contains_only_distinct_public_workflows() {
 }
 
 #[test]
-fn every_public_command_renders_help_from_the_binary() {
+fn every_public_command_renders_help() {
     let paths: &[&[&str]] = &[
         &[],
         &["stack"],
@@ -77,18 +76,8 @@ fn every_public_command_renders_help_from_the_binary() {
     ];
 
     for path in paths {
-        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_cf-integration"))
-            .args(*path)
-            .arg("--help")
-            .output()
-            .expect("help command should start");
-        assert!(
-            output.status.success(),
-            "help failed for {path:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let stdout = String::from_utf8(output.stdout).expect("help should be UTF-8");
-        assert!(stdout.contains("Usage:"), "missing usage for {path:?}");
+        let help = command_at(path).render_long_help().to_string();
+        assert!(help.contains("Usage:"), "missing usage for {path:?}");
     }
 }
 

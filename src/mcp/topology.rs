@@ -13,13 +13,4 @@ impl GatewayTopology {
     pub const fn requires_dataplane(self) -> bool {
         matches!(self, Self::Dataplane)
     }
-
-    /// Returns the stable user-facing stack label.
-    #[must_use]
-    pub const fn report_label(self) -> &'static str {
-        match self {
-            Self::Direct => "controlplane",
-            Self::Dataplane => "dataplane",
-        }
-    }
 }

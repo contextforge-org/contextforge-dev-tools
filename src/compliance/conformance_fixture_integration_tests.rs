@@ -342,7 +342,7 @@ fn provision_prefix(gateways: Value) -> Vec<ExpectedRequest> {
 
 #[test]
 fn admin_client_builder_explicitly_disables_environment_proxies() {
-    let source = include_str!("../src/compliance/conformance_fixture.rs");
+    let source = include_str!("conformance_fixture.rs");
     let builder = source
         .split("let http = reqwest::Client::builder()")
         .nth(1)
