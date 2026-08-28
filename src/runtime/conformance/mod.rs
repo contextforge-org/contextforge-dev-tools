@@ -111,8 +111,14 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 let artifact_root = results_dir
                     .as_deref()
                     .unwrap_or_else(|| self.config.integration_dir());
-                let baseline_root = baseline_dir
-                    .unwrap_or_else(|| self.config.root().join("tests/conformance/baselines"));
+                let baseline_root = baseline_dir.unwrap_or_else(|| {
+                    let root = if bless {
+                        self.config.root()
+                    } else {
+                        self.config.asset_root()
+                    };
+                    root.join("tests/conformance/baselines")
+                });
                 let report_root = output_dir.unwrap_or_else(|| self.config.root().join("reports"));
                 let mut failures = Vec::new();
                 let mut updates = Vec::<BaselineUpdate>::new();
@@ -135,44 +141,65 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     let quiet_runner = LoggingProcessRunner::new(&self.runner, &setup_log);
                     let executor = RuntimeContext::new(self.config.clone(), quiet_runner);
                     let matrix_started = Instant::now();
-                    if let Err(error) = executor
+                    let run_result = executor
                         .run_conformance(&lanes, &client_version, server_era, &paths)
-                        .await
-                    {
+                        .await;
+                    let results = if run_result.is_ok() {
+                        executor.load_selected_conformance_results(&paths, &lanes)
+                    } else {
+                        executor.load_completed_conformance_results(&paths, &lanes)
+                    };
+                    if let Err(error) = run_result {
                         failures.push(format!(
                             "{}: {error}\n  Setup log: {}",
                             paths.identity(),
                             setup_log.display()
                         ));
-                        continue;
                     }
 
-                    let evaluated = executor
-                        .load_selected_conformance_results(&paths, &lanes)
-                        .and_then(|results| {
-                            let evaluation = evaluate_baselines(
-                                &results,
-                                &lanes,
-                                &baseline_root,
-                                &client_version,
-                                server_era,
-                                bless,
-                            )
-                            .map_err(AppFailure::from)?;
-                            println!(
-                                "{}",
-                                render_conformance_baseline_results(
-                                    &results,
-                                    &evaluation.comparisons,
-                                    matrix_started.elapsed(),
-                                    OutputStyle::stdout(),
-                                    bless,
-                                )
-                            );
-                            Ok(evaluation)
-                        });
+                    let evaluated = results.and_then(|results| {
+                        if results.is_empty() {
+                            return Ok(None);
+                        }
+                        let completed_lanes = results.keys().copied().collect::<Vec<_>>();
+                        match evaluate_baselines(
+                            &results,
+                            &completed_lanes,
+                            &baseline_root,
+                            &client_version,
+                            server_era,
+                            bless,
+                        ) {
+                            Ok(evaluation) => {
+                                println!(
+                                    "{}",
+                                    render_conformance_results(
+                                        &results,
+                                        Some(&evaluation.comparisons),
+                                        matrix_started.elapsed(),
+                                        OutputStyle::stdout(),
+                                        bless,
+                                    )
+                                );
+                                Ok(Some(evaluation))
+                            }
+                            Err(error) => {
+                                println!(
+                                    "{}",
+                                    render_conformance_results(
+                                        &results,
+                                        None,
+                                        matrix_started.elapsed(),
+                                        OutputStyle::stdout(),
+                                        bless,
+                                    )
+                                );
+                                Err(AppFailure::from(error))
+                            }
+                        }
+                    });
                     match evaluated {
-                        Ok(evaluation) => {
+                        Ok(Some(evaluation)) => {
                             for comparison in &evaluation.comparisons {
                                 let report = paths.baseline_report(comparison.lane);
                                 if let Err(error) = write_baseline_report(
@@ -199,6 +226,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                             }
                             updates.extend(evaluation.updates);
                         }
+                        Ok(None) => {}
                         Err(error) => {
                             failures.push(format!("{} baseline gate: {error}", paths.identity()));
                         }
@@ -723,9 +751,9 @@ fn conformance_matrix(
         .collect()
 }
 
-fn render_conformance_baseline_results(
+fn render_conformance_results(
     results: &BTreeMap<SemanticLane, ConformanceResults>,
-    comparisons: &[BaselineComparison],
+    comparisons: Option<&[BaselineComparison]>,
     elapsed: Duration,
     style: OutputStyle,
     blessing: bool,
@@ -738,13 +766,15 @@ fn render_conformance_baseline_results(
     let mut ambiguous = 0;
     let mut output = String::new();
 
-    for comparison in comparisons {
-        let Some(lane_results) = results.get(&comparison.lane) else {
-            continue;
-        };
+    for (lane, lane_results) in results {
+        let comparison = comparisons.and_then(|comparisons| {
+            comparisons
+                .iter()
+                .find(|comparison| comparison.lane == *lane)
+        });
         let total = lane_results.scenarios.len();
         let divider = style.info("────────────");
-        let heading = style.heading(&format!(" MCP conformance results: {}", comparison.lane));
+        let heading = style.heading(&format!(" MCP conformance results: {lane}"));
         let _ = writeln!(output, "{divider}\n{heading}");
         for (index, result) in lane_results.scenarios.values().enumerate() {
             let status = conformance_test_status(result, comparison, blessing);
@@ -756,7 +786,7 @@ fn render_conformance_baseline_results(
                 TestStatus::Skip => skipped += 1,
                 TestStatus::Unknown => ambiguous += 1,
             }
-            let name = format!("{}::{}", comparison.lane.slug(), result.scenario);
+            let name = format!("{}::{}", lane.slug(), result.scenario);
             let _ = writeln!(
                 output,
                 "{}",
@@ -783,37 +813,43 @@ fn render_conformance_baseline_results(
 
 fn conformance_test_status(
     result: &crate::conformance::results::ConformanceScenarioResult,
-    comparison: &BaselineComparison,
+    comparison: Option<&BaselineComparison>,
     blessing: bool,
 ) -> TestStatus {
     let scenario = result.scenario.as_str();
-    if !blessing
-        && comparison
-            .unexpected
+    if let Some(comparison) = comparison {
+        if !blessing
+            && comparison
+                .unexpected
+                .iter()
+                .any(|finding| finding.scenario == scenario)
+        {
+            return TestStatus::Fail;
+        }
+        if !blessing
+            && comparison
+                .stale
+                .iter()
+                .any(|finding| finding.scenario == scenario)
+        {
+            return TestStatus::UnexpectedPass;
+        }
+        if comparison
+            .actual
             .iter()
             .any(|finding| finding.scenario == scenario)
-    {
-        return TestStatus::Fail;
-    }
-    if !blessing
-        && comparison
-            .stale
-            .iter()
-            .any(|finding| finding.scenario == scenario)
-    {
-        return TestStatus::UnexpectedPass;
-    }
-    if comparison
-        .actual
-        .iter()
-        .any(|finding| finding.scenario == scenario)
-    {
-        return TestStatus::ExpectedFailure;
+        {
+            return TestStatus::ExpectedFailure;
+        }
     }
     match result.gated_outcome() {
         ScenarioOutcome::Compliant => TestStatus::Pass,
         ScenarioOutcome::NonCompliant | ScenarioOutcome::FixtureFailure => {
-            TestStatus::ExpectedFailure
+            if comparison.is_some() {
+                TestStatus::ExpectedFailure
+            } else {
+                TestStatus::Fail
+            }
         }
         ScenarioOutcome::NotApplicable => TestStatus::Skip,
         ScenarioOutcome::Ambiguous | ScenarioOutcome::Missing => TestStatus::Unknown,
@@ -1064,9 +1100,9 @@ mod tests {
             stale: Vec::new(),
         };
 
-        let rendered = render_conformance_baseline_results(
+        let rendered = render_conformance_results(
             &results,
-            &[comparison],
+            Some(&[comparison]),
             Duration::from_millis(1_250),
             OutputStyle::plain(),
             false,
@@ -1075,6 +1111,22 @@ mod tests {
         assert_eq!(
             rendered,
             "────────────\n MCP conformance results: external dataplane\n       XFAIL (1/2) external-data-plane::failing\n        PASS (2/2) external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 1 xfailed, 0 xpassed, 0 failed, 0 skipped, 0 unknown"
+        );
+    }
+
+    #[test]
+    fn conformance_results_render_without_a_baseline_when_the_gate_cannot_load() {
+        let rendered = render_conformance_results(
+            &result_map(mixed_conformance_results()),
+            None,
+            Duration::from_millis(1_250),
+            OutputStyle::plain(),
+            false,
+        );
+
+        assert_eq!(
+            rendered,
+            "────────────\n MCP conformance results: external dataplane\n        FAIL (1/2) external-data-plane::failing\n        PASS (2/2) external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 0 xfailed, 0 xpassed, 1 failed, 0 skipped, 0 unknown"
         );
     }
 
@@ -1112,9 +1164,9 @@ mod tests {
             unexpected: vec![unexpected],
             stale: vec![stale],
         };
-        let rendered = render_conformance_baseline_results(
+        let rendered = render_conformance_results(
             &results,
-            &[comparison],
+            Some(&[comparison]),
             Duration::from_millis(1_250),
             OutputStyle::colored(),
             false,

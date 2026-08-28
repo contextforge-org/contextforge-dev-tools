@@ -31,8 +31,8 @@ cargo install cf-integration --locked
 cargo install --path . --locked
 ```
 
-The installed binary is repository-independent. Required Compose overlays and
-runtime scripts are embedded in the executable.
+The installed binary is repository-independent. Required Compose overlays,
+runtime scripts, and conformance baselines are embedded in the executable.
 
 ## Runtime assets and workspace resolution
 
@@ -191,13 +191,18 @@ tests/conformance/baselines/
       external-data-plane.yml
 ```
 
-Each file contains sorted `FAILURE` and `WARNING` check identities. The direct
-fixture is gated independently; findings reproduced there are subtracted from
-routed lanes before comparison. Unexpected, stale, unknown, malformed,
-incomplete, missing, and operational results fail the matrix. `--bless`
-replaces all selected baselines in one directory transaction only after every
-combination succeeds. Report regeneration discovers every partition beneath
-the selected result root and accepts `--results-dir` and `--output-dir`.
+Each file contains sorted `FAILURE` and `WARNING` check identities. They are
+required to distinguish expected failures from regressions and are embedded
+for installed binaries. Every completed lane is printed in nextest style even
+when a later lane fails operationally. The direct fixture is gated
+independently; findings reproduced there are subtracted from routed lanes
+before comparison. Unexpected, stale, unknown, malformed, incomplete,
+missing, and operational results fail the matrix. `--bless` replaces all
+selected baselines in one directory transaction only after every combination
+succeeds. Outside a developer checkout, an omitted `--baseline-dir` writes
+blessed baselines beneath the current workspace rather than modifying embedded
+assets. Report regeneration discovers every partition beneath the selected
+result root and accepts `--results-dir` and `--output-dir`.
 
 ## Canonical configuration
 
@@ -268,6 +273,7 @@ src/runtime/session.rs     shared managed stack and credential scope
 src/runtime/mod.rs         thin action dispatcher
 docker/                   embedded Compose and nginx assets
 scripts/                  embedded runtime adapters
+tests/conformance/        embedded expected-result baselines
 ```
 
 The Bruno collection under `manual-tests/mcp-manual-test-tools/` is an

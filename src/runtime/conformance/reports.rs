@@ -150,18 +150,29 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         paths: &ConformancePaths,
         lanes: &[SemanticLane],
     ) -> AppResult<BTreeMap<SemanticLane, ConformanceResults>> {
+        let results = self.load_completed_conformance_results(paths, lanes)?;
+        for lane in conformance_evidence_lanes(lanes) {
+            if !results.contains_key(&lane) {
+                return Err(AppFailure::from(anyhow!(
+                    "missing required conformance lane {} for {}",
+                    lane.slug(),
+                    paths.identity()
+                )));
+            }
+        }
+        Ok(results)
+    }
+
+    pub(super) fn load_completed_conformance_results(
+        &self,
+        paths: &ConformancePaths,
+        lanes: &[SemanticLane],
+    ) -> AppResult<BTreeMap<SemanticLane, ConformanceResults>> {
         let mut results = BTreeMap::new();
         for lane in conformance_evidence_lanes(lanes) {
-            let artifact = self
-                .load_conformance_artifact(paths, lane)?
-                .ok_or_else(|| {
-                    AppFailure::from(anyhow!(
-                        "missing required conformance lane {} for {}",
-                        lane.slug(),
-                        paths.identity()
-                    ))
-                })?;
-            results.insert(lane, artifact.results);
+            if let Some(artifact) = self.load_conformance_artifact(paths, lane)? {
+                results.insert(lane, artifact.results);
+            }
         }
         Ok(results)
     }
