@@ -121,11 +121,11 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                 metadata.target
             )));
         }
-        if metadata.oracle != cf_integration_compliance::conformance::OFFICIAL_CONFORMANCE_PACKAGE {
+        if metadata.oracle != crate::compliance::conformance::OFFICIAL_CONFORMANCE_PACKAGE {
             return Err(AppFailure::from(anyhow!(
                 "conformance artifacts used oracle {:?}, expected {:?}",
                 metadata.oracle,
-                cf_integration_compliance::conformance::OFFICIAL_CONFORMANCE_PACKAGE
+                crate::compliance::conformance::OFFICIAL_CONFORMANCE_PACKAGE
             )));
         }
         let results = load_server_results(&artifact.official_results).map_err(AppFailure::from)?;
@@ -340,8 +340,8 @@ fn remove_artifact_directory(path: &Path) -> AppResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cf_integration_compliance::conformance::OFFICIAL_CONFORMANCE_PACKAGE;
-    use cf_integration_compliance::conformance_fixture::{
+    use crate::compliance::conformance::OFFICIAL_CONFORMANCE_PACKAGE;
+    use crate::compliance::conformance_fixture::{
         OFFICIAL_CONFORMANCE_REPOSITORY, OFFICIAL_CONFORMANCE_REVISION,
         OFFICIAL_CONFORMANCE_SERVER_ID,
     };

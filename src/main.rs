@@ -4,9 +4,9 @@ use cf_integration::OutputStyle;
 use cf_integration::app::resolve_action;
 use cf_integration::cli::Cli;
 use cf_integration::error::AppFailure;
+use cf_integration::platform::config::{AppConfig, Environment};
+use cf_integration::platform::process::SystemProcessRunner;
 use cf_integration::runtime::RuntimeExecutor;
-use cf_integration_platform::config::{AppConfig, Environment};
-use cf_integration_platform::process::SystemProcessRunner;
 use clap::Parser;
 
 #[tokio::main]

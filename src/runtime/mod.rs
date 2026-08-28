@@ -7,35 +7,35 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 
-use anyhow::{Context, anyhow};
-use cf_integration_compliance::conformance::{
+use crate::compliance::conformance::{
     ComparisonFixtureTrust, ComparisonReport, ConformanceFixtureMetadata, ConformanceResults,
     ConformanceRunMetadata, ConformanceServerEra, ConformanceTarget,
     compare_result_sets_with_fixture_trust, expected_server_scenarios, is_trusted_official_fixture,
     load_server_results, official_server_command, validate_server_scenario_set,
     write_comparison_report,
 };
-use cf_integration_compliance::conformance_fixture::{
+use crate::compliance::conformance_fixture::{
     ConformanceFixtureClient, OFFICIAL_CONFORMANCE_BACKEND_URL, OFFICIAL_CONFORMANCE_PROXY_SERVICE,
     OFFICIAL_CONFORMANCE_REPOSITORY, OFFICIAL_CONFORMANCE_REVISION, OFFICIAL_CONFORMANCE_SERVER_ID,
     OFFICIAL_CONFORMANCE_SERVICE,
 };
-use cf_integration_load::{LoadSettings, LocustCommand, audit_locust_reports};
-use cf_integration_mcp::GatewayTopology;
-use cf_integration_mcp::auth_proxy::AuthProxy;
-use cf_integration_mcp::gateway::GatewayClient;
-use cf_integration_mcp::http_transport::ReqwestProbeTransport;
-use cf_integration_mcp::mcp::ACCEPT as MCP_ACCEPT;
-use cf_integration_mcp::probe::{ProbeConfig, run_probe};
-use cf_integration_platform::checkout::{CheckoutManager, CheckoutRequest};
-use cf_integration_platform::compose::{ComposeProject, validate_integration_contract};
-use cf_integration_platform::config::AppConfig;
-use cf_integration_platform::process::{CommandSpec, LoggingProcessRunner, ProcessRunner};
-use cf_integration_platform::stack::{
+use crate::load::{LoadSettings, LocustCommand, audit_locust_reports};
+use crate::mcp::GatewayTopology;
+use crate::mcp::auth_proxy::AuthProxy;
+use crate::mcp::gateway::GatewayClient;
+use crate::mcp::http_transport::ReqwestProbeTransport;
+use crate::mcp::probe::{ProbeConfig, run_probe};
+use crate::mcp::protocol::ACCEPT as MCP_ACCEPT;
+use crate::platform::checkout::{CheckoutManager, CheckoutRequest};
+use crate::platform::compose::{ComposeProject, validate_integration_contract};
+use crate::platform::config::AppConfig;
+use crate::platform::process::{CommandSpec, LoggingProcessRunner, ProcessRunner};
+use crate::platform::stack::{
     BuildInputs, BuildMode, CleanupKind, FreshnessSnapshot, ServiceSnapshot, StackCommandPlan,
     StackFreshness, resolve_build,
 };
-use cf_integration_platform::{PlatformError, StackMode};
+use crate::platform::{PlatformError, StackMode};
+use anyhow::{Context, anyhow};
 use serde::Deserialize;
 
 use crate::OutputStyle;
@@ -453,13 +453,13 @@ const fn gateway_topology(mode: StackMode) -> GatewayTopology {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use crate::platform::config::Environment;
+    use crate::platform::process::SystemProcessRunner;
     use axum::Router;
     use axum::body::Body;
     use axum::extract::{Request, State};
     use axum::http::{HeaderMap, Method, Response, StatusCode};
     use axum::routing::any;
-    use cf_integration_platform::config::Environment;
-    use cf_integration_platform::process::SystemProcessRunner;
     use serde_json::{Value, json};
     use tokio::net::TcpListener;
 

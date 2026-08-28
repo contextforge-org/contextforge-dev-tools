@@ -3,7 +3,7 @@
 use std::error::Error;
 use std::fmt;
 
-use cf_integration_platform::PlatformError;
+use crate::platform::PlatformError;
 
 /// An application operation or platform operation failure.
 #[derive(Debug)]

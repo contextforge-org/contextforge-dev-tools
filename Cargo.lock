@@ -218,75 +218,19 @@ name = "cf-integration"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
- "cf-integration-compliance",
- "cf-integration-load",
- "cf-integration-mcp",
- "cf-integration-platform",
  "clap",
  "jsonwebtoken",
  "reqwest",
  "serde",
  "serde_json",
- "tempfile",
- "tokio",
- "tokio-stream",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "cf-integration-compliance"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "cf-integration-platform",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-stream",
- "url",
-]
-
-[[package]]
-name = "cf-integration-load"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cf-integration-mcp",
- "cf-integration-platform",
- "tempfile",
-]
-
-[[package]]
-name = "cf-integration-mcp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "reqwest",
- "serde_json",
+ "serde_yaml",
  "tempfile",
  "thiserror",
  "tokio",
  "tokio-stream",
  "url",
- "uuid",
-]
-
-[[package]]
-name = "cf-integration-platform"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "tokio",
  "uuid",
 ]
 

@@ -1,38 +1,21 @@
 [package]
 name = "cf-integration"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-publish.workspace = true
-authors.workspace = true
-description = "Integration and conformance harness for ContextForge control-plane and data-plane services"
-repository.workspace = true
-homepage.workspace = true
-readme = "README.md"
-keywords = ["contextforge", "mcp", "integration-testing", "conformance"]
-categories = ["command-line-utilities", "development-tools::testing"]
-default-run = "cf-integration"
-
-[workspace]
-members = [".", "crates/platform", "crates/mcp", "crates/compliance", "crates/load"]
-resolver = "3"
-
-[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 license = "Apache-2.0"
 publish = true
 authors = ["ContextForge Authors"]
+description = "Integration and conformance harness for ContextForge control-plane and data-plane services"
 repository = "https://github.com/contextforge-org/contextforge-dev-tools"
 homepage = "https://github.com/contextforge-org/contextforge-dev-tools"
+readme = "README.md"
+keywords = ["contextforge", "mcp", "integration-testing", "conformance"]
+categories = ["command-line-utilities", "development-tools::testing"]
+default-run = "cf-integration"
+include = ["src/**", "docker/**", "scripts/**", "README.md", "LICENSE"]
 
-[workspace.dependencies]
-cf-integration-platform = { version = "0.1.0", path = "crates/platform" }
-cf-integration-mcp = { version = "0.1.0", path = "crates/mcp" }
-cf-integration-compliance = { version = "0.1.0", path = "crates/compliance" }
-cf-integration-load = { version = "0.1.0", path = "crates/load" }
+[dependencies]
 anyhow = "1"
 async-trait = "0.1.89"
 axum = "0.8.9"
@@ -41,33 +24,15 @@ jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
-tempfile = "3"
 thiserror = "2.0.18"
 tokio = { version = "1.48", features = ["macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
-tokio-stream = "0.1.18"
 url = "2.5.8"
 uuid = { version = "1.23.1", features = ["v4", "serde"] }
 
-[dependencies]
-cf-integration-platform.workspace = true
-cf-integration-mcp.workspace = true
-cf-integration-compliance.workspace = true
-cf-integration-load.workspace = true
-anyhow.workspace = true
-clap.workspace = true
-jsonwebtoken.workspace = true
-reqwest.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-tokio.workspace = true
-url.workspace = true
-uuid.workspace = true
-
 [dev-dependencies]
-axum.workspace = true
-tempfile.workspace = true
-tokio-stream.workspace = true
+serde_yaml = "0.9"
+tempfile = "3"
+tokio-stream = "0.1.18"
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
@@ -75,13 +40,10 @@ bin-dir = "{ bin }{ binary-ext }"
 pkg-fmt = "tgz"
 disabled-strategies = ["quick-install", "compile"]
 
-[lints]
-workspace = true
-
-[workspace.lints.rust]
+[lints.rust]
 unsafe_code = "forbid"
 
-[workspace.lints.clippy]
+[lints.clippy]
 correctness = { level = "deny", priority = -1 }
 suspicious = { level = "warn", priority = -1 }
 style = { level = "warn", priority = -1 }

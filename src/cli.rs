@@ -5,8 +5,8 @@ use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use cf_integration_compliance::DEFAULT_MCP_SPEC_VERSION;
-use cf_integration_mcp::mcp::PROTOCOL_VERSION;
+use crate::compliance::DEFAULT_MCP_SPEC_VERSION;
+use crate::mcp::protocol::PROTOCOL_VERSION;
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
 const RUN_TIME_ERROR: &str =
@@ -202,7 +202,7 @@ pub enum CliTopology {
     Dataplane,
 }
 
-impl From<CliTopology> for cf_integration_platform::StackMode {
+impl From<CliTopology> for crate::platform::StackMode {
     fn from(topology: CliTopology) -> Self {
         match topology {
             CliTopology::Controlplane => Self::Controlplane,
@@ -368,7 +368,7 @@ pub struct ConformanceRunArgs {
     pub results_dir: Option<PathBuf>,
 }
 
-impl From<CliLane> for cf_integration_compliance::conformance::ConformanceTarget {
+impl From<CliLane> for crate::compliance::conformance::ConformanceTarget {
     fn from(lane: CliLane) -> Self {
         match lane {
             CliLane::FixtureDirect => Self::Fixture,
@@ -389,9 +389,7 @@ pub enum CliConformanceServerEra {
     Modern,
 }
 
-impl From<CliConformanceServerEra>
-    for cf_integration_compliance::conformance::ConformanceServerEra
-{
+impl From<CliConformanceServerEra> for crate::compliance::conformance::ConformanceServerEra {
     fn from(era: CliConformanceServerEra) -> Self {
         match era {
             CliConformanceServerEra::Dual => Self::Dual,

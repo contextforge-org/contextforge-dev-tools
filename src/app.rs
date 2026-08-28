@@ -5,11 +5,11 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use crate::compliance::conformance::{ConformanceServerEra, ConformanceTarget};
+use crate::load::LoadRequest;
+use crate::platform::StackMode;
+use crate::platform::config::Environment;
 use anyhow::{Result, bail};
-use cf_integration_compliance::conformance::{ConformanceServerEra, ConformanceTarget};
-use cf_integration_load::LoadRequest;
-use cf_integration_platform::StackMode;
-use cf_integration_platform::config::Environment;
 
 use crate::cli::{
     Cli, CliLane, CliTopology, Command, ConformanceCommand, DebugCommand, LiveGroup,

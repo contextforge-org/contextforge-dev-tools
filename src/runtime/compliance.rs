@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use std::io::{IsTerminal, Write as IoWrite};
 use std::time::Instant;
 
-use cf_integration_compliance::conformance::{DEFAULT_CONFORMANCE_SUITE, ScenarioOutcome};
+use crate::compliance::conformance::{DEFAULT_CONFORMANCE_SUITE, ScenarioOutcome};
 
 const CONFORMANCE_SERVER_ERA_ENV: &str = "CF_CONFORMANCE_SERVER_ERA";
 
@@ -599,8 +599,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         write_run_metadata(
             &lane_paths.metadata,
             &ConformanceRunMetadata {
-                oracle: cf_integration_compliance::conformance::OFFICIAL_CONFORMANCE_PACKAGE
-                    .to_owned(),
+                oracle: crate::compliance::conformance::OFFICIAL_CONFORMANCE_PACKAGE.to_owned(),
                 target: run.target.label().to_owned(),
                 spec_version: run.spec_version.to_owned(),
                 server_era: run.server_era,
@@ -690,7 +689,7 @@ fn render_conformance_lane_header(
     let lane = style.heading(&format!(" MCP conformance lane: {target}"));
     format!(
         "{divider}\n{lane}\n    Starting {scenario_count} scenarios with {} (client {spec_version}, server {server_era})",
-        cf_integration_compliance::conformance::OFFICIAL_CONFORMANCE_PACKAGE
+        crate::compliance::conformance::OFFICIAL_CONFORMANCE_PACKAGE
     )
 }
 
@@ -849,7 +848,7 @@ fn interrupted_conformance_failure() -> AppFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cf_integration_compliance::conformance::{
+    use crate::compliance::conformance::{
         CheckStatus, ConformanceCheck, ConformanceScenarioResult,
     };
 
