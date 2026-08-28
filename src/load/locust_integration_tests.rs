@@ -166,7 +166,11 @@ fn dataplane_locust_command_has_exact_compose_shape_and_environment() {
 
     let integration_dir = root.path().join(".integration");
     let asset_root = config.asset_root();
-    let report_dir = integration_dir.join("reports/load/dataplane/locust");
+    let report_dir = integration_dir
+        .join("reports")
+        .join("load")
+        .join("dataplane")
+        .join("locust");
     assert_eq!(run.report_dir(), report_dir);
     assert!(run.report_dir().is_dir());
     assert_eq!(
@@ -177,19 +181,23 @@ fn dataplane_locust_command_has_exact_compose_shape_and_environment() {
             OsString::from("cf"),
             OsString::from("-f"),
             integration_dir
-                .join("mcp-context-forge/docker-compose.yml")
+                .join("mcp-context-forge")
+                .join("docker-compose.yml")
                 .into_os_string(),
             OsString::from("-f"),
             asset_root
-                .join("docker/docker-compose.cf-controlplane-build-labels.yaml")
+                .join("docker")
+                .join("docker-compose.cf-controlplane-build-labels.yaml")
                 .into_os_string(),
             OsString::from("-f"),
             asset_root
-                .join("docker/docker-compose.cf-dataplane.yaml")
+                .join("docker")
+                .join("docker-compose.cf-dataplane.yaml")
                 .into_os_string(),
             OsString::from("-f"),
             asset_root
-                .join("docker/docker-compose.cf-integration.yaml")
+                .join("docker")
+                .join("docker-compose.cf-integration.yaml")
                 .into_os_string(),
             OsString::from("--profile"),
             OsString::from("testing"),
@@ -318,14 +326,15 @@ fn controlplane_uses_the_same_harness_mcp_adapter_and_does_not_require_server_id
         );
     }
     assert!(arguments.contains(&OsString::from("/mnt/locust-cf/locustfile_mcp.py")));
+    let mut expected_adapter_mount = config
+        .asset_root()
+        .join("scripts")
+        .join("locustfile_mcp.py")
+        .into_os_string();
+    expected_adapter_mount.push(":/mnt/locust-cf/locustfile_mcp.py:ro");
     let adapter_mount = arguments
         .windows(2)
-        .find(|pair| {
-            pair[0] == "--volume"
-                && pair[1]
-                    .to_string_lossy()
-                    .ends_with("/scripts/locustfile_mcp.py:/mnt/locust-cf/locustfile_mcp.py:ro")
-        })
+        .find(|pair| pair[0] == "--volume" && pair[1] == expected_adapter_mount)
         .expect("control-plane command should mount the harness MCP adapter");
     assert_eq!(adapter_mount[0], "--volume");
     assert!(arguments.contains(&OsString::from("--only-summary")));

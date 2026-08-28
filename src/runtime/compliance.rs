@@ -144,7 +144,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 let artifact_root = results_dir
                     .as_deref()
                     .unwrap_or_else(|| self.config.integration_dir());
-                let setup_log = artifact_root.join("conformance/setup.log");
+                let setup_log = artifact_root.join("conformance").join("setup.log");
                 if let Some(parent) = setup_log.parent() {
                     fs::create_dir_all(parent)
                         .with_context(|| {

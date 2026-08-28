@@ -59,12 +59,22 @@ impl ComposeProject {
     ) -> Self {
         let mut files = vec![
             controlplane_checkout.join("docker-compose.yml"),
-            repository_root.join("docker/docker-compose.cf-controlplane-build-labels.yaml"),
-            repository_root.join("docker/docker-compose.cf-dataplane.yaml"),
-            repository_root.join("docker/docker-compose.cf-integration.yaml"),
+            repository_root
+                .join("docker")
+                .join("docker-compose.cf-controlplane-build-labels.yaml"),
+            repository_root
+                .join("docker")
+                .join("docker-compose.cf-dataplane.yaml"),
+            repository_root
+                .join("docker")
+                .join("docker-compose.cf-integration.yaml"),
         ];
         if build_dataplane {
-            files.push(repository_root.join("docker/docker-compose.cf-dataplane-build.yaml"));
+            files.push(
+                repository_root
+                    .join("docker")
+                    .join("docker-compose.cf-dataplane-build.yaml"),
+            );
         }
         Self {
             project_name,
@@ -89,7 +99,9 @@ impl ComposeProject {
             project_name,
             files: vec![
                 controlplane_checkout.join("docker-compose.yml"),
-                repository_root.join("docker/docker-compose.cf-controlplane-build-labels.yaml"),
+                repository_root
+                    .join("docker")
+                    .join("docker-compose.cf-controlplane-build-labels.yaml"),
             ],
             profiles,
         }
@@ -127,7 +139,9 @@ impl ComposeProject {
     /// profile-gated fixture itself is launched.
     #[must_use]
     pub fn with_conformance_overlay(mut self, repository_root: &Path) -> Self {
-        let overlay = repository_root.join("docker/docker-compose.cf-conformance.yaml");
+        let overlay = repository_root
+            .join("docker")
+            .join("docker-compose.cf-conformance.yaml");
         if !self.files.contains(&overlay) {
             self.files.push(overlay);
         }
@@ -137,7 +151,9 @@ impl ComposeProject {
     /// Applies the control-plane runtime settings used by conformance runs.
     #[must_use]
     pub fn with_conformance_runtime(mut self, repository_root: &Path) -> Self {
-        let overlay = repository_root.join("docker/docker-compose.cf-conformance-runtime.yaml");
+        let overlay = repository_root
+            .join("docker")
+            .join("docker-compose.cf-conformance-runtime.yaml");
         if !self.files.contains(&overlay) {
             self.files.push(overlay);
         }

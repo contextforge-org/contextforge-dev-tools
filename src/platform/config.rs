@@ -895,7 +895,8 @@ mod tests {
         assert_sourced(
             &config.controlplane_dir,
             root.path()
-                .join(".integration/mcp-context-forge")
+                .join(".integration")
+                .join("mcp-context-forge")
                 .as_os_str(),
             ValueOrigin::Default,
         );
@@ -912,7 +913,8 @@ mod tests {
         assert_sourced(
             &config.dataplane_dir,
             root.path()
-                .join(".integration/contextforge-data-plane")
+                .join(".integration")
+                .join("contextforge-data-plane")
                 .as_os_str(),
             ValueOrigin::Default,
         );
@@ -1086,7 +1088,12 @@ mod tests {
         assert_eq!(first.auth_encryption_secret, second.auth_encryption_secret);
         assert_eq!(first.jwt_secret_key.value.len(), 64);
         assert_eq!(first.auth_encryption_secret.value.len(), 64);
-        assert!(root.path().join(".integration/secrets.env").is_file());
+        assert!(
+            root.path()
+                .join(".integration")
+                .join("secrets.env")
+                .is_file()
+        );
     }
 
     #[test]
@@ -1115,7 +1122,13 @@ mod tests {
             OsStr::new("configured-auth-secret-1234567890123456789"),
             ValueOrigin::Process,
         );
-        assert!(!root.path().join(".integration/secrets.env").exists());
+        assert!(
+            !root
+                .path()
+                .join(".integration")
+                .join("secrets.env")
+                .exists()
+        );
     }
 
     #[test]

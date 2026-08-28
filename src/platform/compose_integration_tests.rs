@@ -63,42 +63,43 @@ fn run_fixture_patch(source: &str) -> (std::process::ExitStatus, String) {
 
 #[test]
 fn dataplane_compose_files_are_in_override_order() {
-    let project = ComposeProject::dataplane(
-        Path::new("/repo"),
-        Path::new("/checkout"),
-        OsString::from("cf"),
-        false,
-    );
+    let repository_root = PathBuf::from("repo");
+    let checkout = PathBuf::from("checkout");
+    let project =
+        ComposeProject::dataplane(&repository_root, &checkout, OsString::from("cf"), false);
+    let expected_files = [
+        checkout.join("docker-compose.yml"),
+        repository_root
+            .join("docker")
+            .join("docker-compose.cf-controlplane-build-labels.yaml"),
+        repository_root
+            .join("docker")
+            .join("docker-compose.cf-dataplane.yaml"),
+        repository_root
+            .join("docker")
+            .join("docker-compose.cf-integration.yaml"),
+    ];
 
-    assert_eq!(
-        project.files(),
-        [
-            PathBuf::from("/checkout/docker-compose.yml"),
-            PathBuf::from("/repo/docker/docker-compose.cf-controlplane-build-labels.yaml"),
-            PathBuf::from("/repo/docker/docker-compose.cf-dataplane.yaml"),
-            PathBuf::from("/repo/docker/docker-compose.cf-integration.yaml"),
-        ]
-    );
+    assert_eq!(project.files(), expected_files);
     assert!(project.profiles().is_empty());
     assert_eq!(
         project.command(["config", "--format", "json"]).arguments(),
         [
-            "compose",
-            "-p",
-            "cf",
-            "-f",
-            "/checkout/docker-compose.yml",
-            "-f",
-            "/repo/docker/docker-compose.cf-controlplane-build-labels.yaml",
-            "-f",
-            "/repo/docker/docker-compose.cf-dataplane.yaml",
-            "-f",
-            "/repo/docker/docker-compose.cf-integration.yaml",
-            "config",
-            "--format",
-            "json",
+            OsString::from("compose"),
+            OsString::from("-p"),
+            OsString::from("cf"),
+            OsString::from("-f"),
+            expected_files[0].as_os_str().to_owned(),
+            OsString::from("-f"),
+            expected_files[1].as_os_str().to_owned(),
+            OsString::from("-f"),
+            expected_files[2].as_os_str().to_owned(),
+            OsString::from("-f"),
+            expected_files[3].as_os_str().to_owned(),
+            OsString::from("config"),
+            OsString::from("--format"),
+            OsString::from("json"),
         ]
-        .map(OsString::from)
     );
 }
 

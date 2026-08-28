@@ -427,7 +427,8 @@ mod tests {
         .expect("temporary manifest should be written");
         fs::create_dir_all(root.join("docker")).expect("temporary docker directory should exist");
         fs::write(
-            root.join("docker/docker-compose.cf-integration.yaml"),
+            root.join("docker")
+                .join("docker-compose.cf-integration.yaml"),
             "services: {}\n",
         )
         .expect("temporary Compose marker should be written");

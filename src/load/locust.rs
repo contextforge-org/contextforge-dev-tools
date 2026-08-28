@@ -59,7 +59,8 @@ impl LocustCommand {
         };
         let report_dir = config
             .integration_dir()
-            .join("reports/load")
+            .join("reports")
+            .join("load")
             .join(mode_name)
             .join("locust");
         fs::create_dir_all(&report_dir).with_context(|| {

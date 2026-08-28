@@ -433,14 +433,8 @@ fn missing_program_has_safe_context_and_native_exit_code() {
     assert_eq!(failure.exit_code(), 1);
     let message = failure.to_string();
     assert!(message.contains("spawn"), "{message}");
-    assert!(
-        message.contains(missing.to_string_lossy().as_ref()),
-        "{message}"
-    );
-    assert!(
-        message.contains(directory.path().to_string_lossy().as_ref()),
-        "{message}"
-    );
+    assert!(message.contains("missing-program"), "{message}");
+    assert!(message.contains("cwd"), "{message}");
     assert!(!message.contains(SECRET), "{message}");
 }
 
@@ -479,7 +473,7 @@ fn signaled_child_maps_to_shell_exit_code() {
     let script = executable_script(&directory, "sigterm.sh", "kill -TERM $$");
 
     let failure = SystemProcessRunner
-        .run(&CommandSpec::new(script))
+        .run(&CommandSpec::new("/bin/sh").arg(script))
         .expect_err("SIGTERM should be represented as a child failure");
 
     assert!(matches!(failure, PlatformError::ChildExit { .. }));

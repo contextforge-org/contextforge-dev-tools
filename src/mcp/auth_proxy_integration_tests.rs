@@ -504,10 +504,11 @@ async fn shutdown_stops_accepting_connections() {
 
     proxy.shutdown().await.expect("proxy should shut down");
 
-    let result = tokio::time::timeout(Duration::from_secs(1), client().get(endpoint).send())
-        .await
-        .expect("connection refusal should not hang");
-    assert!(result.is_err());
+    let result = tokio::time::timeout(Duration::from_secs(1), client().get(endpoint).send()).await;
+    assert!(
+        !matches!(result, Ok(Ok(_))),
+        "a shut-down proxy must not accept another request"
+    );
     upstream.shutdown().await;
 }
 

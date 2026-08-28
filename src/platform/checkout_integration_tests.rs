@@ -402,8 +402,10 @@ impl GitFixture {
             ["config", "user.email", "checkout@example.invalid"],
         );
         git(Some(&seed), ["checkout", "-b", "main"]);
+        fs::write(seed.join(".gitattributes"), "* text eol=lf\n")
+            .expect("Git attributes should be written");
         fs::write(seed.join("state.txt"), "origin\n").expect("seed file should be written");
-        git(Some(&seed), ["add", "state.txt"]);
+        git(Some(&seed), ["add", ".gitattributes", "state.txt"]);
         git(Some(&seed), ["commit", "-m", "origin commit"]);
         git(Some(&seed), ["push", "-u", "origin", "main"]);
         git(Some(&origin), ["symbolic-ref", "HEAD", "refs/heads/main"]);
