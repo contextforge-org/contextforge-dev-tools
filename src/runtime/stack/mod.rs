@@ -13,7 +13,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     "{}",
                     OutputStyle::stderr().info("Starting the pinned MCP conformance server.")
                 );
-                self.start_conformance_service(topology, ConformanceServerEra::Legacy)
+                self.start_conformance_service(topology, DEFAULT_CONFORMANCE_SERVER_ERA)
                     .await?;
                 let conformance_endpoint = self.conformance_fixture_endpoint(topology)?;
                 self.print_stack_endpoints(topology, &conformance_endpoint)
@@ -283,6 +283,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 "KEY_FILE_PASSWORD",
                 self.config.key_file_password().value.clone(),
             );
+        command = with_default_conformance_server_era(command);
 
         for (key, default) in [
             ("PASSWORD_CHANGE_ENFORCEMENT_ENABLED", "false"),
@@ -907,9 +908,50 @@ fn format_stack_endpoint_summary(
     )
 }
 
+fn with_default_conformance_server_era(command: CommandSpec) -> CommandSpec {
+    if command
+        .environment()
+        .get(OsStr::new(CONFORMANCE_SERVER_ERA_ENV))
+        .is_some_and(|value| !value.is_empty())
+    {
+        command
+    } else {
+        command.env(
+            CONFORMANCE_SERVER_ERA_ENV,
+            DEFAULT_CONFORMANCE_SERVER_ERA.label(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compose_commands_default_to_the_latest_modern_conformance_era() {
+        let command = with_default_conformance_server_era(CommandSpec::new("docker"));
+
+        assert_eq!(
+            command
+                .environment()
+                .get(OsStr::new(CONFORMANCE_SERVER_ERA_ENV)),
+            Some(&OsString::from("modern"))
+        );
+    }
+
+    #[test]
+    fn explicit_conformance_era_is_not_replaced_by_the_stack_default() {
+        let command = with_default_conformance_server_era(
+            CommandSpec::new("docker").env(CONFORMANCE_SERVER_ERA_ENV, "legacy"),
+        );
+
+        assert_eq!(
+            command
+                .environment()
+                .get(OsStr::new(CONFORMANCE_SERVER_ERA_ENV)),
+            Some(&OsString::from("legacy"))
+        );
+    }
 
     #[test]
     fn stack_endpoint_summary_lists_public_and_conformance_addresses() {

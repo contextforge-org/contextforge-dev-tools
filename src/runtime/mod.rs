@@ -53,6 +53,8 @@ type AppResult<T> = std::result::Result<T, AppFailure>;
 const STACK_READY_TIMEOUT: Duration = Duration::from_secs(90);
 const STACK_READY_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const STACK_READY_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+const CONFORMANCE_SERVER_ERA_ENV: &str = "CF_CONFORMANCE_SERVER_ERA";
+const DEFAULT_CONFORMANCE_SERVER_ERA: ConformanceServerEra = ConformanceServerEra::Modern;
 mod conformance;
 mod control_plane;
 mod inspect;

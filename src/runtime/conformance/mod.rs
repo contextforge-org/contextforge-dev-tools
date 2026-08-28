@@ -9,8 +9,6 @@ use std::time::Instant;
 
 use crate::conformance::results::{DEFAULT_CONFORMANCE_SUITE, ScenarioOutcome};
 
-const CONFORMANCE_SERVER_ERA_ENV: &str = "CF_CONFORMANCE_SERVER_ERA";
-
 impl<R: ProcessRunner> RuntimeContext<R> {
     fn require_loopback_fixture_base_url(&self) -> AppResult<()> {
         let base_url = self.base_url()?;
