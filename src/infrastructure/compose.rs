@@ -8,11 +8,9 @@ use serde_json::Value;
 
 use crate::infrastructure::process::CommandSpec;
 
-const LEGACY_IMAGE_PREFIXES: &[&str] = &[
+const LEGACY_FAST_TIME_IMAGE_PREFIXES: &[&str] = &[
     "ghcr.io/ibm/fast-time-server:",
     "ghcr.io/ibm/fast-time-server@",
-    "mcpgateway/fast-test-server:",
-    "mcpgateway/fast-test-server@",
 ];
 
 /// Compose service keys and their public container display names.
@@ -29,8 +27,6 @@ pub(crate) const SERVICE_DISPLAY_NAMES: &[(&str, &str)] = &[
     ("locust", "cf-locust"),
     ("locust_worker", "cf-locust-worker"),
     ("locust_token", "cf-locust-token"),
-    ("fast_test_server", "cf-fast-test-server"),
-    ("register_fast_test", "cf-register-fast-test"),
     ("a2a_echo_agent", "cf-a2a-echo-agent"),
     ("a2a_echo_agent_v0_3_0", "cf-a2a-echo-agent-v0-3-0"),
     ("register_a2a_echo", "cf-register-a2a-echo"),
@@ -247,21 +243,6 @@ pub(crate) fn validate_integration_contract(
         }
     }
 
-    for service_name in ["fast_test_server", "register_fast_test"] {
-        let Some(service) = services.get(service_name) else {
-            continue;
-        };
-        let has_profile = service
-            .get("profiles")
-            .and_then(Value::as_array)
-            .is_some_and(|profiles| !profiles.is_empty());
-        if !has_profile {
-            violations.push(violation(format!(
-                "{service_name} is active in the base integration stack; keep fast-test behind an explicit profile"
-            )));
-        }
-    }
-
     let mut service_names = services.keys().collect::<Vec<_>>();
     service_names.sort_unstable();
     for service_name in service_names {
@@ -269,12 +250,12 @@ pub(crate) fn validate_integration_contract(
             .get("image")
             .and_then(Value::as_str)
             .unwrap_or("");
-        if LEGACY_IMAGE_PREFIXES
+        if LEGACY_FAST_TIME_IMAGE_PREFIXES
             .iter()
             .any(|prefix| image.starts_with(prefix))
         {
             violations.push(violation(format!(
-                "{service_name} uses legacy fast-test/time image {image:?}"
+                "{service_name} uses legacy Fast Time image {image:?}"
             )));
         }
     }

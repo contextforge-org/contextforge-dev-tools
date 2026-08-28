@@ -271,7 +271,7 @@ pub(crate) enum CliLane {
 /// Upstream live-test group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum LiveGroup {
-    /// MCP route tests backed by Fast Time and Fast Test.
+    /// MCP route tests backed by Fast Time.
     Mcp,
     /// Authorization and multi-transport tests.
     Rbac,

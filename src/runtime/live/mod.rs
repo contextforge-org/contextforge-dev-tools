@@ -2,7 +2,6 @@
 
 use super::*;
 
-const FAST_TEST_SERVER_ID: &str = "b8e3f1a2c4d5e6f7a1b2c3d4e5f6a7b8";
 const LIVE_ALL_TARGETS: [&str; 3] = [
     "test-mcp-protocol-e2e",
     "test-mcp-rbac",
@@ -49,9 +48,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     ) -> AppResult<()> {
         let server_id = self.default_server_id().to_owned();
         self.with_managed_test_target(topology, &server_id, || async {
-            if live_group_needs_fast_test(group) {
-                self.ensure_fast_test_fixture(topology).await?;
-            }
             match group {
                 LiveGroup::Mcp => {
                     self.run_controlplane_make(topology, "test-mcp-protocol-e2e", protocol_version)
@@ -68,25 +64,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             }
         })
         .await
-    }
-
-    async fn ensure_fast_test_fixture(&self, topology: StackMode) -> AppResult<()> {
-        let project = self.compose_project(topology);
-        for plan in [
-            StackCommandPlan::fast_test_up(project.clone()),
-            StackCommandPlan::fast_test_register(project),
-        ] {
-            self.runner.run(&self.compose_environment(
-                plan.command().clone(),
-                topology,
-                true,
-            )?)?;
-        }
-        if topology == StackMode::Dataplane {
-            self.wait_for_publisher_snapshot(FAST_TEST_SERVER_ID)
-                .await?;
-        }
-        Ok(())
     }
 
     fn run_controlplane_make(
@@ -180,10 +157,6 @@ fn add_live_protocol_environment(
         .env("CF_LIVE_MCP_PROTOCOL_VERSION", protocol_version))
 }
 
-const fn live_group_needs_fast_test(group: LiveGroup) -> bool {
-    matches!(group, LiveGroup::Mcp | LiveGroup::All)
-}
-
 fn combine_live_results(
     results: impl IntoIterator<Item = (&'static str, AppResult<()>)>,
 ) -> AppResult<()> {
@@ -204,14 +177,6 @@ fn combine_live_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn fast_test_is_limited_to_live_groups_that_exercise_its_tools() {
-        assert!(live_group_needs_fast_test(LiveGroup::Mcp));
-        assert!(live_group_needs_fast_test(LiveGroup::All));
-        assert!(!live_group_needs_fast_test(LiveGroup::Rbac));
-        assert!(!live_group_needs_fast_test(LiveGroup::Protocol));
-    }
 
     #[test]
     fn live_all_is_the_exact_union_of_documented_groups() {

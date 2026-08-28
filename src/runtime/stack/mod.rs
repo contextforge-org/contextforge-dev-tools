@@ -575,7 +575,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             }
             Err(error) => return Err(error),
         };
-        if let Some(digest) = remote_digest {
+        if local_exists && let Some(digest) = remote_digest.as_deref() {
             let repo_digests = self.capture_text(&CommandSpec::new("docker").args([
                 OsString::from("image"),
                 OsString::from("inspect"),
@@ -596,7 +596,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 }
                 return Ok(());
             }
-        } else if local_exists {
+        } else if local_exists && remote_digest.is_none() {
             if report_progress {
                 println!(
                     "{}",
@@ -639,11 +639,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             "register_fast_time",
         ] {
             services.insert(service.to_owned(), self.service_snapshot(project, service)?);
-        }
-        for service in ["fast_test_server", "register_fast_test"] {
-            if self.container_id(project, service, true)?.is_some() {
-                services.insert(service.to_owned(), self.service_snapshot(project, service)?);
-            }
         }
         let snapshot = FreshnessSnapshot {
             services,

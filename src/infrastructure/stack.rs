@@ -183,38 +183,6 @@ impl StackCommandPlan {
         }
     }
 
-    /// Starts the profile-gated Fast Test fixture and waits for its healthcheck.
-    #[must_use]
-    pub(crate) fn fast_test_up(project: ComposeProject) -> Self {
-        Self {
-            command: project.command([
-                "--profile",
-                "testing",
-                "up",
-                "-d",
-                "--wait",
-                "--wait-timeout",
-                "120",
-                "fast_test_server",
-            ]),
-        }
-    }
-
-    /// Runs the one-shot Fast Test registration job to completion.
-    #[must_use]
-    pub(crate) fn fast_test_register(project: ComposeProject) -> Self {
-        Self {
-            command: project.command([
-                "--profile",
-                "testing",
-                "run",
-                "--rm",
-                "--no-deps",
-                "register_fast_test",
-            ]),
-        }
-    }
-
     /// Builds a Compose cleanup command.
     #[must_use]
     pub(crate) fn cleanup(project: ComposeProject, kind: CleanupKind) -> Self {
@@ -378,12 +346,6 @@ impl FreshnessSnapshot {
             });
             if !matches {
                 return stale(format!("{label} image differs"));
-            }
-        }
-
-        for service in ["fast_test_server", "register_fast_test"] {
-            if self.services.contains_key(service) {
-                return stale(format!("stale {service} container exists"));
             }
         }
 

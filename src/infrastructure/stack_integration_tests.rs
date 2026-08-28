@@ -217,8 +217,6 @@ fn cleanup_status_logs_and_config_use_typed_compose_commands() {
                 OsString::from("cf-locust"),
                 OsString::from("cf-locust-worker"),
                 OsString::from("cf-locust-token"),
-                OsString::from("cf-fast-test-server"),
-                OsString::from("cf-register-fast-test"),
                 OsString::from("cf-a2a-echo-agent"),
                 OsString::from("cf-a2a-echo-agent-v0-3-0"),
                 OsString::from("cf-register-a2a-echo"),
@@ -244,8 +242,6 @@ fn cleanup_status_logs_and_config_use_typed_compose_commands() {
             "locust",
             "locust_worker",
             "locust_token",
-            "fast_test_server",
-            "register_fast_test",
             "a2a_echo_agent",
             "a2a_echo_agent_v0_3_0",
             "register_a2a_echo",
@@ -351,7 +347,7 @@ fn current_dataplane_stack_requires_services_images_and_setup_jobs() {
 }
 
 #[test]
-fn current_stack_rejects_wrong_fast_time_and_stale_fast_test_containers() {
+fn current_stack_rejects_wrong_fast_time_image() {
     let mut snapshot = current_snapshot();
     snapshot
         .services
@@ -362,24 +358,6 @@ fn current_stack_rejects_wrong_fast_time_and_stale_fast_test_containers() {
         snapshot.evaluate(),
         StackFreshness::Stale("fast_time_server image differs".to_owned())
     );
-
-    for service in ["fast_test_server", "register_fast_test"] {
-        let mut snapshot = current_snapshot();
-        snapshot.services.insert(
-            service.to_owned(),
-            ServiceSnapshot {
-                running: false,
-                completed_successfully: true,
-                configured_image: None,
-                running_image_matches_configured: true,
-                image_revision: None,
-            },
-        );
-        assert_eq!(
-            snapshot.evaluate(),
-            StackFreshness::Stale(format!("stale {service} container exists"))
-        );
-    }
 }
 
 #[test]
@@ -429,33 +407,4 @@ fn stack_up_preserves_compose_auto_progress_without_shell_fragments() {
             .iter()
             .all(|arg| !arg.to_string_lossy().contains("sh -c"))
     );
-}
-
-#[test]
-fn fast_test_fixture_is_started_healthy_then_registered_synchronously() {
-    let project = project(StackMode::Dataplane);
-    assert!(ends_with(
-        &args(StackCommandPlan::fast_test_up(project.clone())),
-        &[
-            "--profile",
-            "testing",
-            "up",
-            "-d",
-            "--wait",
-            "--wait-timeout",
-            "120",
-            "fast_test_server",
-        ]
-    ));
-    assert!(ends_with(
-        &args(StackCommandPlan::fast_test_register(project)),
-        &[
-            "--profile",
-            "testing",
-            "run",
-            "--rm",
-            "--no-deps",
-            "register_fast_test",
-        ]
-    ));
 }

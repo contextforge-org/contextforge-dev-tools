@@ -25,15 +25,6 @@ fn valid_config() -> serde_json::Value {
                     "wait for http://fast_time_server:9080/health",
                     "register http://fast_time_server:9080/mcp"
                 ]
-            },
-            "fast_test_server": {
-                "image": "example/modern:latest",
-                "labels": {"name": "cf-fast-test-server"},
-                "profiles": ["testing"]
-            },
-            "register_fast_test": {
-                "labels": {"name": "cf-register-fast-test"},
-                "profiles": ["testing"]
             }
         }
     })
@@ -204,8 +195,6 @@ fn compose_overlays_assign_short_container_display_names() {
         ("locust", "cf-locust"),
         ("locust_worker", "cf-locust-worker"),
         ("locust_token", "cf-locust-token"),
-        ("fast_test_server", "cf-fast-test-server"),
-        ("register_fast_test", "cf-register-fast-test"),
         ("a2a_echo_agent", "cf-a2a-echo-agent"),
         ("a2a_echo_agent_v0_3_0", "cf-a2a-echo-agent-v0-3-0"),
         ("register_a2a_echo", "cf-register-a2a-echo"),
@@ -577,24 +566,6 @@ fn contract_reports_incorrect_container_display_names() {
 }
 
 #[test]
-fn fast_test_services_must_stay_behind_profiles() {
-    let mut config = valid_config();
-    config["services"]["fast_test_server"]
-        .as_object_mut()
-        .expect("service object")
-        .remove("profiles");
-    config["services"]["register_fast_test"]["profiles"] = json!([]);
-
-    assert_eq!(
-        messages(&config),
-        [
-            "fast_test_server is active in the base integration stack; keep fast-test behind an explicit profile",
-            "register_fast_test is active in the base integration stack; keep fast-test behind an explicit profile",
-        ]
-    );
-}
-
-#[test]
 fn every_legacy_image_prefix_is_rejected_in_sorted_service_order() {
     let mut config = valid_config();
     let services = config["services"].as_object_mut().expect("services object");
@@ -604,14 +575,14 @@ fn every_legacy_image_prefix_is_rejected_in_sorted_service_order() {
     );
     services.insert(
         "alpha".to_owned(),
-        json!({"image": "mcpgateway/fast-test-server@sha256:abc"}),
+        json!({"image": "ghcr.io/ibm/fast-time-server@sha256:abc"}),
     );
 
     assert_eq!(
         messages(&config),
         [
-            "alpha uses legacy fast-test/time image \"mcpgateway/fast-test-server@sha256:abc\"",
-            "zulu uses legacy fast-test/time image \"ghcr.io/ibm/fast-time-server:old\"",
+            "alpha uses legacy Fast Time image \"ghcr.io/ibm/fast-time-server@sha256:abc\"",
+            "zulu uses legacy Fast Time image \"ghcr.io/ibm/fast-time-server:old\"",
         ]
     );
 }
@@ -650,9 +621,9 @@ fn multiple_violations_have_stable_contract_order() {
                 "command": [],
                 "labels": {"name": "cf-register-fast-time"}
             },
-            "fast_test_server": {
+            "legacy_time": {
                 "image": "ghcr.io/ibm/fast-time-server:old",
-                "labels": {"name": "cf-fast-test-server"}
+                "labels": {"name": "cf-legacy-time"}
             }
         }
     });
@@ -661,8 +632,7 @@ fn multiple_violations_have_stable_contract_order() {
         messages(&config),
         [
             "fast_time_server is missing from the integration compose config",
-            "fast_test_server is active in the base integration stack; keep fast-test behind an explicit profile",
-            "fast_test_server uses legacy fast-test/time image \"ghcr.io/ibm/fast-time-server:old\"",
+            "legacy_time uses legacy Fast Time image \"ghcr.io/ibm/fast-time-server:old\"",
             "register_fast_time does not wait for fast_time_server on port 9080",
             "register_fast_time does not register the streamable HTTP endpoint at /mcp",
         ]
