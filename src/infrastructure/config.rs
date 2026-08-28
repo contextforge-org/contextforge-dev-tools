@@ -248,7 +248,7 @@ impl AppConfig {
                 root.clone()
             } else if bootstrap.root_overridden {
                 bail!(
-                    "{ROOT_OVERRIDE}={} does not contain the required docker/ and scripts/ runtime assets",
+                    "{ROOT_OVERRIDE}={} does not contain the complete runtime asset set",
                     root.display()
                 );
             } else {

@@ -35,6 +35,12 @@ const ASSETS: &[EmbeddedAsset] = &[
     asset!("docker/patch-mcp-conformance-hosts.mjs"),
     asset!("scripts/live_protocol/sitecustomize.py"),
     asset!("scripts/locustfile_mcp.py"),
+    asset!("tests/conformance/baselines/2026-07-28/legacy/built-in-data-plane.yml"),
+    asset!("tests/conformance/baselines/2026-07-28/legacy/external-data-plane.yml"),
+    asset!("tests/conformance/baselines/2026-07-28/legacy/fixture-direct.yml"),
+    asset!("tests/conformance/baselines/2026-07-28/modern/built-in-data-plane.yml"),
+    asset!("tests/conformance/baselines/2026-07-28/modern/external-data-plane.yml"),
+    asset!("tests/conformance/baselines/2026-07-28/modern/fixture-direct.yml"),
 ];
 
 /// Returns whether `root` contains the complete runtime asset set.

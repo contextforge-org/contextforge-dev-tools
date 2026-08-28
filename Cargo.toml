@@ -19,6 +19,7 @@ include = [
     "/docker/**",
     "/scripts/locustfile_mcp.py",
     "/scripts/live_protocol/sitecustomize.py",
+    "/tests/conformance/baselines/**",
     "/README.md",
     "/LICENSE",
 ]

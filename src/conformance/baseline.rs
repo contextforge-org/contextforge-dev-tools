@@ -649,6 +649,20 @@ mod tests {
     }
 
     #[test]
+    fn repository_contains_strict_baselines_for_every_default_matrix_lane() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/conformance/baselines");
+
+        for era in [ConformanceServerEra::Legacy, ConformanceServerEra::Modern] {
+            for lane in ALL_CONFORMANCE_LANES {
+                let path = baseline_path(&root, "2026-07-28", era, lane);
+                read_baseline(&path).unwrap_or_else(|error| {
+                    panic!("default baseline {} must be valid: {error}", path.display())
+                });
+            }
+        }
+    }
+
+    #[test]
     fn malformed_unsorted_and_unknown_status_baselines_fail_closed() {
         let directory = tempfile::tempdir().expect("temporary baseline root");
         let path = baseline_path(
