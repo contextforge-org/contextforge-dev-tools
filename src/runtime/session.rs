@@ -42,7 +42,7 @@ impl<'a, R: ProcessRunner> ManagedSessionScope<'a, R> {
         }
         if let Err(error) = self
             .runtime
-            .cleanup(topology_selection(self.topology), CleanupKind::Down)
+            .cleanup_quiet(topology_selection(self.topology), CleanupKind::Down)
         {
             cleanup_failures.push(error);
         }
@@ -107,7 +107,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     ) -> AppResult<()> {
         self.ensure_other_stack_stopped(topology)?;
         if topology == StackMode::Dataplane {
-            self.wait_for_publisher_snapshot(server_id).await?;
+            self.wait_for_publisher_snapshot_quiet(server_id).await?;
         }
         Ok(())
     }

@@ -215,7 +215,7 @@ CF_CONTROLPLANE_VERSION=latest
 
 CF_DATAPLANE_REPO=https://github.com/contextforge-org/contextforge-data-plane.git
 CF_DATAPLANE_REF=
-CF_DATAPLANE_IMAGE=ghcr.io/contextforge-org/contextforge-data-plane:latest
+CF_DATAPLANE_IMAGE=ghcr.io/contextforge-org/contextforge-data-plane@sha256:f227d4ea4922cda2c6ee3c529f6a224b54ca906379ac62b9700b0b1e1ef90740
 CF_DATAPLANE_PLATFORM=auto
 
 CF_COMPOSE_BUILD=auto
@@ -233,7 +233,9 @@ MCPGATEWAY_BEARER_TOKEN=<optional-pre-minted-token>
 
 `CF_COMPOSE_BUILD=auto` pulls or reuses prebuilt images and builds only an
 explicit source data plane when required. `true` always builds; `false` never
-builds.
+builds. The default published dataplane is pinned by digest to the version
+validated with the default control-plane release; set `CF_DATAPLANE_IMAGE` or
+`CF_DATAPLANE_VERSION` explicitly to test another release.
 
 Compose requires `JWT_SECRET_KEY` and `AUTH_ENCRYPTION_SECRET`. If either is
 unset, a runtime-backed action generates stable values under

@@ -280,15 +280,6 @@ pub(crate) async fn run_probe<T: ProbeTransport, W: Write>(
         {
             break response;
         }
-        write_probe_result(
-            output,
-            config,
-            TestStatus::Retry,
-            "initialize",
-            &format!("status={} waiting for dataplane config", response.status),
-            "failed to write initialize retry result",
-        )?;
-
         let remaining = config.config_timeout.saturating_sub(started.elapsed());
         if remaining.is_zero() {
             break response;
@@ -390,14 +381,6 @@ pub(crate) async fn run_probe<T: ProbeTransport, W: Write>(
         &format!("count={}", tool_names.len()),
         "failed to write tools list result",
     )?;
-    for name in &tool_names {
-        write_line(
-            output,
-            &format!("tool={}", sanitize_for_output(name)),
-            "failed to write tool name",
-        )?;
-    }
-
     let callable = tool_names
         .iter()
         .find_map(|name| tool_call_args(name).map(|arguments| (*name, arguments)));
@@ -525,14 +508,6 @@ async fn run_stateless_probe<T: ProbeTransport, W: Write>(
         {
             break response;
         }
-        write_probe_result(
-            output,
-            config,
-            TestStatus::Retry,
-            "server_discover",
-            &format!("status={} waiting for dataplane config", response.status),
-            "failed to write server discovery retry result",
-        )?;
         let remaining = config.config_timeout.saturating_sub(started.elapsed());
         if remaining.is_zero() {
             break response;
@@ -627,14 +602,6 @@ async fn run_stateless_probe<T: ProbeTransport, W: Write>(
         &format!("count={}", tool_names.len()),
         "failed to write tools list result",
     )?;
-    for name in &tool_names {
-        write_line(
-            output,
-            &format!("tool={}", sanitize_for_output(name)),
-            "failed to write tool name",
-        )?;
-    }
-
     let callable = tool_names
         .iter()
         .find_map(|name| tool_call_args(name).map(|arguments| (*name, arguments)));

@@ -806,7 +806,7 @@ fn render_conformance_baseline_results(
                 TestStatus::UnexpectedPass => unexpected_passes += 1,
                 TestStatus::Fail => failed += 1,
                 TestStatus::Skip => skipped += 1,
-                TestStatus::Unknown | TestStatus::Retry => ambiguous += 1,
+                TestStatus::Unknown => ambiguous += 1,
             }
             let name = format!("{}::{}", comparison.lane.slug(), result.scenario);
             let _ = writeln!(

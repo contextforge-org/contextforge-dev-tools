@@ -16,6 +16,9 @@ use crate::infrastructure::assets::{contains_runtime_assets, materialize_runtime
 const ROOT_OVERRIDE: &str = "CF_INTEGRATION_ROOT";
 const LOCAL_SECRETS_FILE: &str = "secrets.env";
 const REDACTED: &str = "<redacted>";
+// Published from contextforge-data-plane commit 52eea91 and verified against
+// the default v1.0.7 control plane and fast-time fixture.
+const DEFAULT_DATAPLANE_IMAGE: &str = "ghcr.io/contextforge-org/contextforge-data-plane@sha256:f227d4ea4922cda2c6ee3c529f6a224b54ca906379ac62b9700b0b1e1ef90740";
 
 /// Environment values supplied without mutating the process environment.
 pub(crate) type Environment = HashMap<OsString, OsString>;
@@ -622,16 +625,13 @@ fn dataplane_image(environment: &LoadedEnvironment, dataplane_ref: &SourcedValue
             OsString::from("contextforge-org/contextforge-data-plane:local"),
         )
         .value
-    } else {
-        let version = shell_value(
-            environment,
-            "CF_DATAPLANE_VERSION",
-            OsString::from("latest"),
-        );
+    } else if let Some(version) = first_nonempty(environment, "CF_DATAPLANE_VERSION") {
         prefixed_value(
             "ghcr.io/contextforge-org/contextforge-data-plane:",
             &version.value,
         )
+    } else {
+        OsString::from(DEFAULT_DATAPLANE_IMAGE)
     };
 
     ImageSetting {
@@ -948,7 +948,7 @@ mod tests {
         assert!(config.controlplane_image.prebuilt);
         assert_eq!(
             config.dataplane_image.resolved,
-            OsStr::new("ghcr.io/contextforge-org/contextforge-data-plane:latest")
+            OsStr::new(DEFAULT_DATAPLANE_IMAGE)
         );
         assert_sourced(
             &config.dataplane_platform,

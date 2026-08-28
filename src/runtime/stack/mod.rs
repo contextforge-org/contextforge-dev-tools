@@ -84,7 +84,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     }
 
     pub(super) async fn stack_up(&self, mode: StackMode, fresh: bool) -> AppResult<()> {
-        self.stack_up_with_project(mode, fresh, self.compose_project(mode), true)
+        self.stack_up_with_project(mode, fresh, self.compose_project(mode), false)
             .await
     }
 
@@ -481,20 +481,38 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     }
 
     fn image_state(&self, image: &OsStr) -> AppResult<(bool, Option<String>)> {
-        let image_ids = self.capture_text(&CommandSpec::new("docker").args([
-            OsString::from("image"),
-            OsString::from("ls"),
-            OsString::from("--quiet"),
-            OsString::from("--no-trunc"),
-            image.to_owned(),
-        ]))?;
-        if image_ids.is_empty() {
+        let image_id = if image.to_string_lossy().contains("@sha256:") {
+            let images = self.capture_text(&CommandSpec::new("docker").args([
+                "image",
+                "ls",
+                "--digests",
+                "--no-trunc",
+                "--format",
+                "{{.Repository}}@{{.Digest}}\t{{.ID}}",
+            ]))?;
+            images.lines().find_map(|line| {
+                let (reference, id) = line.split_once('\t')?;
+                (reference == image.to_string_lossy()).then(|| id.to_owned())
+            })
+        } else {
+            self.capture_text(&CommandSpec::new("docker").args([
+                OsString::from("image"),
+                OsString::from("ls"),
+                OsString::from("--quiet"),
+                OsString::from("--no-trunc"),
+                image.to_owned(),
+            ]))?
+            .lines()
+            .next()
+            .map(str::to_owned)
+        };
+        let Some(image_id) = image_id else {
             return Ok((false, None));
-        }
+        };
         let revision = self.capture_text(&CommandSpec::new("docker").args([
             OsString::from("image"),
             OsString::from("inspect"),
-            image.to_owned(),
+            OsString::from(image_id),
             OsString::from("--format"),
             OsString::from("{{ index .Config.Labels \"org.opencontainers.image.revision\" }}"),
         ]))?;
@@ -769,6 +787,23 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     }
 
     pub(super) fn cleanup(&self, selection: TopologySelection, kind: CleanupKind) -> AppResult<()> {
+        self.cleanup_with_output(selection, kind, true)
+    }
+
+    pub(super) fn cleanup_quiet(
+        &self,
+        selection: TopologySelection,
+        kind: CleanupKind,
+    ) -> AppResult<()> {
+        self.cleanup_with_output(selection, kind, false)
+    }
+
+    fn cleanup_with_output(
+        &self,
+        selection: TopologySelection,
+        kind: CleanupKind,
+        inherit_output: bool,
+    ) -> AppResult<()> {
         let mut cleanup_failures = Vec::new();
         for mode in selected_topologies(selection) {
             if self
@@ -784,7 +819,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 let command = StackCommandPlan::cleanup(project, kind);
                 match self.compose_environment(command.command().clone(), mode, false) {
                     Ok(command) => {
-                        if let Err(error) = self.runner.run(&command) {
+                        let result = self.run_cleanup_command(&command, inherit_output);
+                        if let Err(error) = result {
                             cleanup_failures.push(error.into());
                         }
                     }
@@ -796,7 +832,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 StackMode::Dataplane => &self.config.integration_project().value,
             };
             match required_text(project, "Compose project name")
-                .and_then(|project| self.remove_project_by_label(project, kind))
+                .and_then(|project| self.remove_project_by_label(project, kind, inherit_output))
             {
                 Ok(()) => {}
                 Err(error) => cleanup_failures.push(error),
@@ -805,24 +841,46 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         finish_with_cleanup_failures(None, cleanup_failures)
     }
 
-    fn remove_project_by_label(&self, project: &str, kind: CleanupKind) -> AppResult<()> {
+    fn remove_project_by_label(
+        &self,
+        project: &str,
+        kind: CleanupKind,
+        inherit_output: bool,
+    ) -> AppResult<()> {
         let filter = format!("label=com.docker.compose.project={project}");
         for id in self.docker_list(["ps", "-aq", "--filter", filter.as_str()])? {
-            self.runner
-                .run(&CommandSpec::new("docker").args(["rm", "-f", id.as_str()]))?;
+            self.run_cleanup_command(
+                &CommandSpec::new("docker").args(["rm", "-f", id.as_str()]),
+                inherit_output,
+            )?;
         }
         for id in self.docker_list(["network", "ls", "-q", "--filter", filter.as_str()])? {
-            let _ =
-                self.runner
-                    .run(&CommandSpec::new("docker").args(["network", "rm", id.as_str()]));
+            let _ = self.run_cleanup_command(
+                &CommandSpec::new("docker").args(["network", "rm", id.as_str()]),
+                inherit_output,
+            );
         }
         if kind == CleanupKind::Reset {
             for id in self.docker_list(["volume", "ls", "-q", "--filter", filter.as_str()])? {
-                self.runner
-                    .run(&CommandSpec::new("docker").args(["volume", "rm", id.as_str()]))?;
+                self.run_cleanup_command(
+                    &CommandSpec::new("docker").args(["volume", "rm", id.as_str()]),
+                    inherit_output,
+                )?;
             }
         }
         Ok(())
+    }
+
+    fn run_cleanup_command(
+        &self,
+        command: &CommandSpec,
+        inherit_output: bool,
+    ) -> Result<(), InfrastructureError> {
+        if inherit_output {
+            self.runner.run(command)
+        } else {
+            self.runner.capture_output(command).map(drop)
+        }
     }
 
     fn docker_list<const N: usize>(&self, arguments: [&str; N]) -> AppResult<Vec<String>> {

@@ -31,7 +31,6 @@ pub(crate) enum TestStatus {
     UnexpectedPass,
     Fail,
     Skip,
-    Retry,
     Unknown,
 }
 
@@ -43,7 +42,6 @@ impl TestStatus {
             Self::UnexpectedPass => "XPASS",
             Self::Fail => "FAIL",
             Self::Skip => "SKIP",
-            Self::Retry => "RETRY",
             Self::Unknown => "UNKNOWN",
         }
     }
@@ -238,7 +236,6 @@ impl OutputStyle {
             TestStatus::Pass => self.success(&label),
             TestStatus::ExpectedFailure | TestStatus::Skip => self.warning(&label),
             TestStatus::UnexpectedPass | TestStatus::Fail => self.failure(&label),
-            TestStatus::Retry => self.info(&label),
             TestStatus::Unknown => self.unknown(&label),
         };
         let elapsed = elapsed.map_or_else(String::new, |elapsed| {

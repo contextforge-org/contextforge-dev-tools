@@ -269,7 +269,7 @@ async fn happy_path_uses_public_route_auth_session_and_deterministic_ids() {
     assert!(output.contains("PASS initialized status=202"));
     assert!(!output.contains("session-abc"));
     assert!(output.contains("PASS tools_list count=1"));
-    assert!(output.contains("tool=fast_time_echo"));
+    assert!(!output.lines().any(|line| line == "tool=fast_time_echo"));
     assert!(output.contains("PASS tool_call tool=fast_time_echo"));
 }
 
@@ -375,7 +375,7 @@ async fn authenticated_initialize_retries_transient_statuses_until_success() {
 
     assert_eq!(transport.requests().len(), 6);
     let output = String::from_utf8(output).expect("probe output should be UTF-8");
-    assert_eq!(output.matches("RETRY initialize").count(), 2);
+    assert!(!output.contains("RETRY initialize"));
 }
 
 #[tokio::test]
@@ -805,7 +805,7 @@ async fn server_id_is_percent_encoded_as_one_url_path_segment() {
 }
 
 #[tokio::test]
-async fn tool_names_are_sanitized_before_writing_output() {
+async fn uncalled_tool_names_are_not_written_to_output() {
     let transport = FakeTransport::new([
         ProbeResponse::new(401, None, None),
         initialize_success(Some("session-output")),
@@ -816,11 +816,11 @@ async fn tool_names_are_sanitized_before_writing_output() {
 
     run_probe(&transport, &config(), &mut output)
         .await
-        .expect("an unknown tool should complete after sanitizing its name");
+        .expect("an unknown tool should complete without printing its name");
 
     let output = String::from_utf8(output).expect("probe output should be UTF-8");
-    assert!(output.contains("tool=custom\\nforged=PASS\\r"));
-    assert!(!output.contains("tool=custom\nforged=PASS"));
+    assert!(!output.contains("custom"));
+    assert!(!output.contains("forged=PASS"));
 }
 
 #[test]

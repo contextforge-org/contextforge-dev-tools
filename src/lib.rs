@@ -71,7 +71,7 @@ pub async fn run() -> ExitCode {
     eprintln!("{}", OutputStyle::stderr().info(&action.startup_summary()));
     let activity = action
         .uses_global_activity()
-        .then(|| Activity::start(action.description()));
+        .then(|| Activity::spinner(action.description()));
     let config = match AppConfig::load(bootstrap, requirements) {
         Ok(config) => config,
         Err(error) => {
