@@ -1,151 +1,73 @@
 # cf-integration
 
-Rust 1.97 integration harness for `cf-controlplane` and the Rust
+`cf-integration` is the standalone Rust CLI for exercising `cf-controlplane`
+with either its built-in Python data plane or the external Rust
 `cf-dataplane`.
 
-The public routing contract is fixed:
+The routing contract is fixed:
 
-- `/servers/{virtual_host_id}/mcp` routes through `cf-dataplane` as
-  `/contextforge-rs/servers/{virtual_host_id}/mcp`.
-- Raw `/mcp`, UI traffic, and API traffic stay on `cf-controlplane`.
+- `/servers/{virtual_host_id}/mcp` routes through `cf-dataplane`.
+- Raw `/mcp`, UI, and API traffic route to `cf-controlplane`.
+- The external data-plane route fails closed and never falls back to the
+  control plane.
 
-The `/servers/{id}/mcp` route does not fall back to the Python control plane on
-dataplane errors. This makes routing failures visible and keeps the harness
-aligned with the planned split between legacy slow-path traffic and modern
-Rust dataplane traffic.
+The CLI owns Docker Compose overlays, nginx routing, source checkout
+orchestration, MCP probes, Locust load tests, upstream live tests, and official
+MCP conformance runs.
 
-The harness owns Docker Compose overlays, nginx routing, reproducible stack
-lifecycle, public-route probes, Locust load tests, and official MCP
-conformance orchestration. Generated checkout, build, and runtime state stays
-under `.integration/` or `CF_INTEGRATION_DIR`.
+## Install
 
-## Requirements
-
-- Rust 1.97 or newer and Cargo
-- Docker Engine with Docker Compose v2
-- Git
-- Node.js 22.7.5 or newer with `npx`
-- Python and Locust dependencies from the control-plane checkout when using
-  the Locust load engine
-- The control-plane development prerequisites (`uv`, pytest, Make, and
-  Playwright where required) when running upstream live tests
-
-Install a prebuilt release without compiling the workspace. First install
-[`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall#installation),
-then run:
+Release archives cover ARM64 and x86-64 Linux, macOS, and Windows.
 
 ```bash
 cargo binstall cf-integration
 cf-integration --help
 ```
 
-The release archives cover x86-64 and ARM64 Linux, macOS, and Windows.
-`cargo-binstall` is required because Cargo's native `cargo install` command
-always compiles a crate locally. The CLI still uses the tracked Compose overlays
-and scripts at runtime, so run it from this repository checkout or set
-`CF_INTEGRATION_ROOT` to the checkout path.
-
-The checked-in `rust-toolchain.toml` selects Rust 1.97.0 with rustfmt and
-Clippy. To build and install the locked CLI from this checkout instead:
+To compile from crates.io or this checkout:
 
 ```bash
-rustup toolchain install 1.97.0 --profile minimal -c clippy -c rustfmt
+cargo install cf-integration --locked
 cargo install --path . --locked
-cf-integration --help
 ```
 
-Cargo places the executable in `$CARGO_HOME/bin` (normally `~/.cargo/bin`).
-Re-run the install command after updating the checkout.
+The installed binary is repository-independent. Required Compose overlays and
+runtime scripts are embedded in the executable.
 
-## Workspace
+## Runtime assets and workspace resolution
 
-The workspace has one application package and four internal libraries:
+The CLI resolves the action before initializing state. Runtime-backed actions
+resolve assets in this order:
 
-- `cf-integration`: CLI and workflow composition
-- `cf-integration-platform`: configuration, processes, checkouts, Compose, and
-  stack lifecycle
-- `cf-integration-mcp`: MCP messages, HTTP transport, authentication proxy,
-  gateway endpoints, and probes
-- `cf-integration-compliance`: the official conformance fixture, result parser,
-  and three-lane comparison report
-- `cf-integration-load`: Locust load orchestration
+1. explicit `CF_INTEGRATION_ROOT`, which must be a valid developer checkout;
+2. the current directory, when it contains a valid checkout;
+3. a versioned embedded-asset tree beneath `CF_INTEGRATION_DIR`.
 
-The official TypeScript fixture is the conformance reference target. An
-explicit `stack up` starts it for direct MCP access; conformance runs still own
-their isolated fixture lifecycle. Fast Time remains the ordinary probe and load
-fixture, and upstream live MCP tests start and register the profile-gated Fast
-Test server on demand.
+Embedded assets are materialized atomically, verified byte-for-byte, marked
+read-only, and reused. Concurrent first runs converge on one complete tree. A
+corrupt or incomplete versioned tree fails closed.
 
-## Lanes and protocol versions
+`.env` is loaded from `CF_INTEGRATION_ROOT` when set, otherwise the current
+directory. Relative paths resolve from that workspace. Generated checkouts,
+assets, secrets, reports, and runtime state default to `.integration/`.
 
-Probe, load, and Inspector use `--lane controlplane|dataplane` plus
-`--protocol-version YYYY-MM-DD`. `controlplane` targets the stock physical
-control-plane topology and raw `/mcp`; `dataplane` targets nginx, the Rust
-dataplane, and the virtual-server route. Live and conformance use semantic
-workflow lanes: `fixture-direct`, `built-in-data-plane`, and
-`external-data-plane`.
+`conformance report` and `debug token` do not materialize assets or generate
+local Compose secrets. Compose-backed actions initialize them lazily.
 
-Single-lane commands resolve their lane in this order:
+## Requirements
 
-1. explicit `--lane`;
-2. `CF_MCP_STACK_MODE`;
-3. `dataplane`.
+Runtime requirements depend on the command:
 
-They resolve the protocol version from explicit `--protocol-version`, then
-`MCP_PROTOCOL_VERSION`, then `2025-11-25`. That session-oriented default is
-the working contract of the current `latest` dataplane image. Pass
-`--protocol-version 2026-07-28` explicitly to exercise the implemented
-stateless readiness path as the future architecture lands. For live and
-conformance, a resolved `controlplane` stack selects `built-in-data-plane`,
-while a resolved `dataplane` stack selects `external-data-plane`. Other
-workflows reject `fixture-direct` because they have no direct-fixture execution
-path. Conformance defaults to all three lanes and its pinned `2026-07-28`
-protocol version.
+- Docker Engine with Docker Compose v2 for stack-backed workflows;
+- Git for managed source checkouts;
+- Node.js 22.7.5 or newer with `npx` for Inspector, live, and conformance;
+- the control-plane checkout's Python/Locust dependencies for load tests;
+- Rust 1.97 only when compiling the CLI or local source images.
 
-`--topology` remains a compatibility alias for `--lane` on workflows.
-Conformance also retains `--client-version` and `--spec-version` as aliases for
-`--protocol-version`. Stack lifecycle commands continue to use `--topology`
-because they operate on physical stacks, not test lanes.
-
-## Quick start
-
-Probe the dataplane public MCP route:
-
-```bash
-cf-integration probe --lane dataplane
-```
-
-`stack up` synchronizes the required source checkouts, validates the Compose
-contract, resolves local builds or published images, starts the selected
-topology, and waits for its public endpoint. It preserves existing volumes by
-default. Use `--fresh` when state must be discarded.
-
-Probe, load, routed live-test, and Inspector commands start their selected
-stack, wait for the fixture to be ready, and stop the stack when the command
-succeeds or fails. The direct live fixture lane does not start a stack.
-Explicit `stack` commands remain available when a persistent environment is
-needed.
-
-The Fast Time backend is registered as virtual server
-`9779b6698cbd4b4995ee04a4fab38737`, so probe and load commands need no manual
-UI setup.
-
-## Manual Bruno tests
-
-The vendored Bruno workspace under
-`manual-tests/mcp-manual-test-tools/` provides requests for manually exercising
-MCP gateway and server flows. Open that directory as a workspace in Bruno,
-select an environment, and set a fresh token where the selected flow requires
-authentication.
-
-The collection was imported from
-[`lucarlig/mcp-manual-test-tools`](https://github.com/lucarlig/mcp-manual-test-tools).
-Its exact source revision is recorded in the vendored directory's
-`UPSTREAM.md`.
+Published control-plane and data-plane images are used by default. Local
+data-plane builds require an explicit `CF_DATAPLANE_REF`.
 
 ## CLI
-
-The public CLI contains only distinct workflows:
 
 ```text
 cf-integration
@@ -166,244 +88,91 @@ cf-integration
     └── token
 ```
 
-Use `--help` at any level for the authoritative flags.
+Use `--help` at any level for the authoritative interface.
 
-### Stack lifecycle
+Stack commands use physical `--topology controlplane|dataplane`:
 
 ```bash
 cf-integration stack up --topology dataplane
 cf-integration stack up --topology dataplane --fresh
+cf-integration stack status --topology dataplane
+cf-integration stack config --topology dataplane
 cf-integration stack down --topology all
 cf-integration stack down --topology all --volumes
-cf-integration stack status --topology dataplane
-cf-integration stack logs --topology dataplane cf-nginx cf-dataplane
-cf-integration stack config --topology dataplane
 ```
 
-`stack down --volumes` is the explicit destructive cleanup operation.
-Diagnostic commands use the harness Compose project and overlays so callers do
-not need to reconstruct its Compose invocation. The dataplane topology defaults
-to the `cf` Compose project, so Docker resources use the `cf-*` prefix.
-Container viewers expose concise `cf-*` display names, and `stack logs` accepts
-those names while translating them to the underlying Compose service keys.
+`stack down --volumes` is the explicit destructive reset. Managed workflows
+preserve the primary failure, attempt every token and stack cleanup, and report
+all cleanup failures.
 
-After readiness succeeds, `stack up` prints the public gateway/API origin, the
-mode-correct public MCP endpoint, and the direct loopback address of the pinned
-conformance server. Its host port is assigned by Docker and can change after a
-fresh start.
-
-### Probe
+Probe, load, and Inspector use physical lanes:
 
 ```bash
-cf-integration probe --lane dataplane
+cf-integration probe --lane dataplane --protocol-version 2025-11-25
+cf-integration load --lane dataplane --smoke
+cf-integration debug inspect --lane dataplane --method tools/list
 ```
 
-The modern dataplane probe checks unauthenticated rejection,
-`server/discover`, required per-request metadata and routing headers,
-`tools/list`, and one known-safe `tools/call` without creating a session. The
-legacy control-plane probe retains initialize, `notifications/initialized`,
-and session reuse. It targets `/mcp` in controlplane topology and
-`/servers/{id}/mcp` in dataplane topology.
-
-### Locust
-
-The load workflow exercises the MCP lifecycle through the framework-required
-Python Locust adapter:
-
-```bash
-cf-integration load --lane dataplane \
-  --smoke
-
-cf-integration load --lane dataplane \
-  --users 20 --spawn-rate 5 --run-time 2m
-```
-
-Default full-run settings are 100 users, 10 users/second, and five minutes.
-CLI settings override `.env`; explicitly exported `LOCUST_USERS`,
-`LOCUST_SPAWN_RATE`, and `LOCUST_RUN_TIME` remain authoritative. Smoke defaults
-are one user, one user/second, and ten seconds.
-
-On the modern dataplane lane Locust uses `server/discover`, attaches the
-mandatory client `_meta` plus `Mcp-Method`/`Mcp-Name` headers to every request,
-and avoids sessions and the removed `ping` method. The legacy control-plane
-lane retains initialize, `notifications/initialized`, session cleanup, and
-ping. The adapter calls only a finite allowlist of safe fixture tools and audits
-generated artifacts for credential leakage.
-
-### Upstream live tests
-
-Run the control-plane repository's live gateway tests against either topology:
+Live and conformance share semantic lanes: `fixture-direct`,
+`built-in-data-plane`, and `external-data-plane`.
 
 ```bash
 cf-integration live --lane external-data-plane --group mcp
-cf-integration live --lane external-data-plane --group rbac
-cf-integration live --lane external-data-plane --group protocol
-cf-integration live --lane external-data-plane --group all
-
-# Run the upstream protocol suite directly against its reference fixture.
-cf-integration live \
-  --lane fixture-direct \
-  --group protocol \
+cf-integration live --lane fixture-direct --group protocol \
   --protocol-version 2025-06-18
+
+cf-integration conformance run
+cf-integration conformance run \
+  --lane fixture-direct \
+  --lane external-data-plane \
+  --protocol-version 2026-07-28 \
+  --server-era modern
+cf-integration conformance report
 ```
 
-`--group all` is the exact union of the `mcp`, `rbac`, and `protocol` groups.
-Upstream plugin and SSO suites are excluded because this harness does not
-start their additional services.
+Workflows accept only `--lane`; `--topology` is reserved for stack commands.
+The direct fixture spelling is only `fixture-direct`. Protocol selection is
+only `--protocol-version`.
 
-The `mcp` and `all` groups start the upstream profile-gated `fast_test_server`,
-run its one-shot registration job, and, for the dataplane topology, wait until
-the publisher snapshot contains its fixed virtual server before launching the
-tests. The base stack remains unchanged when other workflows run.
+## MCP and conformance behavior
 
-`--lane fixture-direct` is valid with `--group protocol` and runs the upstream
-`test-protocol-compliance-reference` target without a gateway stack. The
-selected date-formatted version is applied to MCP SDK initialization, and the
-live run fails with the installed SDK's supported-version list when that SDK
-cannot emit it.
+One MCP client owns endpoint construction, authorization, sessions, stateful
+and stateless headers, JSON/SSE parsing, backend identity validation, response
+limits, timeouts, and secret redaction.
 
-## Official MCP conformance
+The session-oriented probe performs initialize, `notifications/initialized`,
+`tools/list`, and one safe `tools/call`. The stateless probe performs
+`server/discover`, attaches `Mcp-Method` and `Mcp-Name` routing headers, and
+performs the same safe checks without a session. Both verify unauthenticated
+rejection and external data-plane backend identity.
 
 The official runner is pinned to
-`@modelcontextprotocol/conformance@0.2.0-alpha.11`. The official TypeScript
-fixture is built from matching source revision
-`c321dd32035556e6769d3724a8ee97d87c3faaac`.
+`@modelcontextprotocol/conformance@0.2.0-alpha.11`. Its TypeScript fixture is
+built from revision `c321dd32035556e6769d3724a8ee97d87c3faaac`. A default run
+starts workflow-owned stacks, runs all three semantic lanes, records raw
+official results without suppression, writes a deterministic comparison, and
+continues cleanup after failure or interruption.
 
-The default command is intentionally complete and reproducible:
-
-```bash
-cf-integration conformance run
-```
-
-It always:
-
-- starts fresh stacks owned by the conformance workflow;
-- provisions the pinned official fixture;
-- runs every applicable official server scenario;
-- defaults to MCP `2026-07-28`;
-- runs fixture-direct, built-in-data-plane, and external-data-plane lanes;
-- routes both gateway lanes through `/servers/{virtual_host_id}/mcp` using the
-  same unscoped ephemeral catalog-token contract as the control-plane job;
-- disables rate limiting and embedded Rust MCP handling, and uses one Gunicorn
-  worker, matching the control-plane conformance job;
-- builds the control plane with `ENABLE_RUST=false` and
-  `ENABLE_RUST_MCP_RMCP=false` when `CF_COMPOSE_BUILD=true`;
-- passes an empty expected-failure file to the official runner;
-- records raw failures without suppression;
-- hides setup and runner output in artifact logs while showing live progress;
-- removes temporary API resources, fixture services, and stacks;
-- writes a comparison report even when a lane reports protocol failures.
-
-The official runner's protocol version and the upstream fixture's server era
-are independent. The fixture defaults to `--server-era dual`, preserving the
-existing behavior where it selects the matching lifecycle from the incoming
-request.
-
-Run the same-era baselines explicitly:
+The client protocol and fixture server era are independent:
 
 ```bash
 cf-integration conformance run \
-  --protocol-version 2026-07-28 \
-  --server-era modern
+  --protocol-version 2025-11-25 --server-era legacy
 cf-integration conformance run \
-  --protocol-version 2025-11-25 \
-  --server-era legacy
+  --protocol-version 2026-07-28 --server-era modern
 ```
 
-Run the two cross-era paths:
+Artifacts default below `CF_INTEGRATION_DIR/conformance`. Report regeneration
+accepts `--results-dir` and `--output-dir`.
+
+## Canonical configuration
+
+Copy `.env.example` to `.env`. Process values override the file.
 
 ```bash
-# Modern client-facing traffic against a legacy-only upstream.
-cf-integration conformance run \
-  --protocol-version 2026-07-28 \
-  --server-era legacy
-
-# Legacy client-facing traffic against a modern-only upstream.
-cf-integration conformance run \
-  --protocol-version 2025-11-25 \
-  --server-era modern
-```
-
-In a cross-era run, the fixture-direct lane is the expected incompatible
-baseline. A routed lane that passes where fixture-direct fails demonstrates
-that the gateway adapted the lifecycle across the boundary; the comparison
-report records both axes. The official runner emits the selected client era
-strictly. It does not itself test a general-purpose SDK client's automatic
-dual-era fallback.
-
-The three lanes are:
-
-1. official oracle directly to the official TypeScript fixture;
-2. official oracle through the routed Python built-in data-plane endpoint;
-3. official oracle through the same route backed by the external Rust data
-   plane.
-
-Select exact lanes by repeating `--lane`:
-
-```bash
-cf-integration conformance run \
-  --lane fixture-direct \
-  --lane external-data-plane
-```
-
-Supported client revisions are explicit and use the same pinned runner and
-fixture:
-
-```bash
-cf-integration conformance run --protocol-version 2025-11-25
-cf-integration conformance run --protocol-version 2025-06-18
-```
-
-Artifacts default below `CF_INTEGRATION_DIR`. Use `--results-dir` to place them
-elsewhere. Regenerate only the official comparison report with:
-
-```bash
-cf-integration conformance report
-cf-integration conformance report \
-  --results-dir /path/to/results \
-  --output-dir /path/to/reports
-```
-
-The official runner has no bearer-header option. The harness therefore uses a
-random-path loopback proxy that injects authorization while keeping tokens out
-of process arguments. Automatic fixture provisioning requires a loopback
-`MCP_CLI_BASE_URL`.
-
-## Debug utilities
-
-Debug commands are useful for manual diagnosis but are not compliance gates.
-
-```bash
-cf-integration debug inspect \
-  --lane dataplane \
-  --method tools/list
-
-cf-integration debug token \
-  --kind scoped \
-  --server-id <virtual-server-id>
-
-cf-integration debug token --kind admin
-```
-
-Token generation now authenticates against a running control plane using
-`PLATFORM_ADMIN_EMAIL` and `PLATFORM_ADMIN_PASSWORD`. Scoped debug tokens
-are catalog-backed, restricted to the selected virtual server, expire after
-one day, and are intentionally left active for manual use.
-
-Inspector is pinned to `@modelcontextprotocol/inspector@2.2.0` and uses the
-same loopback authentication proxy as conformance. Select `2026-07-28` to use
-its modern MCP SDK path for stateless dataplane requests.
-
-## Configuration
-
-Copy `.env.example` to `.env`. Shell variables override `.env`, and relative
-paths resolve from the repository root.
-
-Common settings:
-
-```bash
-CF_MCP_STACK_MODE=dataplane
+CF_INTEGRATION_ROOT=/path/to/contextforge-dev-tools
 CF_INTEGRATION_DIR=.integration
+CF_MCP_STACK_MODE=dataplane
 
 CF_CONTROLPLANE_REPO=https://github.com/IBM/mcp-context-forge.git
 CF_CONTROLPLANE_REF=v1.0.7
@@ -420,79 +189,56 @@ CF_FAST_TIME_EXPECTED_IMAGE=ghcr.io/ibm/cfex-mcp-fast-time-server:latest
 CF_FAST_TIME_SERVER_ID=9779b6698cbd4b4995ee04a4fab38737
 
 MCP_CLI_BASE_URL=http://127.0.0.1:8080
-# Optional global override; leave unset for the current 2025-11-25 default.
-# MCP_PROTOCOL_VERSION=2026-07-28
-NGINX_PORT=8080
-```
+MCP_PROTOCOL_VERSION=2025-11-25
+MCP_SERVER_ID=9779b6698cbd4b4995ee04a4fab38737
 
-Published control-plane and dataplane images are the defaults; the dataplane
-uses its `latest` tag. The control-plane checkout defaults to v1.0.7, whose
-publisher uses UUID token subjects and the current backend snapshot schema. Set
-`CF_DATAPLANE_REF` to build an explicit local dataplane ref.
-`CF_COMPOSE_BUILD=auto` pulls or reuses prebuilt images and rebuilds a missing
-or revision-stale source dataplane; `true` always builds and `false` never
-builds.
-
-Token and endpoint overrides used by probe, load, and debug commands:
-
-```bash
-# Optional overrides. Without them, stable random local signing values are
-# generated once under CF_INTEGRATION_DIR.
-JWT_SECRET_KEY=<integration-secret>
-AUTH_ENCRYPTION_SECRET=<integration-encryption-secret>
 PLATFORM_ADMIN_EMAIL=admin@example.com
 PLATFORM_ADMIN_PASSWORD=<local-integration-password>
-MCPGATEWAY_BEARER_TOKEN=<pre-minted-token>
-MCP_SERVER_ID=<virtual-server-id>
-MCP_TOOL_NAMES=<comma-separated-safe-tool-names>
+MCPGATEWAY_BEARER_TOKEN=<optional-pre-minted-token>
 ```
 
-Managed workflows authenticate through the control-plane email-login endpoint.
-Dataplane probe, load, Inspector, and conformance runs then request a one-day,
-server-scoped API token from the token catalog and revoke it before stack
-teardown. This ensures the token's UUID subject selects the same `UserConfig`
-snapshot the publisher wrote. `MCPGATEWAY_BEARER_TOKEN` bypasses that
-lifecycle and is never revoked by the harness.
+`CF_COMPOSE_BUILD=auto` pulls or reuses prebuilt images and builds only an
+explicit source data plane when required. `true` always builds; `false` never
+builds.
 
-Conformance ignores caller-managed fixture IDs and tokens so every lane uses
-the same official fixture. Never commit `.env` or generated tokens.
+Compose requires `JWT_SECRET_KEY` and `AUTH_ENCRYPTION_SECRET`. If either is
+unset, a runtime-backed action generates stable values under
+`CF_INTEGRATION_DIR`. Canonical configuration is exported internally as the
+upstream Compose adapter names `IMAGE_LOCAL` and `FAST_TIME_IMAGE`; those names
+are not accepted as inputs.
 
-## Future architecture alignment
+Without `MCPGATEWAY_BEARER_TOKEN`, dataplane workflows issue a one-day
+server-scoped catalog token and revoke it during session cleanup. A caller
+supplied token is never revoked by the harness.
 
-The dataplane repository's tentative ContextForge 2.0 wiki describes a
-management plane, a legacy Python MCP slow path, and a modern `2026-07-28`
-Rust fast path consuming revisioned effective configuration from a shared
-store. This harness prepares for that split by keeping management and raw
-`/mcp` traffic on control-plane, routing `/servers/{id}/mcp` strictly to the
-dataplane, providing explicit stateless modern probe/load/Inspector paths, and
-obtaining dataplane credentials from the management plane. The ordinary
-workflow default remains `2025-11-25` until the current upstream expected
-failure baseline for stateless aggregate and targeted operations is retired.
+## Package layout
 
-The remaining boundary belongs upstream rather than in this harness:
-control-plane must publish atomic compiled configuration and perform discovery,
-catalog normalization, pagination, and liveness; dataplane must serve aggregate
-catalog methods from that configuration and route targeted operations to one
-backend without live fan-out. When those phases land, the harness should add
-revision-isolation and tenant/principal partition tests instead of compatibility
-fallbacks. See the
-[`_context/wiki` architecture notes](https://github.com/contextforge-org/contextforge-data-plane/tree/main/_context/wiki).
-
-## Repository layout
+Only `cf-integration` is published:
 
 ```text
-Cargo.toml, Cargo.lock                     Rust workspace
-.cargo/config.toml                        Cargo output under .integration/
-src/                                      CLI and workflow composition
-crates/platform/                          platform orchestration library
-crates/mcp/                               MCP transport and probe library
-crates/compliance/                        official conformance library
-crates/load/                              Locust orchestration library
-docker/docker-compose.cf-dataplane.yaml   dataplane service and nginx override
-docker/docker-compose.cf-integration.yaml Fast Time and Locust overlay
-docker/docker-compose.cf-conformance.yaml official fixture overlay
-scripts/locustfile_mcp.py                  Locust MCP adapter
-manual-tests/mcp-manual-test-tools/        vendored Bruno workspace
-reports/mcp-conformance-comparison.md      tracked three-lane comparison
-.integration/                              ignored checkout/build/runtime state
+src/platform/    configuration, assets, processes, checkouts, Compose plans
+src/mcp/         unified MCP client, protocol messages, auth proxy, probe
+src/compliance/  official fixture, result parsing, lane comparison
+src/load/        Locust settings and report auditing
+src/runtime/     dispatcher and concrete workflow/session owners
+docker/          embedded Compose and nginx assets
+scripts/         embedded runtime adapters
 ```
+
+The Bruno collection under `manual-tests/mcp-manual-test-tools/` is an
+intentional lower stack layer for manual diagnosis. It remains in the
+repository and is excluded from the published crate payload.
+
+## Development and release
+
+```bash
+cargo fmt --all --check
+cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
+cargo package --locked
+```
+
+Pull requests run this quality gate plus native tests on Linux, macOS, and
+Windows. Releases build and smoke-test all six ARM64/x86-64 Linux, macOS, and
+Windows candidates before publishing the crate or tag. Prevalidated archives,
+SHA-256 files, and GitHub artifact attestations are published afterward.
