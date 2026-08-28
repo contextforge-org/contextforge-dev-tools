@@ -135,8 +135,9 @@ fn conformance_startup_reports_every_selected_client_and_server_protocol() {
 }
 
 #[test]
-fn stack_up_owns_its_detailed_progress_while_other_commands_use_global_progress() {
+fn stack_up_and_load_own_detailed_progress_while_simple_commands_use_global_progress() {
     assert!(!action(&["cf-integration", "stack", "up"], &[]).uses_global_activity());
+    assert!(!action(&["cf-integration", "load"], &[]).uses_global_activity());
     assert!(action(&["cf-integration", "stack", "down"], &[]).uses_global_activity());
     assert!(action(&["cf-integration", "probe"], &[]).uses_global_activity());
 }
