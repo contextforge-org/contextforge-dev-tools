@@ -39,7 +39,7 @@ const ASSETS: &[EmbeddedAsset] = &[
 
 /// Returns whether `root` contains the complete runtime asset set.
 #[must_use]
-pub fn contains_runtime_assets(root: &Path) -> bool {
+pub(crate) fn contains_runtime_assets(root: &Path) -> bool {
     ASSETS.iter().all(|asset| root.join(asset.path).is_file())
 }
 
@@ -47,7 +47,7 @@ pub fn contains_runtime_assets(root: &Path) -> bool {
 ///
 /// Existing versioned assets must exactly match the binary. A mismatch fails
 /// closed instead of silently running Compose with a mixed asset set.
-pub fn materialize_runtime_assets(integration_dir: &Path) -> Result<PathBuf> {
+pub(crate) fn materialize_runtime_assets(integration_dir: &Path) -> Result<PathBuf> {
     let parent = integration_dir.join("assets");
     let destination = parent.join(env!("CARGO_PKG_VERSION"));
     if destination.exists() {

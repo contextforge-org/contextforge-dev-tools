@@ -10,23 +10,23 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use url::Url;
 
-pub use crate::conformance::profile::{
+pub(crate) use crate::conformance::profile::{
     OFFICIAL_CONFORMANCE_REPOSITORY, OFFICIAL_CONFORMANCE_REVISION,
 };
 /// Docker Compose service name for the official conformance server.
-pub const OFFICIAL_CONFORMANCE_SERVICE: &str = "mcp_conformance_server";
+pub(crate) const OFFICIAL_CONFORMANCE_SERVICE: &str = "mcp_conformance_server";
 /// Docker Compose service name for the fixture's backend-only Host proxy.
-pub const OFFICIAL_CONFORMANCE_PROXY_SERVICE: &str = "mcp_conformance_proxy";
+pub(crate) const OFFICIAL_CONFORMANCE_PROXY_SERVICE: &str = "mcp_conformance_proxy";
 /// Backend URL reachable from the control-plane and dataplane containers.
-pub const OFFICIAL_CONFORMANCE_BACKEND_URL: &str = "http://mcp_conformance_proxy/mcp";
+pub(crate) const OFFICIAL_CONFORMANCE_BACKEND_URL: &str = "http://mcp_conformance_proxy/mcp";
 /// Reserved gateway name used by the fixture.
 ///
 /// `_` intentionally produces an empty gateway slug when paired with the
 /// conformance-only underscore separator. This preserves the upstream
 /// `test_*` tool and prompt names exactly.
-pub const OFFICIAL_CONFORMANCE_GATEWAY_NAME: &str = "_";
+pub(crate) const OFFICIAL_CONFORMANCE_GATEWAY_NAME: &str = "_";
 /// Deterministic virtual-server ID used by the fixture.
-pub const OFFICIAL_CONFORMANCE_SERVER_ID: &str = "3f33286667d34b65a31c3bafd30e4c21";
+pub(crate) const OFFICIAL_CONFORMANCE_SERVER_ID: &str = "3f33286667d34b65a31c3bafd30e4c21";
 
 const SERVER_NAME: &str = "Official MCP Conformance Server";
 const SERVER_DESCRIPTION: &str = "Virtual server for the pinned official MCP conformance fixture.";
@@ -45,17 +45,17 @@ const REDACTED: &str = "<redacted>";
 
 /// IDs created for one official conformance fixture.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProvisionedConformanceFixture {
+pub(crate) struct ProvisionedConformanceFixture {
     /// ID of the newly created backing gateway.
-    pub gateway_id: String,
+    pub(crate) gateway_id: String,
     /// ID of the deterministic virtual server.
-    pub server_id: String,
+    pub(crate) server_id: String,
 }
 
 /// Builder for [`ConformanceFixtureClient`].
 #[must_use = "a conformance fixture client builder does nothing until build() is called"]
 #[derive(Clone)]
-pub struct ConformanceFixtureClientBuilder {
+pub(crate) struct ConformanceFixtureClientBuilder {
     base_url: String,
     admin_token: String,
     poll_interval: Duration,
@@ -83,35 +83,35 @@ impl fmt::Debug for ConformanceFixtureClientBuilder {
 impl ConformanceFixtureClientBuilder {
     /// Sets the delay between unsuccessful catalog polling attempts.
     #[cfg(test)]
-    pub fn poll_interval(mut self, poll_interval: Duration) -> Self {
+    pub(crate) fn poll_interval(mut self, poll_interval: Duration) -> Self {
         self.poll_interval = poll_interval;
         self
     }
 
     /// Sets the maximum number of catalog polling attempts.
     #[cfg(test)]
-    pub fn max_attempts(mut self, max_attempts: usize) -> Self {
+    pub(crate) fn max_attempts(mut self, max_attempts: usize) -> Self {
         self.max_attempts = max_attempts;
         self
     }
 
     /// Sets the total timeout for each admin HTTP request. Defaults to 30 seconds.
     #[cfg(test)]
-    pub fn request_timeout(mut self, request_timeout: Duration) -> Self {
+    pub(crate) fn request_timeout(mut self, request_timeout: Duration) -> Self {
         self.request_timeout = request_timeout;
         self
     }
 
     /// Sets the bounded number of gateway reconciliation polls. Defaults to five.
     #[cfg(test)]
-    pub fn reconciliation_attempts(mut self, reconciliation_attempts: usize) -> Self {
+    pub(crate) fn reconciliation_attempts(mut self, reconciliation_attempts: usize) -> Self {
         self.reconciliation_attempts = reconciliation_attempts;
         self
     }
 
     /// Sets the delay between gateway reconciliation polls. Defaults to 100ms.
     #[cfg(test)]
-    pub fn reconciliation_interval(mut self, reconciliation_interval: Duration) -> Self {
+    pub(crate) fn reconciliation_interval(mut self, reconciliation_interval: Duration) -> Self {
         self.reconciliation_interval = reconciliation_interval;
         self
     }
@@ -123,7 +123,7 @@ impl ConformanceFixtureClientBuilder {
     /// Returns an error when the base URL or bearer token is invalid, or when
     /// `max_attempts` or `request_timeout` is zero, or fewer than two gateway
     /// reconciliation attempts are configured.
-    pub fn build(self) -> Result<ConformanceFixtureClient> {
+    pub(crate) fn build(self) -> Result<ConformanceFixtureClient> {
         if self.max_attempts == 0 {
             return Err(anyhow!("max_attempts must be greater than zero"));
         }
@@ -160,7 +160,7 @@ impl ConformanceFixtureClientBuilder {
 
 /// Authenticated client for provisioning the official conformance fixture.
 #[derive(Clone)]
-pub struct ConformanceFixtureClient {
+pub(crate) struct ConformanceFixtureClient {
     base_url: Url,
     admin_token: String,
     poll_interval: Duration,
@@ -191,7 +191,7 @@ impl fmt::Debug for ConformanceFixtureClient {
 
 impl ConformanceFixtureClient {
     /// Starts a fixture client builder.
-    pub fn builder(
+    pub(crate) fn builder(
         base_url: impl AsRef<str>,
         admin_token: impl Into<String>,
     ) -> ConformanceFixtureClientBuilder {
@@ -213,7 +213,10 @@ impl ConformanceFixtureClient {
     /// Returns an error when an admin request fails or the required conformance
     /// catalog identities do not appear within the configured attempts. A
     /// fixture created before the failure is cleaned up automatically.
-    pub async fn provision(&self, backend_url: &str) -> Result<ProvisionedConformanceFixture> {
+    pub(crate) async fn provision(
+        &self,
+        backend_url: &str,
+    ) -> Result<ProvisionedConformanceFixture> {
         if backend_url != OFFICIAL_CONFORMANCE_BACKEND_URL {
             return Err(anyhow!(
                 "official conformance backend URL does not match the pinned fixture"
@@ -284,7 +287,10 @@ impl ConformanceFixtureClient {
     ///
     /// Returns an error for transport failures or delete responses other than a
     /// successful status or `404 Not Found`.
-    pub async fn cleanup(&self, fixture: Option<&ProvisionedConformanceFixture>) -> Result<()> {
+    pub(crate) async fn cleanup(
+        &self,
+        fixture: Option<&ProvisionedConformanceFixture>,
+    ) -> Result<()> {
         let server_id = fixture.map_or(OFFICIAL_CONFORMANCE_SERVER_ID, |value| {
             value.server_id.as_str()
         });
@@ -568,7 +574,7 @@ struct CatalogRecord {
     name: String,
     #[serde(default)]
     uri: String,
-    #[serde(default, alias = "gatewayId")]
+    #[serde(default, rename = "gatewayId")]
     gateway_id: Option<String>,
 }
 

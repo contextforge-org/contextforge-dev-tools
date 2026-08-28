@@ -16,7 +16,7 @@ const LEGACY_IMAGE_PREFIXES: &[&str] = &[
 ];
 
 /// Compose service keys and their public container display names.
-pub const SERVICE_DISPLAY_NAMES: &[(&str, &str)] = &[
+pub(crate) const SERVICE_DISPLAY_NAMES: &[(&str, &str)] = &[
     ("gateway", "cf-controlplane"),
     ("migration", "cf-migration"),
     ("register_fast_time", "cf-register-fast-time"),
@@ -42,7 +42,7 @@ pub const SERVICE_DISPLAY_NAMES: &[(&str, &str)] = &[
 
 /// Immutable Compose project invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ComposeProject {
+pub(crate) struct ComposeProject {
     project_name: OsString,
     files: Vec<PathBuf>,
     profiles: Vec<OsString>,
@@ -51,7 +51,7 @@ pub struct ComposeProject {
 impl ComposeProject {
     /// Builds the control-plane plus dataplane overlay project.
     #[must_use]
-    pub fn dataplane(
+    pub(crate) fn dataplane(
         repository_root: &Path,
         controlplane_checkout: &Path,
         project_name: OsString,
@@ -85,7 +85,7 @@ impl ComposeProject {
 
     /// Builds the stock control-plane-only project.
     #[must_use]
-    pub fn controlplane(
+    pub(crate) fn controlplane(
         repository_root: &Path,
         controlplane_checkout: &Path,
         project_name: OsString,
@@ -110,20 +110,20 @@ impl ComposeProject {
     /// Ordered Compose override files.
     #[must_use]
     #[cfg(test)]
-    pub fn files(&self) -> &[PathBuf] {
+    pub(crate) fn files(&self) -> &[PathBuf] {
         &self.files
     }
 
     /// Explicitly enabled Compose profiles.
     #[must_use]
     #[cfg(test)]
-    pub fn profiles(&self) -> &[OsString] {
+    pub(crate) fn profiles(&self) -> &[OsString] {
         &self.profiles
     }
 
     /// Replaces the enabled profile set, primarily for exhaustive cleanup.
     #[must_use]
-    pub fn with_profiles<I, S>(mut self, profiles: I) -> Self
+    pub(crate) fn with_profiles<I, S>(mut self, profiles: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<OsString>,
@@ -138,7 +138,7 @@ impl ComposeProject {
     /// by the overlay start with the required configuration before the
     /// profile-gated fixture itself is launched.
     #[must_use]
-    pub fn with_conformance_overlay(mut self, repository_root: &Path) -> Self {
+    pub(crate) fn with_conformance_overlay(mut self, repository_root: &Path) -> Self {
         let overlay = repository_root
             .join("docker")
             .join("docker-compose.cf-conformance.yaml");
@@ -150,7 +150,7 @@ impl ComposeProject {
 
     /// Applies the control-plane runtime settings used by conformance runs.
     #[must_use]
-    pub fn with_conformance_runtime(mut self, repository_root: &Path) -> Self {
+    pub(crate) fn with_conformance_runtime(mut self, repository_root: &Path) -> Self {
         let overlay = repository_root
             .join("docker")
             .join("docker-compose.cf-conformance-runtime.yaml");
@@ -162,7 +162,7 @@ impl ComposeProject {
 
     /// Enables the isolated official MCP conformance server fixture.
     #[must_use]
-    pub fn with_conformance_fixture(self, repository_root: &Path) -> Self {
+    pub(crate) fn with_conformance_fixture(self, repository_root: &Path) -> Self {
         let mut project = self.with_conformance_overlay(repository_root);
 
         let profile = OsString::from("conformance");
@@ -174,7 +174,7 @@ impl ComposeProject {
     }
 
     /// Creates a `docker compose` command with project, files, and profiles.
-    pub fn command<I, S>(&self, arguments: I) -> CommandSpec
+    pub(crate) fn command<I, S>(&self, arguments: I) -> CommandSpec
     where
         I: IntoIterator<Item = S>,
         S: Into<OsString>,
@@ -195,7 +195,7 @@ impl ComposeProject {
 
 /// One deterministic integration Compose contract violation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContractViolation(String);
+pub(crate) struct ContractViolation(String);
 
 impl fmt::Display for ContractViolation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -208,7 +208,7 @@ impl fmt::Display for ContractViolation {
 /// The order of returned violations is stable and intended for operator-facing
 /// diagnostics and regression tests.
 #[must_use]
-pub fn validate_integration_contract(
+pub(crate) fn validate_integration_contract(
     rendered: &Value,
     expected_fast_time_image: &str,
 ) -> Vec<ContractViolation> {

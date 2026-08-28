@@ -41,11 +41,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         paths: &ConformancePaths,
         expected_run: Option<(&str, ConformanceServerEra, &str)>,
     ) -> AppResult<PathBuf> {
-        let fixture = self.load_conformance_artifact(paths, ConformanceTarget::FixtureDirect)?;
-        let built_in =
-            self.load_conformance_artifact(paths, ConformanceTarget::BuiltInDataPlane)?;
-        let external =
-            self.load_conformance_artifact(paths, ConformanceTarget::ExternalDataPlane)?;
+        let fixture = self.load_conformance_artifact(paths, SemanticLane::FixtureDirect)?;
+        let built_in = self.load_conformance_artifact(paths, SemanticLane::BuiltInDataPlane)?;
+        let external = self.load_conformance_artifact(paths, SemanticLane::ExternalDataPlane)?;
         if fixture.is_none() && built_in.is_none() && external.is_none() {
             return Err(AppFailure::from(anyhow!(
                 "no official conformance artifacts found beneath {}",
@@ -53,9 +51,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             )));
         }
         let missing = [
-            (ConformanceTarget::FixtureDirect, fixture.is_none()),
-            (ConformanceTarget::BuiltInDataPlane, built_in.is_none()),
-            (ConformanceTarget::ExternalDataPlane, external.is_none()),
+            (SemanticLane::FixtureDirect, fixture.is_none()),
+            (SemanticLane::BuiltInDataPlane, built_in.is_none()),
+            (SemanticLane::ExternalDataPlane, external.is_none()),
         ]
         .into_iter()
         .filter_map(|(lane, missing)| missing.then_some(lane.slug()))
@@ -68,41 +66,22 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             )));
         }
 
+        let fixture = fixture.ok_or_else(|| {
+            AppFailure::from(anyhow!("missing fixture-direct conformance artifact"))
+        })?;
+        let built_in = built_in.ok_or_else(|| {
+            AppFailure::from(anyhow!("missing built-in data-plane conformance artifact"))
+        })?;
+        let external = external.ok_or_else(|| {
+            AppFailure::from(anyhow!("missing external data-plane conformance artifact"))
+        })?;
         let metadata = compatible_metadata(
-            fixture.as_ref().map(|artifact| &artifact.metadata),
-            built_in.as_ref().map(|artifact| &artifact.metadata),
-            external.as_ref().map(|artifact| &artifact.metadata),
+            Some(&fixture.metadata),
+            Some(&built_in.metadata),
+            Some(&external.metadata),
             expected_run,
         )?;
-        let empty_results = ConformanceResults::default();
-        let scenarios = compare_result_sets_with_fixture_trust(
-            fixture
-                .as_ref()
-                .map_or(&empty_results, |artifact| &artifact.results),
-            built_in
-                .as_ref()
-                .map_or(&empty_results, |artifact| &artifact.results),
-            external
-                .as_ref()
-                .map_or(&empty_results, |artifact| &artifact.results),
-            ComparisonFixtureTrust {
-                fixture: is_trusted_official_fixture(
-                    fixture
-                        .as_ref()
-                        .and_then(|artifact| artifact.metadata.fixture.as_ref()),
-                ),
-                built_in_data_plane: is_trusted_official_fixture(
-                    built_in
-                        .as_ref()
-                        .and_then(|artifact| artifact.metadata.fixture.as_ref()),
-                ),
-                external_data_plane: is_trusted_official_fixture(
-                    external
-                        .as_ref()
-                        .and_then(|artifact| artifact.metadata.fixture.as_ref()),
-                ),
-            },
-        );
+        let scenarios = compare_result_sets(&fixture.results, &built_in.results, &external.results);
         let output = paths.report_output.join("mcp-conformance-comparison.md");
         write_comparison_report(
             &output,
@@ -121,7 +100,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     fn load_conformance_artifact(
         &self,
         paths: &ConformancePaths,
-        target: ConformanceTarget,
+        target: SemanticLane,
     ) -> AppResult<Option<LoadedConformanceArtifact>> {
         let artifact = paths.conformance_lane(target);
         if !artifact.metadata.is_file()
@@ -154,6 +133,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 crate::conformance::results::OFFICIAL_CONFORMANCE_PACKAGE
             )));
         }
+        if !is_trusted_official_fixture(&metadata.fixture) {
+            return Err(AppFailure::from(anyhow!(
+                "conformance artifacts do not identify the pinned official fixture"
+            )));
+        }
         let results = load_server_results(&artifact.official_results).map_err(AppFailure::from)?;
         validate_server_scenario_set(&results, &metadata.suite, &metadata.client_version)
             .map_err(AppFailure::from)?;
@@ -164,23 +148,40 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) fn load_selected_conformance_results(
         &self,
         paths: &ConformancePaths,
-        lanes: &[ConformanceTarget],
-    ) -> AppResult<BTreeMap<ConformanceTarget, ConformanceResults>> {
+        lanes: &[SemanticLane],
+    ) -> AppResult<BTreeMap<SemanticLane, ConformanceResults>> {
         let mut results = BTreeMap::new();
-        for lane in lanes {
+        for lane in conformance_evidence_lanes(lanes) {
             let artifact = self
-                .load_conformance_artifact(paths, *lane)?
+                .load_conformance_artifact(paths, lane)?
                 .ok_or_else(|| {
                     AppFailure::from(anyhow!(
-                        "missing selected conformance lane {} for {}",
+                        "missing required conformance lane {} for {}",
                         lane.slug(),
                         paths.identity()
                     ))
                 })?;
-            results.insert(*lane, artifact.results);
+            results.insert(lane, artifact.results);
         }
         Ok(results)
     }
+}
+
+fn conformance_evidence_lanes(selected: &[SemanticLane]) -> Vec<SemanticLane> {
+    let routed = selected.iter().any(|lane| {
+        matches!(
+            lane,
+            SemanticLane::BuiltInDataPlane | SemanticLane::ExternalDataPlane
+        )
+    });
+    [
+        SemanticLane::FixtureDirect,
+        SemanticLane::BuiltInDataPlane,
+        SemanticLane::ExternalDataPlane,
+    ]
+    .into_iter()
+    .filter(|lane| selected.contains(lane) || (routed && *lane == SemanticLane::FixtureDirect))
+    .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -220,13 +221,13 @@ impl ConformancePaths {
         self.conformance_root.join("setup.log")
     }
 
-    pub(super) fn baseline_report(&self, target: ConformanceTarget) -> PathBuf {
+    pub(super) fn baseline_report(&self, target: SemanticLane) -> PathBuf {
         self.report_output
             .join(target.slug())
             .join("baseline-comparison.yml")
     }
 
-    pub(super) fn conformance_lane(&self, target: ConformanceTarget) -> ConformanceLanePaths {
+    pub(super) fn conformance_lane(&self, target: SemanticLane) -> ConformanceLanePaths {
         let root = self.conformance_root.join(target.slug());
         ConformanceLanePaths {
             official_results: root.join("official"),
@@ -240,9 +241,9 @@ impl ConformancePaths {
 
     pub(super) fn clear_conformance(&self) -> AppResult<()> {
         for target in [
-            ConformanceTarget::FixtureDirect,
-            ConformanceTarget::BuiltInDataPlane,
-            ConformanceTarget::ExternalDataPlane,
+            SemanticLane::FixtureDirect,
+            SemanticLane::BuiltInDataPlane,
+            SemanticLane::ExternalDataPlane,
         ] {
             remove_artifact_directory(&self.conformance_lane(target).root)?;
         }
@@ -373,7 +374,7 @@ pub(super) fn conformance_process_completed(process_result: &AppResult<()>) -> b
 pub(super) fn mark_conformance_complete(
     process_result: &AppResult<()>,
     results: &ConformanceResults,
-    target: ConformanceTarget,
+    target: SemanticLane,
     suite: &str,
     spec_version: &str,
     path: &Path,
@@ -457,10 +458,10 @@ fn compatible_metadata<'a>(
     Ok(metadata)
 }
 
-pub(super) const fn conformance_target(topology: StackMode) -> ConformanceTarget {
+pub(super) const fn conformance_target(topology: StackMode) -> SemanticLane {
     match topology {
-        StackMode::Controlplane => ConformanceTarget::BuiltInDataPlane,
-        StackMode::Dataplane => ConformanceTarget::ExternalDataPlane,
+        StackMode::Controlplane => SemanticLane::BuiltInDataPlane,
+        StackMode::Dataplane => SemanticLane::ExternalDataPlane,
     }
 }
 
@@ -483,18 +484,18 @@ mod tests {
     };
     use crate::conformance::results::OFFICIAL_CONFORMANCE_PACKAGE;
 
-    fn metadata(target: ConformanceTarget) -> ConformanceRunMetadata {
+    fn metadata(target: SemanticLane) -> ConformanceRunMetadata {
         ConformanceRunMetadata {
             oracle: OFFICIAL_CONFORMANCE_PACKAGE.to_owned(),
             target: target.label().to_owned(),
             client_version: "2026-07-28".to_owned(),
             server_era: ConformanceServerEra::Dual,
             suite: "all".to_owned(),
-            fixture: Some(ConformanceFixtureMetadata {
+            fixture: ConformanceFixtureMetadata {
                 repository: OFFICIAL_CONFORMANCE_REPOSITORY.to_owned(),
                 revision: OFFICIAL_CONFORMANCE_REVISION.to_owned(),
                 server_id: OFFICIAL_CONFORMANCE_SERVER_ID.to_owned(),
-            }),
+            },
         }
     }
 
@@ -508,28 +509,38 @@ mod tests {
         );
 
         assert_eq!(
-            paths
-                .conformance_lane(ConformanceTarget::FixtureDirect)
-                .root,
+            paths.conformance_lane(SemanticLane::FixtureDirect).root,
             PathBuf::from("artifacts/conformance/2026-07-28/modern/fixture-direct")
         );
         assert_eq!(
-            paths
-                .conformance_lane(ConformanceTarget::BuiltInDataPlane)
-                .root,
+            paths.conformance_lane(SemanticLane::BuiltInDataPlane).root,
             PathBuf::from("artifacts/conformance/2026-07-28/modern/built-in-data-plane")
         );
         assert_eq!(
-            paths
-                .conformance_lane(ConformanceTarget::ExternalDataPlane)
-                .root,
+            paths.conformance_lane(SemanticLane::ExternalDataPlane).root,
             PathBuf::from("artifacts/conformance/2026-07-28/modern/external-data-plane")
         );
         assert_eq!(
-            paths.baseline_report(ConformanceTarget::BuiltInDataPlane),
+            paths.baseline_report(SemanticLane::BuiltInDataPlane),
             PathBuf::from(
                 "reports/conformance/2026-07-28/modern/built-in-data-plane/baseline-comparison.yml"
             )
+        );
+    }
+
+    #[test]
+    fn routed_selection_loads_direct_fixture_evidence_without_selecting_its_baseline() {
+        assert_eq!(
+            conformance_evidence_lanes(&[SemanticLane::BuiltInDataPlane]),
+            [SemanticLane::FixtureDirect, SemanticLane::BuiltInDataPlane]
+        );
+        assert_eq!(
+            conformance_evidence_lanes(&[SemanticLane::ExternalDataPlane]),
+            [SemanticLane::FixtureDirect, SemanticLane::ExternalDataPlane]
+        );
+        assert_eq!(
+            conformance_evidence_lanes(&[SemanticLane::FixtureDirect]),
+            [SemanticLane::FixtureDirect]
         );
     }
 
@@ -543,9 +554,9 @@ mod tests {
             ConformanceServerEra::Dual,
         );
         for target in [
-            ConformanceTarget::FixtureDirect,
-            ConformanceTarget::BuiltInDataPlane,
-            ConformanceTarget::ExternalDataPlane,
+            SemanticLane::FixtureDirect,
+            SemanticLane::BuiltInDataPlane,
+            SemanticLane::ExternalDataPlane,
         ] {
             fs::create_dir_all(paths.conformance_lane(target).root)
                 .expect("lane directory should be created");
@@ -556,9 +567,9 @@ mod tests {
             .expect("all old lanes should be removed");
 
         for target in [
-            ConformanceTarget::FixtureDirect,
-            ConformanceTarget::BuiltInDataPlane,
-            ConformanceTarget::ExternalDataPlane,
+            SemanticLane::FixtureDirect,
+            SemanticLane::BuiltInDataPlane,
+            SemanticLane::ExternalDataPlane,
         ] {
             assert!(!paths.conformance_lane(target).root.exists());
         }
@@ -566,8 +577,8 @@ mod tests {
 
     #[test]
     fn partial_lane_metadata_is_reportable_when_provenance_matches() {
-        let fixture = metadata(ConformanceTarget::FixtureDirect);
-        let dataplane = metadata(ConformanceTarget::ExternalDataPlane);
+        let fixture = metadata(SemanticLane::FixtureDirect);
+        let dataplane = metadata(SemanticLane::ExternalDataPlane);
 
         let selected = compatible_metadata(
             Some(&fixture),
@@ -582,13 +593,9 @@ mod tests {
 
     #[test]
     fn mismatched_fixture_provenance_prevents_cross_lane_comparison() {
-        let fixture = metadata(ConformanceTarget::FixtureDirect);
-        let mut dataplane = metadata(ConformanceTarget::ExternalDataPlane);
-        dataplane
-            .fixture
-            .as_mut()
-            .expect("fixture metadata should exist")
-            .revision = "different".to_owned();
+        let fixture = metadata(SemanticLane::FixtureDirect);
+        let mut dataplane = metadata(SemanticLane::ExternalDataPlane);
+        dataplane.fixture.revision = "different".to_owned();
 
         let error = compatible_metadata(Some(&fixture), None, Some(&dataplane), None)
             .expect_err("mismatched provenance must fail")
@@ -600,8 +607,8 @@ mod tests {
 
     #[test]
     fn mismatched_server_eras_prevent_cross_lane_comparison() {
-        let fixture = metadata(ConformanceTarget::FixtureDirect);
-        let mut dataplane = metadata(ConformanceTarget::ExternalDataPlane);
+        let fixture = metadata(SemanticLane::FixtureDirect);
+        let mut dataplane = metadata(SemanticLane::ExternalDataPlane);
         dataplane.server_era = ConformanceServerEra::Legacy;
 
         let error = compatible_metadata(Some(&fixture), None, Some(&dataplane), None)

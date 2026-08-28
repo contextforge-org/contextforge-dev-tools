@@ -22,7 +22,7 @@ const REQUEST_TIMEOUT_ERROR: &str =
     "LOCUST_REQUEST_TIMEOUT_SECONDS must be a finite number greater than zero";
 /// Prepared Docker Compose Locust invocation and its host report directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LocustCommand {
+pub(crate) struct LocustCommand {
     command: CommandSpec,
     report_dir: PathBuf,
 }
@@ -34,7 +34,7 @@ impl LocustCommand {
     ///
     /// Rejects an empty token or protocol version, a missing dataplane server
     /// ID, an invalid timeout, or an inaccessible report directory.
-    pub fn new_with_protocol_version(
+    pub(crate) fn new_with_protocol_version(
         config: &AppConfig,
         mode: StackMode,
         settings: &LoadSettings,
@@ -161,13 +161,13 @@ impl LocustCommand {
     }
 
     /// Returns the child-process specification.
-    pub fn command(&self) -> &CommandSpec {
+    pub(crate) fn command(&self) -> &CommandSpec {
         &self.command
     }
 
     /// Returns the host directory receiving HTML and CSV reports.
     #[must_use]
-    pub fn report_dir(&self) -> &Path {
+    pub(crate) fn report_dir(&self) -> &Path {
         &self.report_dir
     }
 }
@@ -179,7 +179,7 @@ impl LocustCommand {
 /// Returns an error after attempting all removals when an artifact cannot be inspected,
 /// a tainted artifact cannot be removed, or at least one credential-bearing artifact was
 /// removed.
-pub fn audit_reports(report_dir: &Path, bearer_token: &str) -> Result<()> {
+pub(crate) fn audit_reports(report_dir: &Path, bearer_token: &str) -> Result<()> {
     let mut files = Vec::new();
     let mut first_inspection_error = None;
     collect_report_files(report_dir, &mut files, &mut first_inspection_error);

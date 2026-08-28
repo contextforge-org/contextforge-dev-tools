@@ -1,13 +1,13 @@
 //! Source, process, configuration, Compose, and stack primitives.
 
-pub mod assets;
-pub mod checkout;
-pub mod compose;
-pub mod config;
-pub mod error;
+pub(crate) mod assets;
+pub(crate) mod checkout;
+pub(crate) mod compose;
+pub(crate) mod config;
+pub(crate) mod error;
 mod mode;
-pub mod process;
-pub mod stack;
+pub(crate) mod process;
+pub(crate) mod stack;
 
-pub use error::InfrastructureError;
-pub use mode::StackMode;
+pub(crate) use error::InfrastructureError;
+pub(crate) use mode::StackMode;

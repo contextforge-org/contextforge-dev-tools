@@ -217,7 +217,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 
     async fn run_conformance(
         &self,
-        lanes: &[ConformanceTarget],
+        lanes: &[SemanticLane],
         spec_version: &str,
         server_era: ConformanceServerEra,
         paths: &ConformancePaths,
@@ -232,7 +232,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 
     async fn run_conformance_with_interrupt<I>(
         &self,
-        lanes: &[ConformanceTarget],
+        lanes: &[SemanticLane],
         spec_version: &str,
         server_era: ConformanceServerEra,
         paths: &ConformancePaths,
@@ -253,7 +253,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         paths.clear_conformance()?;
 
         let topologies = conformance_topologies(lanes);
-        let run_direct = lanes.contains(&ConformanceTarget::FixtureDirect);
         let mut direct_complete = false;
         let mut failures = Vec::new();
         let mut interrupted = false;
@@ -319,7 +318,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 }
             }
 
-            if topology_failure.is_none() && run_direct && !direct_complete {
+            // Routed baselines subtract findings reproduced by the direct fixture,
+            // so every selected matrix needs one direct run even when that lane is
+            // not itself selected for baseline gating.
+            if topology_failure.is_none() && !direct_complete {
                 let run_inputs = fixture_endpoint.as_ref().zip(fixture_metadata.as_ref());
                 match run_inputs {
                     Some((endpoint, metadata)) => {
@@ -511,9 +513,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 
         if !interrupted
             && [
-                ConformanceTarget::FixtureDirect,
-                ConformanceTarget::BuiltInDataPlane,
-                ConformanceTarget::ExternalDataPlane,
+                SemanticLane::FixtureDirect,
+                SemanticLane::BuiltInDataPlane,
+                SemanticLane::ExternalDataPlane,
             ]
             .iter()
             .all(|lane| lanes.contains(lane))
@@ -576,7 +578,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         .map_err(AppFailure::from)?;
         let result = self
             .run_official_conformance_target(
-                &ConformanceTargetRun {
+                &SemanticLaneRun {
                     target,
                     endpoint: proxy.url(),
                     spec_version: run.spec_version,
@@ -601,8 +603,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         paths: &ConformancePaths,
     ) -> AppResult<()> {
         self.run_official_conformance_target(
-            &ConformanceTargetRun {
-                target: ConformanceTarget::FixtureDirect,
+            &SemanticLaneRun {
+                target: SemanticLane::FixtureDirect,
                 endpoint: run.endpoint,
                 spec_version: run.spec_version,
                 server_era: run.server_era,
@@ -616,7 +618,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 
     async fn run_official_conformance_target(
         &self,
-        run: &ConformanceTargetRun<'_>,
+        run: &SemanticLaneRun<'_>,
         paths: &ConformancePaths,
     ) -> AppResult<()> {
         let expected_scenarios =
@@ -649,7 +651,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 client_version: run.spec_version.to_owned(),
                 server_era: run.server_era,
                 suite: DEFAULT_CONFORMANCE_SUITE.to_owned(),
-                fixture: Some(run.fixture.clone()),
+                fixture: run.fixture.clone(),
             },
         )?;
 
@@ -744,7 +746,7 @@ fn conformance_matrix(
 }
 
 fn render_conformance_lane_header(
-    target: ConformanceTarget,
+    target: SemanticLane,
     scenario_count: usize,
     spec_version: &str,
     server_era: ConformanceServerEra,
@@ -759,7 +761,7 @@ fn render_conformance_lane_header(
 }
 
 fn render_conformance_baseline_results(
-    results: &BTreeMap<ConformanceTarget, ConformanceResults>,
+    results: &BTreeMap<SemanticLane, ConformanceResults>,
     comparisons: &[BaselineComparison],
     elapsed: Duration,
     style: OutputStyle,
@@ -845,7 +847,7 @@ fn conformance_test_status(
     {
         return TestStatus::ExpectedFailure;
     }
-    match result.outcome_with_trusted_fixture(true) {
+    match result.gated_outcome() {
         ScenarioOutcome::Compliant => TestStatus::Pass,
         ScenarioOutcome::NonCompliant | ScenarioOutcome::FixtureFailure => {
             TestStatus::ExpectedFailure
@@ -855,12 +857,12 @@ fn conformance_test_status(
     }
 }
 
-fn conformance_topologies(lanes: &[ConformanceTarget]) -> Vec<StackMode> {
+fn conformance_topologies(lanes: &[SemanticLane]) -> Vec<StackMode> {
     let mut topologies = Vec::new();
-    if lanes.contains(&ConformanceTarget::BuiltInDataPlane) {
+    if lanes.contains(&SemanticLane::BuiltInDataPlane) {
         topologies.push(StackMode::Controlplane);
     }
-    if lanes.contains(&ConformanceTarget::ExternalDataPlane) {
+    if lanes.contains(&SemanticLane::ExternalDataPlane) {
         topologies.push(StackMode::Dataplane);
     }
     if topologies.is_empty() {
@@ -913,8 +915,8 @@ struct DirectConformanceRun<'a> {
     cancellation: tokio::sync::watch::Receiver<bool>,
 }
 
-struct ConformanceTargetRun<'a> {
-    target: ConformanceTarget,
+struct SemanticLaneRun<'a> {
+    target: SemanticLane,
     endpoint: &'a url::Url,
     spec_version: &'a str,
     server_era: ConformanceServerEra,
@@ -1001,8 +1003,8 @@ mod tests {
         }
     }
 
-    fn result_map(results: ConformanceResults) -> BTreeMap<ConformanceTarget, ConformanceResults> {
-        [(ConformanceTarget::ExternalDataPlane, results)]
+    fn result_map(results: ConformanceResults) -> BTreeMap<SemanticLane, ConformanceResults> {
+        [(SemanticLane::ExternalDataPlane, results)]
             .into_iter()
             .collect()
     }
@@ -1010,20 +1012,19 @@ mod tests {
     #[test]
     fn lane_selection_uses_only_required_stack_topologies() {
         assert_eq!(
-            conformance_topologies(&[ConformanceTarget::FixtureDirect]),
+            conformance_topologies(&[SemanticLane::FixtureDirect]),
             [StackMode::Controlplane]
         );
         assert_eq!(
-            conformance_topologies(&[
-                ConformanceTarget::FixtureDirect,
-                ConformanceTarget::ExternalDataPlane,
-            ]),
+            conformance_topologies(
+                &[SemanticLane::FixtureDirect, SemanticLane::ExternalDataPlane,]
+            ),
             [StackMode::Dataplane]
         );
         assert_eq!(
             conformance_topologies(&[
-                ConformanceTarget::BuiltInDataPlane,
-                ConformanceTarget::ExternalDataPlane,
+                SemanticLane::BuiltInDataPlane,
+                SemanticLane::ExternalDataPlane,
             ]),
             [StackMode::Controlplane, StackMode::Dataplane]
         );
@@ -1082,7 +1083,7 @@ mod tests {
     fn conformance_lane_header_names_the_lane_oracle_and_specification() {
         assert_eq!(
             render_conformance_lane_header(
-                ConformanceTarget::FixtureDirect,
+                SemanticLane::FixtureDirect,
                 40,
                 "2026-07-28",
                 ConformanceServerEra::Legacy,
@@ -1113,7 +1114,7 @@ mod tests {
         let results = result_map(mixed_conformance_results());
         let failing = scored_finding("failing");
         let comparison = BaselineComparison {
-            lane: ConformanceTarget::ExternalDataPlane,
+            lane: SemanticLane::ExternalDataPlane,
             actual: vec![failing.clone()],
             expected: vec![failing],
             unexpected: Vec::new(),
@@ -1137,7 +1138,7 @@ mod tests {
     #[test]
     fn colored_conformance_output_distinguishes_expected_and_unexpected_results() {
         let header = render_conformance_lane_header(
-            ConformanceTarget::ExternalDataPlane,
+            SemanticLane::ExternalDataPlane,
             4,
             "2026-07-28",
             ConformanceServerEra::Modern,
@@ -1169,7 +1170,7 @@ mod tests {
         let unexpected = scored_finding("unexpected");
         let stale = scored_finding("stale");
         let comparison = BaselineComparison {
-            lane: ConformanceTarget::ExternalDataPlane,
+            lane: SemanticLane::ExternalDataPlane,
             actual: vec![expected.clone(), unexpected.clone()],
             expected: vec![expected, stale.clone()],
             unexpected: vec![unexpected],

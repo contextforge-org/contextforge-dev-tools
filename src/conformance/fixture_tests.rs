@@ -822,27 +822,28 @@ async fn provision_deletes_every_stale_reserved_gateway_before_creation() {
 }
 
 #[tokio::test]
-async fn provision_accepts_snake_case_gateway_ids() {
+async fn provision_rejects_noncanonical_snake_case_gateway_ids() {
     let mut expected = provision_prefix(json!([]));
     append_create_and_refresh(&mut expected);
     append_catalogs(&mut expected, "gateway_id", true);
-    expected.push(response(
-        "POST",
-        "/servers",
-        json!({"id":OFFICIAL_CONFORMANCE_SERVER_ID}),
-    ));
+    append_catalogs(&mut expected, "gateway_id", true);
+    expected.extend([
+        response("GET", "/servers", json!([])),
+        response("GET", "/gateways", json!([gateway_record(GATEWAY_ID)])),
+        status(
+            "DELETE",
+            format!("/gateways/{GATEWAY_ID}"),
+            StatusCode::NO_CONTENT,
+        ),
+    ]);
     let api = FakeApi::start(expected).await;
 
-    test_client(&api.base_url)
+    let error = test_client(&api.base_url)
         .provision(OFFICIAL_CONFORMANCE_BACKEND_URL)
         .await
-        .expect("snake-case catalog IDs");
+        .expect_err("snake-case catalog IDs are not part of the current API contract");
 
-    let server = api.requests().pop().expect("server request");
-    assert_eq!(
-        server.body.expect("server body")["server"]["associated_tools"][0],
-        "tool-1"
-    );
+    assert!(format!("{error:#}").contains("test_simple_text"));
     api.assert_complete();
 }
 

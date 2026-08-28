@@ -18,11 +18,11 @@ const LOCAL_SECRETS_FILE: &str = "secrets.env";
 const REDACTED: &str = "<redacted>";
 
 /// Environment values supplied without mutating the process environment.
-pub type Environment = HashMap<OsString, OsString>;
+pub(crate) type Environment = HashMap<OsString, OsString>;
 
 /// Source used for a loaded configuration value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValueOrigin {
+pub(crate) enum ValueOrigin {
     /// Value supplied by the process environment.
     Process,
     /// Value loaded from the repository `.env` file.
@@ -33,23 +33,23 @@ pub enum ValueOrigin {
 
 /// Environment value paired with its source.
 #[derive(Clone, PartialEq, Eq)]
-pub struct SourcedValue {
+pub(crate) struct SourcedValue {
     /// Raw environment value.
-    pub value: OsString,
+    pub(crate) value: OsString,
     /// Source that supplied the value.
-    pub origin: ValueOrigin,
+    pub(crate) origin: ValueOrigin,
 }
 
 /// Environment values loaded from the process and optional `.env` file.
 #[derive(Clone, PartialEq, Eq)]
-pub struct LoadedEnvironment {
+pub(crate) struct LoadedEnvironment {
     values: HashMap<OsString, SourcedValue>,
     warnings: Vec<String>,
 }
 
 /// Resolved container image and whether it is prebuilt.
 #[derive(Clone, PartialEq, Eq)]
-pub struct ImageSetting {
+pub(crate) struct ImageSetting {
     resolved: OsString,
     prebuilt: bool,
 }
@@ -57,20 +57,20 @@ pub struct ImageSetting {
 impl ImageSetting {
     /// Returns the image selected after applying shell-compatible fallbacks.
     #[must_use]
-    pub fn resolved(&self) -> &OsStr {
+    pub(crate) fn resolved(&self) -> &OsStr {
         &self.resolved
     }
 
     /// Returns whether the selected image should be pulled instead of auto-built.
     #[must_use]
-    pub fn is_prebuilt(&self) -> bool {
+    pub(crate) fn is_prebuilt(&self) -> bool {
         self.prebuilt
     }
 }
 
 /// Derived configuration used by integration commands.
 #[derive(Clone)]
-pub struct AppConfig {
+pub(crate) struct AppConfig {
     workspace_root: PathBuf,
     asset_root: PathBuf,
     integration_dir: SourcedValue,
@@ -102,7 +102,7 @@ pub struct AppConfig {
 
 /// Environment and workspace paths loaded before resolving an action.
 #[derive(Debug, Clone)]
-pub struct ConfigBootstrap {
+pub(crate) struct ConfigBootstrap {
     workspace_root: PathBuf,
     root_overridden: bool,
     environment: LoadedEnvironment,
@@ -110,15 +110,15 @@ pub struct ConfigBootstrap {
 
 /// Filesystem resources required by a resolved action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConfigRequirements {
+pub(crate) struct ConfigRequirements {
     runtime: bool,
 }
 
 impl ConfigRequirements {
     /// Configuration for report and token operations that must not write files.
-    pub const READ_ONLY: Self = Self { runtime: false };
+    pub(crate) const READ_ONLY: Self = Self { runtime: false };
     /// Configuration for operations backed by Compose or runtime scripts.
-    pub const RUNTIME: Self = Self { runtime: true };
+    pub(crate) const RUNTIME: Self = Self { runtime: true };
 }
 
 impl fmt::Debug for SourcedValue {
@@ -167,25 +167,25 @@ impl fmt::Debug for AppConfig {
 impl LoadedEnvironment {
     /// Returns the loaded value for `key`.
     #[must_use]
-    pub fn get(&self, key: &OsStr) -> Option<&SourcedValue> {
+    pub(crate) fn get(&self, key: &OsStr) -> Option<&SourcedValue> {
         self.values.get(key)
     }
 
     /// Returns non-fatal `.env` parsing warnings.
     #[must_use]
-    pub fn warnings(&self) -> &[String] {
+    pub(crate) fn warnings(&self) -> &[String] {
         &self.warnings
     }
 
     /// Iterates loaded values and their origins in unspecified order.
-    pub fn iter(&self) -> impl Iterator<Item = (&OsString, &SourcedValue)> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&OsString, &SourcedValue)> {
         self.values.iter()
     }
 }
 
 impl ConfigBootstrap {
     /// Loads process values and an optional workspace `.env` without writing files.
-    pub fn load(process: &Environment, cwd: &Path) -> Result<Self> {
+    pub(crate) fn load(process: &Environment, cwd: &Path) -> Result<Self> {
         let override_value = process
             .get(OsStr::new(ROOT_OVERRIDE))
             .filter(|value| !value.is_empty());
@@ -202,13 +202,13 @@ impl ConfigBootstrap {
 
     /// Returns the merged process and dotenv environment.
     #[must_use]
-    pub fn environment(&self) -> &LoadedEnvironment {
+    pub(crate) fn environment(&self) -> &LoadedEnvironment {
         &self.environment
     }
 
     /// Returns non-fatal dotenv parsing warnings.
     #[must_use]
-    pub fn warnings(&self) -> &[String] {
+    pub(crate) fn warnings(&self) -> &[String] {
         self.environment.warnings()
     }
 }
@@ -220,7 +220,10 @@ impl AppConfig {
     ///
     /// Returns an error when required runtime assets or local secrets cannot be
     /// prepared.
-    pub fn load(bootstrap: ConfigBootstrap, requirements: ConfigRequirements) -> Result<Self> {
+    pub(crate) fn load(
+        bootstrap: ConfigBootstrap,
+        requirements: ConfigRequirements,
+    ) -> Result<Self> {
         let root = bootstrap.workspace_root;
         let environment = bootstrap.environment;
 
@@ -385,163 +388,163 @@ impl AppConfig {
 
     /// Returns the directory used for dotenv, reports, and relative overrides.
     #[must_use]
-    pub fn root(&self) -> &Path {
+    pub(crate) fn root(&self) -> &Path {
         &self.workspace_root
     }
 
     /// Returns the root containing Compose overlays and runtime scripts.
     #[must_use]
-    pub fn asset_root(&self) -> &Path {
+    pub(crate) fn asset_root(&self) -> &Path {
         &self.asset_root
     }
 
     /// Returns the resolved integration runtime directory.
     #[must_use]
-    pub fn integration_dir(&self) -> &Path {
+    pub(crate) fn integration_dir(&self) -> &Path {
         Path::new(&self.integration_dir.value)
     }
 
     /// Returns the resolved control-plane checkout directory.
     #[must_use]
-    pub fn controlplane_dir(&self) -> &Path {
+    pub(crate) fn controlplane_dir(&self) -> &Path {
         Path::new(&self.controlplane_dir.value)
     }
 
     /// Returns the resolved dataplane checkout directory.
     #[must_use]
-    pub fn dataplane_dir(&self) -> &Path {
+    pub(crate) fn dataplane_dir(&self) -> &Path {
         Path::new(&self.dataplane_dir.value)
     }
 
     /// Returns the configured control-plane repository.
     #[must_use]
-    pub fn controlplane_repo(&self) -> &SourcedValue {
+    pub(crate) fn controlplane_repo(&self) -> &SourcedValue {
         &self.controlplane_repo
     }
 
     /// Returns the configured control-plane revision.
     #[must_use]
-    pub fn controlplane_ref(&self) -> &SourcedValue {
+    pub(crate) fn controlplane_ref(&self) -> &SourcedValue {
         &self.controlplane_ref
     }
 
     /// Returns the configured dataplane repository.
     #[must_use]
-    pub fn dataplane_repo(&self) -> &SourcedValue {
+    pub(crate) fn dataplane_repo(&self) -> &SourcedValue {
         &self.dataplane_repo
     }
 
     /// Returns the configured dataplane revision.
     #[must_use]
-    pub fn dataplane_ref(&self) -> &SourcedValue {
+    pub(crate) fn dataplane_ref(&self) -> &SourcedValue {
         &self.dataplane_ref
     }
 
     /// Returns the integration Compose project name.
     #[must_use]
-    pub fn integration_project(&self) -> &SourcedValue {
+    pub(crate) fn integration_project(&self) -> &SourcedValue {
         &self.integration_project
     }
 
     /// Returns the control-plane Compose project name.
     #[must_use]
-    pub fn controlplane_project(&self) -> &SourcedValue {
+    pub(crate) fn controlplane_project(&self) -> &SourcedValue {
         &self.controlplane_project
     }
 
     /// Returns the JWT signing secret setting.
     #[must_use]
-    pub fn jwt_secret_key(&self) -> &SourcedValue {
+    pub(crate) fn jwt_secret_key(&self) -> &SourcedValue {
         &self.jwt_secret_key
     }
 
     /// Returns the control-plane credential-encryption secret setting.
     #[must_use]
-    pub fn auth_encryption_secret(&self) -> &SourcedValue {
+    pub(crate) fn auth_encryption_secret(&self) -> &SourcedValue {
         &self.auth_encryption_secret
     }
 
     /// Returns the resolved control-plane image setting.
     #[must_use]
-    pub fn controlplane_image(&self) -> &ImageSetting {
+    pub(crate) fn controlplane_image(&self) -> &ImageSetting {
         &self.controlplane_image
     }
 
     /// Returns the resolved dataplane image setting.
     #[must_use]
-    pub fn dataplane_image(&self) -> &ImageSetting {
+    pub(crate) fn dataplane_image(&self) -> &ImageSetting {
         &self.dataplane_image
     }
 
     /// Returns the configured dataplane container platform.
     #[must_use]
-    pub fn dataplane_platform(&self) -> &SourcedValue {
+    pub(crate) fn dataplane_platform(&self) -> &SourcedValue {
         &self.dataplane_platform
     }
 
     /// Returns the Compose build-mode setting.
     #[must_use]
-    pub fn compose_build(&self) -> &SourcedValue {
+    pub(crate) fn compose_build(&self) -> &SourcedValue {
         &self.compose_build
     }
 
     /// Returns the Fast Time server identifier setting.
     #[must_use]
-    pub fn fast_time_server_id(&self) -> &SourcedValue {
+    pub(crate) fn fast_time_server_id(&self) -> &SourcedValue {
         &self.fast_time_server_id
     }
 
     /// Returns the expected Fast Time image setting.
     #[must_use]
-    pub fn fast_time_expected_image(&self) -> &SourcedValue {
+    pub(crate) fn fast_time_expected_image(&self) -> &SourcedValue {
         &self.fast_time_expected_image
     }
 
     /// Returns the public integration base URL setting.
     #[must_use]
-    pub fn base_url(&self) -> &SourcedValue {
+    pub(crate) fn base_url(&self) -> &SourcedValue {
         &self.base_url
     }
 
     /// Returns the platform administrator email setting.
     #[must_use]
-    pub fn platform_admin_email(&self) -> &SourcedValue {
+    pub(crate) fn platform_admin_email(&self) -> &SourcedValue {
         &self.platform_admin_email
     }
 
     /// Returns the bootstrap platform administrator password setting.
     #[must_use]
-    pub fn platform_admin_password(&self) -> &SourcedValue {
+    pub(crate) fn platform_admin_password(&self) -> &SourcedValue {
         &self.platform_admin_password
     }
 
     /// Returns the private-key password setting.
     #[must_use]
-    pub fn key_file_password(&self) -> &SourcedValue {
+    pub(crate) fn key_file_password(&self) -> &SourcedValue {
         &self.key_file_password
     }
 
     /// Returns the Locust user-count setting.
     #[must_use]
-    pub fn locust_users(&self) -> &SourcedValue {
+    pub(crate) fn locust_users(&self) -> &SourcedValue {
         &self.locust_users
     }
 
     /// Returns the Locust spawn-rate setting.
     #[must_use]
-    pub fn locust_spawn_rate(&self) -> &SourcedValue {
+    pub(crate) fn locust_spawn_rate(&self) -> &SourcedValue {
         &self.locust_spawn_rate
     }
 
     /// Returns the Locust run-time setting.
     #[must_use]
-    pub fn locust_run_time(&self) -> &SourcedValue {
+    pub(crate) fn locust_run_time(&self) -> &SourcedValue {
         &self.locust_run_time
     }
 
     /// Returns the environment loaded before deriving fallback values.
     #[must_use]
-    pub fn environment(&self) -> &LoadedEnvironment {
+    pub(crate) fn environment(&self) -> &LoadedEnvironment {
         &self.environment
     }
 }
@@ -748,7 +751,7 @@ fn base_url(environment: &LoadedEnvironment) -> SourcedValue {
 /// # Errors
 ///
 /// Returns an error when an existing `.env` file cannot be read.
-pub fn load_environment(root: &Path, process: &Environment) -> Result<LoadedEnvironment> {
+pub(crate) fn load_environment(root: &Path, process: &Environment) -> Result<LoadedEnvironment> {
     let mut values = process
         .iter()
         .map(|(key, value)| {
@@ -813,7 +816,7 @@ pub fn load_environment(root: &Path, process: &Environment) -> Result<LoadedEnvi
 
 /// Returns `raw` unchanged when absolute, otherwise joined to `root`.
 #[must_use]
-pub fn absolute_path(root: &Path, raw: &OsStr) -> PathBuf {
+pub(crate) fn absolute_path(root: &Path, raw: &OsStr) -> PathBuf {
     let path = Path::new(raw);
     if path.is_absolute() {
         path.to_path_buf()

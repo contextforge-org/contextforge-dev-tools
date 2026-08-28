@@ -6,6 +6,7 @@ release_always = true
 
 [[package]]
 name = "cf-integration"
+semver_check = true
 git_release_enable = true
 git_release_draft = true
 git_release_latest = false

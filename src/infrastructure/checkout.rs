@@ -20,7 +20,7 @@ enum CheckoutKind {
 
 /// One source checkout managed by the integration harness.
 #[derive(Clone, PartialEq, Eq)]
-pub struct CheckoutRequest {
+pub(crate) struct CheckoutRequest {
     kind: CheckoutKind,
     directory: PathBuf,
     repository: OsString,
@@ -29,7 +29,7 @@ pub struct CheckoutRequest {
 
 impl CheckoutRequest {
     /// Creates a control-plane checkout request.
-    pub fn controlplane(
+    pub(crate) fn controlplane(
         directory: impl Into<PathBuf>,
         repository: impl Into<OsString>,
         reference: impl Into<OsString>,
@@ -43,7 +43,7 @@ impl CheckoutRequest {
     }
 
     /// Creates a dataplane checkout request.
-    pub fn dataplane(
+    pub(crate) fn dataplane(
         directory: impl Into<PathBuf>,
         repository: impl Into<OsString>,
         reference: impl Into<OsString>,
@@ -59,23 +59,11 @@ impl CheckoutRequest {
     fn is_disabled(&self) -> bool {
         self.kind == CheckoutKind::Dataplane && self.reference.is_empty()
     }
-
-    fn fetch_warning(&self) -> String {
-        let repository = self.repository.to_string_lossy();
-        match self.kind {
-            CheckoutKind::Controlplane => {
-                format!("warning: fetch from {repository} failed; using existing checkout")
-            }
-            CheckoutKind::Dataplane => format!(
-                "warning: fetch from {repository} failed; using existing dataplane checkout"
-            ),
-        }
-    }
 }
 
 /// Whether a requested source checkout was synchronized or intentionally skipped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CheckoutStatus {
+pub(crate) enum CheckoutStatus {
     /// The checkout was cloned or refreshed and checked out.
     Updated,
     /// Dataplane source mode was disabled because its ref was empty.
@@ -83,7 +71,7 @@ pub enum CheckoutStatus {
 }
 
 /// Deterministic Git commands for one checkout request.
-pub struct CheckoutPlan {
+pub(crate) struct CheckoutPlan {
     generated: bool,
     clone: CommandSpec,
     fetch: CommandSpec,
@@ -95,7 +83,7 @@ pub struct CheckoutPlan {
 impl CheckoutPlan {
     /// Builds a checkout plan without accessing the filesystem or starting a process.
     #[must_use]
-    pub fn new(integration_directory: &Path, request: &CheckoutRequest) -> Self {
+    pub(crate) fn new(integration_directory: &Path, request: &CheckoutRequest) -> Self {
         let generated = is_path_within(&request.directory, integration_directory);
         let clone = clone_command(request, &request.directory);
         let mut fetch_arguments = vec![
@@ -158,12 +146,12 @@ impl CheckoutPlan {
 
     /// Returns whether the normalized checkout path is inside the integration directory.
     #[must_use]
-    pub fn is_generated(&self) -> bool {
+    pub(crate) fn is_generated(&self) -> bool {
         self.generated
     }
 
     /// Selects the reset or plain checkout command from the remote probe result.
-    pub fn checkout_command(&self, remote_branch_exists: bool) -> CommandSpec {
+    pub(crate) fn checkout_command(&self, remote_branch_exists: bool) -> CommandSpec {
         if remote_branch_exists {
             self.remote_checkout
                 .clone()
@@ -174,39 +162,33 @@ impl CheckoutPlan {
     }
 
     /// Returns destructive cleanup commands used only for generated checkouts.
-    pub fn generated_cleanup_commands(&self) -> &[CommandSpec] {
+    pub(crate) fn generated_cleanup_commands(&self) -> &[CommandSpec] {
         &self.generated_cleanup
     }
 }
 
 /// Executes source-checkout plans through an injected process runner.
-pub struct CheckoutManager<'runner, Runner: ProcessRunner + ?Sized> {
+pub(crate) struct CheckoutManager<'runner, Runner: ProcessRunner + ?Sized> {
     runner: &'runner Runner,
 }
 
 impl<'runner, Runner: ProcessRunner + ?Sized> CheckoutManager<'runner, Runner> {
     /// Creates a checkout manager using `runner` for every Git invocation.
     #[must_use]
-    pub fn new(runner: &'runner Runner) -> Self {
+    pub(crate) fn new(runner: &'runner Runner) -> Self {
         Self { runner }
     }
 
     /// Ensures one configured source checkout exists at the requested ref.
-    ///
-    /// Fetch failures append the shell-compatible diagnostic to `warnings`, then
-    /// checkout continues using locally available refs. This keeps the warning
-    /// available to the caller even if the subsequent checkout fails.
-    ///
     /// # Errors
     ///
     /// Returns a failure when the integration directory cannot be created, a
     /// missing repository cannot be cloned, or the requested ref cannot be
     /// checked out.
-    pub fn ensure(
+    pub(crate) fn ensure(
         &self,
         integration_directory: &Path,
         request: &CheckoutRequest,
-        warnings: &mut Vec<String>,
     ) -> Result<CheckoutStatus, InfrastructureError> {
         if request.is_disabled() {
             return Ok(CheckoutStatus::Skipped);
@@ -254,15 +236,11 @@ impl<'runner, Runner: ProcessRunner + ?Sized> CheckoutManager<'runner, Runner> {
             )));
         }
 
-        let fetch_succeeded = self.runner.run(&plan.fetch).is_ok();
-        if !fetch_succeeded {
-            warnings.push(request.fetch_warning());
-        }
+        self.runner.run(&plan.fetch)?;
 
         let remote_branch_probe = remote_branch_probe(request);
-        let remote_branch_exists = (plan.is_generated() || fetch_succeeded)
-            && self.runner.run(&remote_branch_probe).is_ok();
-        if fetch_succeeded && !remote_branch_exists && !self.verified_nonbranch_ref(request)? {
+        let remote_branch_exists = self.runner.run(&remote_branch_probe).is_ok();
+        if !remote_branch_exists && !self.verified_nonbranch_ref(request)? {
             return Err(InfrastructureError::from(anyhow::anyhow!(
                 "configured ref {:?} is not a fetched origin branch, tag, or commit for checkout {:?}",
                 request.reference,

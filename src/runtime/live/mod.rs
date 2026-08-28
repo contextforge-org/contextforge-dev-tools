@@ -12,12 +12,12 @@ const LIVE_ALL_TARGETS: [&str; 3] = [
 impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn run_live(
         &self,
-        lane: ConformanceTarget,
+        lane: SemanticLane,
         group: LiveGroup,
         protocol_version: &ProtocolVersion,
     ) -> AppResult<()> {
         match lane {
-            ConformanceTarget::FixtureDirect => {
+            SemanticLane::FixtureDirect => {
                 if group != LiveGroup::Protocol {
                     return Err(AppFailure::from(anyhow!(
                         "fixture-direct live lane requires the protocol group"
@@ -30,11 +30,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     protocol_version,
                 )
             }
-            ConformanceTarget::BuiltInDataPlane => {
+            SemanticLane::BuiltInDataPlane => {
                 self.run_routed_live(StackMode::Controlplane, group, protocol_version)
                     .await
             }
-            ConformanceTarget::ExternalDataPlane => {
+            SemanticLane::ExternalDataPlane => {
                 self.run_routed_live(StackMode::Dataplane, group, protocol_version)
                     .await
             }

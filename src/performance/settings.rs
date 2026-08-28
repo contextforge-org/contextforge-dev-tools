@@ -13,20 +13,20 @@ const RUN_TIME_ERROR: &str = "LOCUST_RUN_TIME must be a positive Locust duration
 
 /// User-selected settings before configuration precedence is applied.
 #[derive(Debug, Clone, PartialEq)]
-pub struct LoadRequest {
+pub(crate) struct LoadRequest {
     /// Whether dotenv/default values should use smoke-test replacements.
-    pub smoke: bool,
+    pub(crate) smoke: bool,
     /// Explicit concurrent-user override.
-    pub users: Option<usize>,
+    pub(crate) users: Option<usize>,
     /// Explicit users-per-second override.
-    pub spawn_rate: Option<f64>,
+    pub(crate) spawn_rate: Option<f64>,
     /// Explicit engine duration override.
-    pub run_time: Option<String>,
+    pub(crate) run_time: Option<String>,
 }
 
 /// Validated load settings after applying CLI, process, dotenv, and default precedence.
 #[derive(Debug, Clone, PartialEq)]
-pub struct LoadSettings {
+pub(crate) struct LoadSettings {
     users: NonZeroUsize,
     spawn_rate: f64,
     run_time: String,
@@ -43,7 +43,7 @@ impl LoadSettings {
     ///
     /// Returns an error for a zero or malformed user count, a non-finite or
     /// non-positive spawn rate, or an invalid Locust run-time expression.
-    pub fn resolve(config: &AppConfig, request: &LoadRequest) -> Result<Self> {
+    pub(crate) fn resolve(config: &AppConfig, request: &LoadRequest) -> Result<Self> {
         let users = match request.users {
             Some(users) => users,
             None => parse_users(selected_value(
@@ -85,19 +85,19 @@ impl LoadSettings {
 
     /// Returns the concurrent user count.
     #[must_use]
-    pub fn users(&self) -> NonZeroUsize {
+    pub(crate) fn users(&self) -> NonZeroUsize {
         self.users
     }
 
     /// Returns the users spawned per second.
     #[must_use]
-    pub fn spawn_rate(&self) -> f64 {
+    pub(crate) fn spawn_rate(&self) -> f64 {
         self.spawn_rate
     }
 
     /// Returns the validated duration expression.
     #[must_use]
-    pub fn run_time(&self) -> &str {
+    pub(crate) fn run_time(&self) -> &str {
         &self.run_time
     }
 }

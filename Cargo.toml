@@ -52,6 +52,7 @@ disabled-strategies = ["quick-install", "compile"]
 
 [lints.rust]
 unsafe_code = "forbid"
+unreachable_pub = "deny"
 
 [lints.clippy]
 correctness = { level = "deny", priority = -1 }

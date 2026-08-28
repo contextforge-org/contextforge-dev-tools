@@ -1,10 +1,10 @@
 //! MCP transport, gateway, authentication proxy, and probe primitives.
 
-pub mod auth_proxy;
-pub mod backend_identity;
-pub mod gateway;
-pub mod probe;
-pub mod protocol;
+pub(crate) mod auth_proxy;
+pub(crate) mod backend_identity;
+pub(crate) mod gateway;
+pub(crate) mod probe;
+pub(crate) mod protocol;
 mod topology;
 
-pub use topology::GatewayTopology;
+pub(crate) use topology::GatewayTopology;

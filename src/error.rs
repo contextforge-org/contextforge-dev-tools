@@ -7,7 +7,7 @@ use crate::infrastructure::InfrastructureError;
 
 /// An application operation or infrastructure operation failure.
 #[derive(Debug)]
-pub enum AppFailure {
+pub(crate) enum AppFailure {
     /// A reusable infrastructure operation failed.
     Infrastructure(InfrastructureError),
     /// An application orchestration operation failed.
@@ -17,7 +17,7 @@ pub enum AppFailure {
 impl AppFailure {
     /// Returns the process exit code represented by this failure.
     #[must_use]
-    pub fn exit_code(&self) -> i32 {
+    pub(crate) fn exit_code(&self) -> i32 {
         match self {
             Self::Infrastructure(error) => error.exit_code(),
             Self::Native(_) => 1,

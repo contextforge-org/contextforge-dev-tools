@@ -17,7 +17,7 @@ const ANSI_BOLD_MAGENTA: &str = "\x1b[1;35m";
 
 /// Styles human-readable output according to the target terminal and color environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OutputStyle {
+pub(crate) struct OutputStyle {
     color: bool,
 }
 
@@ -112,67 +112,67 @@ enum ActivityState {
 impl OutputStyle {
     /// Resolves styling for standard output.
     #[must_use]
-    pub fn stdout() -> Self {
+    pub(crate) fn stdout() -> Self {
         Self::resolve(std::io::stdout().is_terminal())
     }
 
     /// Resolves styling for standard error.
     #[must_use]
-    pub fn stderr() -> Self {
+    pub(crate) fn stderr() -> Self {
         Self::resolve(std::io::stderr().is_terminal())
     }
 
     /// Styles informational text.
     #[must_use]
-    pub fn info(self, text: &str) -> String {
+    pub(crate) fn info(self, text: &str) -> String {
         self.ansi(text, ANSI_CYAN)
     }
 
     /// Styles a prominent informational heading.
     #[must_use]
-    pub fn heading(self, text: &str) -> String {
+    pub(crate) fn heading(self, text: &str) -> String {
         self.ansi(text, ANSI_BOLD_CYAN)
     }
 
     /// Styles successful output.
     #[must_use]
-    pub fn success(self, text: &str) -> String {
+    pub(crate) fn success(self, text: &str) -> String {
         self.ansi(text, ANSI_GREEN)
     }
 
     /// Styles a prominent success summary.
     #[must_use]
-    pub fn success_heading(self, text: &str) -> String {
+    pub(crate) fn success_heading(self, text: &str) -> String {
         self.ansi(text, ANSI_BOLD_GREEN)
     }
 
     /// Styles failure output.
     #[must_use]
-    pub fn failure(self, text: &str) -> String {
+    pub(crate) fn failure(self, text: &str) -> String {
         self.ansi(text, ANSI_RED)
     }
 
     /// Styles a prominent failure summary.
     #[must_use]
-    pub fn failure_heading(self, text: &str) -> String {
+    pub(crate) fn failure_heading(self, text: &str) -> String {
         self.ansi(text, ANSI_BOLD_RED)
     }
 
     /// Styles warning or skipped output.
     #[must_use]
-    pub fn warning(self, text: &str) -> String {
+    pub(crate) fn warning(self, text: &str) -> String {
         self.ansi(text, ANSI_YELLOW)
     }
 
     /// Styles output whose result is unknown.
     #[must_use]
-    pub fn unknown(self, text: &str) -> String {
+    pub(crate) fn unknown(self, text: &str) -> String {
         self.ansi(text, ANSI_MAGENTA)
     }
 
     /// Styles a prominent summary whose result is unknown.
     #[must_use]
-    pub fn unknown_heading(self, text: &str) -> String {
+    pub(crate) fn unknown_heading(self, text: &str) -> String {
         self.ansi(text, ANSI_BOLD_MAGENTA)
     }
 

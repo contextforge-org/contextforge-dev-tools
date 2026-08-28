@@ -7,7 +7,7 @@ use std::process::ExitStatus;
 
 /// A harness error or a direct child-process failure.
 #[derive(Debug)]
-pub enum InfrastructureError {
+pub(crate) enum InfrastructureError {
     /// A child process exited unsuccessfully.
     ChildExit {
         /// Program that was executed.
@@ -26,7 +26,7 @@ impl InfrastructureError {
 
     /// Returns the process exit code represented by this failure.
     #[must_use]
-    pub fn exit_code(&self) -> i32 {
+    pub(crate) fn exit_code(&self) -> i32 {
         match self {
             Self::ChildExit { status, .. } => child_exit_code(status),
             Self::Native(_) => 1,

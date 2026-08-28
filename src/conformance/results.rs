@@ -13,50 +13,51 @@ use serde_json::Value;
 use crate::infrastructure::process::CommandSpec;
 
 use crate::conformance::fixture::OFFICIAL_CONFORMANCE_SERVER_ID;
-pub use crate::conformance::profile::{DEFAULT_MCP_SPEC_VERSION, OFFICIAL_CONFORMANCE_PACKAGE};
+pub(crate) use crate::conformance::profile::{
+    DEFAULT_MCP_SPEC_VERSION, OFFICIAL_CONFORMANCE_PACKAGE,
+};
 use crate::conformance::profile::{
     LEGACY_MCP_SPEC_VERSION, OFFICIAL_CONFORMANCE_REPOSITORY, OFFICIAL_CONFORMANCE_REVISION,
     STABLE_MCP_SPEC_VERSION,
 };
 
 /// Default official server scenario suite.
-pub const DEFAULT_CONFORMANCE_SUITE: &str = "all";
+pub(crate) const DEFAULT_CONFORMANCE_SUITE: &str = "all";
 
 /// Exact provenance for the backing server used by an official run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConformanceFixtureMetadata {
+pub(crate) struct ConformanceFixtureMetadata {
     /// Upstream fixture repository.
-    pub repository: String,
+    pub(crate) repository: String,
     /// Immutable upstream fixture revision.
-    pub revision: String,
+    pub(crate) revision: String,
     /// Provisioned virtual-server identity.
-    pub server_id: String,
+    pub(crate) server_id: String,
 }
 
 /// Reproducibility metadata stored beside one official result set.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConformanceRunMetadata {
+pub(crate) struct ConformanceRunMetadata {
     /// Pinned official runner package.
-    pub oracle: String,
+    pub(crate) oracle: String,
     /// Stack label exercised by this artifact.
-    pub target: String,
+    pub(crate) target: String,
     /// MCP protocol revision used by the official conformance client.
-    pub client_version: String,
+    pub(crate) client_version: String,
     /// Protocol era exposed by the upstream fixture server.
-    pub server_era: ConformanceServerEra,
+    pub(crate) server_era: ConformanceServerEra,
     /// Official scenario suite label.
-    pub suite: String,
-    /// Backing fixture provenance, absent on historical or caller-managed runs.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fixture: Option<ConformanceFixtureMetadata>,
+    pub(crate) suite: String,
+    /// Exact backing fixture provenance.
+    pub(crate) fixture: ConformanceFixtureMetadata,
 }
 
 /// Protocol behavior exposed by the pinned upstream fixture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ConformanceServerEra {
+pub(crate) enum ConformanceServerEra {
     /// Serve both initialization-based and per-request protocol behavior.
     Dual,
     /// Serve only initialization-based protocol behavior.
@@ -68,7 +69,7 @@ pub enum ConformanceServerEra {
 impl ConformanceServerEra {
     /// Stable CLI, environment, metadata, and report label.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Dual => "dual",
             Self::Legacy => "legacy",
@@ -78,7 +79,7 @@ impl ConformanceServerEra {
 
     /// Parses a stable artifact path component.
     #[must_use]
-    pub fn from_label(value: &str) -> Option<Self> {
+    pub(crate) fn from_label(value: &str) -> Option<Self> {
         match value {
             "dual" => Some(Self::Dual),
             "legacy" => Some(Self::Legacy),
@@ -96,7 +97,7 @@ impl fmt::Display for ConformanceServerEra {
 
 /// Endpoint topology exercised by one official server-conformance run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum SemanticLane {
+pub(crate) enum SemanticLane {
     /// Official oracle connected directly to the pinned TypeScript fixture.
     FixtureDirect,
     /// Official oracle routed through the Python built-in data plane.
@@ -108,7 +109,7 @@ pub enum SemanticLane {
 impl SemanticLane {
     /// Stable metadata and report label.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::FixtureDirect => "fixture direct",
             Self::BuiltInDataPlane => "built-in data-plane route",
@@ -118,7 +119,7 @@ impl SemanticLane {
 
     /// Stable artifact and baseline path component.
     #[must_use]
-    pub const fn slug(self) -> &'static str {
+    pub(crate) const fn slug(self) -> &'static str {
         match self {
             Self::FixtureDirect => "fixture-direct",
             Self::BuiltInDataPlane => "built-in-data-plane",
@@ -133,17 +134,12 @@ impl fmt::Display for SemanticLane {
     }
 }
 
-/// Semantic lane used by official conformance workflows.
-pub type ConformanceTarget = SemanticLane;
-
 /// Whether provenance identifies the exact pinned official TypeScript fixture.
 #[must_use]
-pub fn is_trusted_official_fixture(fixture: Option<&ConformanceFixtureMetadata>) -> bool {
-    fixture.is_some_and(|fixture| {
-        fixture.repository == OFFICIAL_CONFORMANCE_REPOSITORY
-            && fixture.revision == OFFICIAL_CONFORMANCE_REVISION
-            && fixture.server_id == OFFICIAL_CONFORMANCE_SERVER_ID
-    })
+pub(crate) fn is_trusted_official_fixture(fixture: &ConformanceFixtureMetadata) -> bool {
+    fixture.repository == OFFICIAL_CONFORMANCE_REPOSITORY
+        && fixture.revision == OFFICIAL_CONFORMANCE_REVISION
+        && fixture.server_id == OFFICIAL_CONFORMANCE_SERVER_ID
 }
 
 // Exact server catalogs emitted by @modelcontextprotocol/conformance@0.2.0-alpha.11.
@@ -234,7 +230,7 @@ const MAX_CHECKS_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Builds the exact official server-conformance invocation.
 #[must_use = "a command specification does nothing until a process runner executes it"]
-pub fn official_server_command(
+pub(crate) fn official_server_command(
     endpoint: &str,
     suite: &str,
     spec_version: &str,
@@ -261,7 +257,7 @@ pub fn official_server_command(
 
 /// Typed official check status with forward-compatible preservation.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum CheckStatus {
+pub(crate) enum CheckStatus {
     /// Required check passed.
     Success,
     /// Required check failed.
@@ -320,68 +316,68 @@ impl<'de> Deserialize<'de> for CheckStatus {
 
 /// An official MCP specification reference. Unknown fields are retained verbatim.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SpecReference {
+pub(crate) struct SpecReference {
     /// Reference identifier emitted by the official framework.
-    pub id: String,
+    pub(crate) id: String,
     /// Optional source URL emitted by the official framework.
     #[serde(default)]
-    pub url: Option<String>,
+    pub(crate) url: Option<String>,
     /// Forward-compatible fields from the official framework.
     #[serde(flatten)]
-    pub extensions: BTreeMap<String, Value>,
+    pub(crate) extensions: BTreeMap<String, Value>,
 }
 
 /// One check from an official `checks.json` file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ConformanceCheck {
+pub(crate) struct ConformanceCheck {
     /// Stable official check identifier.
-    pub id: String,
+    pub(crate) id: String,
     /// Human-readable check name.
     #[serde(default)]
-    pub name: Option<String>,
+    pub(crate) name: Option<String>,
     /// Human-readable check description.
     #[serde(default)]
-    pub description: Option<String>,
+    pub(crate) description: Option<String>,
     /// Typed official status.
-    pub status: CheckStatus,
+    pub(crate) status: CheckStatus,
     /// Framework timestamp, preserved without interpretation.
     #[serde(default)]
-    pub timestamp: Option<String>,
+    pub(crate) timestamp: Option<String>,
     /// Specification references, preserved without normalization.
     #[serde(rename = "specReferences", default)]
-    pub spec_references: Vec<SpecReference>,
+    pub(crate) spec_references: Vec<SpecReference>,
     /// Failure text, if supplied by the official framework.
     #[serde(rename = "errorMessage", default)]
-    pub error_message: Option<String>,
+    pub(crate) error_message: Option<String>,
     /// Scenario-specific details.
     #[serde(default)]
-    pub details: Option<Value>,
+    pub(crate) details: Option<Value>,
     /// Scenario-specific metadata.
     #[serde(default)]
-    pub metadata: Option<Value>,
+    pub(crate) metadata: Option<Value>,
     /// Scenario logs in their original JSON shape.
     #[serde(default)]
-    pub logs: Option<Value>,
+    pub(crate) logs: Option<Value>,
     /// Forward-compatible fields from the official framework.
     #[serde(flatten)]
-    pub extensions: BTreeMap<String, Value>,
+    pub(crate) extensions: BTreeMap<String, Value>,
 }
 
 /// Result and provenance for one official server scenario.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ConformanceScenarioResult {
+pub(crate) struct ConformanceScenarioResult {
     /// Validated scenario name extracted from the official result directory.
-    pub scenario: String,
+    pub(crate) scenario: String,
     /// Typed checks parsed from `checks.json`.
-    pub checks: Vec<ConformanceCheck>,
+    pub(crate) checks: Vec<ConformanceCheck>,
     /// Relative path beneath the caller-provided result root.
-    pub source: PathBuf,
+    pub(crate) source: PathBuf,
 }
 
 impl ConformanceScenarioResult {
     /// Reduces official check statuses into a scenario-level comparison outcome.
     #[must_use]
-    pub fn outcome(&self) -> ScenarioOutcome {
+    pub(crate) fn outcome(&self) -> ScenarioOutcome {
         let mut has_success = false;
         let mut has_warning = false;
         let mut has_skipped = false;
@@ -422,16 +418,12 @@ impl ConformanceScenarioResult {
         }
     }
 
-    /// Reduces the outcome using trusted pinned-fixture provenance.
-    ///
-    /// A fixture-shaped not-found result from a trusted fixture is attributed
-    /// to the gateway path as a compliance failure. Unknown or caller-managed
-    /// fixtures retain the historical fixture-failure outcome.
+    /// Reduces fixture-shaped failures from the pinned fixture as compliance failures.
     #[must_use]
-    pub fn outcome_with_trusted_fixture(&self, trusted_fixture: bool) -> ScenarioOutcome {
-        match (self.outcome(), trusted_fixture) {
-            (ScenarioOutcome::FixtureFailure, true) => ScenarioOutcome::NonCompliant,
-            (outcome, _) => outcome,
+    pub(crate) fn gated_outcome(&self) -> ScenarioOutcome {
+        match self.outcome() {
+            ScenarioOutcome::FixtureFailure => ScenarioOutcome::NonCompliant,
+            outcome => outcome,
         }
     }
 }
@@ -453,9 +445,9 @@ fn is_missing_official_fixture(message: &str) -> bool {
 
 /// Deterministically indexed official server results.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct ConformanceResults {
+pub(crate) struct ConformanceResults {
     /// Scenario name to parsed result.
-    pub scenarios: BTreeMap<String, ConformanceScenarioResult>,
+    pub(crate) scenarios: BTreeMap<String, ConformanceScenarioResult>,
 }
 
 /// Returns the exact pinned server scenario set for one supported suite/spec pair.
@@ -464,7 +456,7 @@ pub struct ConformanceResults {
 ///
 /// Returns an error for a suite or specification revision without a catalog
 /// verified against [`OFFICIAL_CONFORMANCE_PACKAGE`].
-pub fn expected_server_scenarios(
+pub(crate) fn expected_server_scenarios(
     suite: &str,
     spec_version: &str,
 ) -> Result<BTreeSet<&'static str>> {
@@ -504,7 +496,7 @@ pub fn expected_server_scenarios(
 ///
 /// Returns an error listing missing or unexpected scenarios when a child run
 /// stopped early or the pinned package catalog changed.
-pub fn validate_server_scenario_set(
+pub(crate) fn validate_server_scenario_set(
     results: &ConformanceResults,
     suite: &str,
     spec_version: &str,
@@ -534,7 +526,7 @@ pub fn validate_server_scenario_set(
 ///
 /// Symlinks are never followed, scenario directory names are strictly validated,
 /// and stored provenance is relative to `root`.
-pub fn load_server_results(root: &Path) -> Result<ConformanceResults> {
+pub(crate) fn load_server_results(root: &Path) -> Result<ConformanceResults> {
     let root = fs::canonicalize(root)
         .with_context(|| format!("failed to resolve conformance results root {root:?}"))?;
     if !root.is_dir() {
@@ -683,7 +675,7 @@ fn validate_scenario_name(scenario: &str) -> Result<()> {
 
 /// Scenario-level outcome used for direct and routed comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ScenarioOutcome {
+pub(crate) enum ScenarioOutcome {
     /// No failures or unknown statuses; at least one success or warning was observed.
     Compliant,
     /// At least one official failure was observed.
@@ -701,7 +693,7 @@ pub enum ScenarioOutcome {
 impl ScenarioOutcome {
     /// Stable report label.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Compliant => "compliant",
             Self::NonCompliant => "failure",
@@ -715,7 +707,7 @@ impl ScenarioOutcome {
 
 /// Required three-way comparison report classification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ComparisonClassification {
+pub(crate) enum ComparisonClassification {
     /// Direct and both routed paths are compliant.
     AllCompliant,
     /// Only the direct fixture run fails.
@@ -757,7 +749,7 @@ impl ComparisonClassification {
 
     /// Stable report label matching the compliance-report vocabulary.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::AllCompliant => "all compliant",
             Self::FixtureOnlyFailure => "fixture-only failure",
@@ -776,7 +768,7 @@ impl ComparisonClassification {
 
 /// Classifies direct-fixture, built-in, and external data-plane route outcomes.
 #[must_use]
-pub fn classify_outcomes(
+pub(crate) fn classify_outcomes(
     fixture: ScenarioOutcome,
     built_in_data_plane: ScenarioOutcome,
     external_data_plane: ScenarioOutcome,
@@ -820,48 +812,33 @@ pub fn classify_outcomes(
 
 /// One scenario row in the deterministic comparison report.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ScenarioComparison {
+pub(crate) struct ScenarioComparison {
     /// Official scenario name.
-    pub scenario: String,
+    pub(crate) scenario: String,
     /// Direct official fixture result.
-    pub fixture: ScenarioOutcome,
+    pub(crate) fixture: ScenarioOutcome,
     /// Raw failed checks in the direct fixture result.
-    pub fixture_failed_checks: usize,
+    pub(crate) fixture_failed_checks: usize,
     /// Built-in data-plane result.
-    pub built_in_data_plane: ScenarioOutcome,
+    pub(crate) built_in_data_plane: ScenarioOutcome,
     /// Raw failed checks in the built-in data-plane result.
-    pub built_in_data_plane_failed_checks: usize,
+    pub(crate) built_in_data_plane_failed_checks: usize,
     /// External data-plane result.
-    pub external_data_plane: ScenarioOutcome,
+    pub(crate) external_data_plane: ScenarioOutcome,
     /// Raw failed checks in the external data-plane result.
-    pub external_data_plane_failed_checks: usize,
+    pub(crate) external_data_plane_failed_checks: usize,
     /// Reduced report classification.
-    pub classification: ComparisonClassification,
+    pub(crate) classification: ComparisonClassification,
     /// Raw official references from both result sets.
-    pub spec_references: Vec<SpecReference>,
+    pub(crate) spec_references: Vec<SpecReference>,
 }
 
-/// Per-target provenance trust used when reducing fixture-shaped failures.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ComparisonFixtureTrust {
-    /// Direct fixture provenance is the exact pinned source revision.
-    pub fixture: bool,
-    /// Built-in data-plane fixture provenance is the exact pinned source revision.
-    pub built_in_data_plane: bool,
-    /// External data-plane fixture provenance is the exact pinned source revision.
-    pub external_data_plane: bool,
-}
-
-/// Compares results while independently attributing trusted fixture failures.
-///
-/// A trusted side converts fixture-shaped not-found results into ordinary
-/// implementation failures. An untrusted side preserves historical behavior.
+/// Compares results produced against the pinned official fixture.
 #[must_use]
-pub fn compare_result_sets_with_fixture_trust(
+pub(crate) fn compare_result_sets(
     fixture: &ConformanceResults,
     built_in_data_plane: &ConformanceResults,
     external_data_plane: &ConformanceResults,
-    trust: ComparisonFixtureTrust,
 ) -> Vec<ScenarioComparison> {
     let mut scenarios: BTreeSet<_> = fixture.scenarios.keys().cloned().collect();
     scenarios.extend(built_in_data_plane.scenarios.keys().cloned());
@@ -874,13 +851,13 @@ pub fn compare_result_sets_with_fixture_trust(
             let built_in_result = built_in_data_plane.scenarios.get(&scenario);
             let external_result = external_data_plane.scenarios.get(&scenario);
             let fixture_outcome = fixture_result
-                .map(|result| result.outcome_with_trusted_fixture(trust.fixture))
+                .map(ConformanceScenarioResult::gated_outcome)
                 .unwrap_or(ScenarioOutcome::Missing);
             let built_in_outcome = built_in_result
-                .map(|result| result.outcome_with_trusted_fixture(trust.built_in_data_plane))
+                .map(ConformanceScenarioResult::gated_outcome)
                 .unwrap_or(ScenarioOutcome::Missing);
             let external_outcome = external_result
-                .map(|result| result.outcome_with_trusted_fixture(trust.external_data_plane))
+                .map(ConformanceScenarioResult::gated_outcome)
                 .unwrap_or(ScenarioOutcome::Missing);
 
             let mut spec_references = Vec::new();
@@ -947,22 +924,22 @@ fn reference_key(reference: &SpecReference) -> String {
 
 /// Inputs for a deterministic Markdown comparison report.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ComparisonReport {
+pub(crate) struct ComparisonReport {
     /// MCP protocol version used by the official client in all result sets.
-    pub client_version: String,
+    pub(crate) client_version: String,
     /// Protocol era exposed by the upstream fixture in all result sets.
-    pub server_era: ConformanceServerEra,
+    pub(crate) server_era: ConformanceServerEra,
     /// Official scenario suite exercised by all result sets.
-    pub suite: String,
-    /// Exact official fixture provenance when recorded by the run.
-    pub fixture: Option<ConformanceFixtureMetadata>,
+    pub(crate) suite: String,
+    /// Exact official fixture provenance.
+    pub(crate) fixture: ConformanceFixtureMetadata,
     /// Scenario comparisons in any order; rendering sorts them.
-    pub scenarios: Vec<ScenarioComparison>,
+    pub(crate) scenarios: Vec<ScenarioComparison>,
 }
 
 /// Renders a deterministic, untrusted-input-safe Markdown comparison report.
 #[must_use]
-pub fn render_comparison_markdown(report: &ComparisonReport) -> String {
+pub(crate) fn render_comparison_markdown(report: &ComparisonReport) -> String {
     let mut output = String::new();
     output.push_str("# MCP Conformance Comparison\n\n");
     output.push_str(&format!(
@@ -972,13 +949,11 @@ pub fn render_comparison_markdown(report: &ComparisonReport) -> String {
         report.server_era,
         markdown_code(&report.suite)
     ));
-    if let Some(fixture) = report.fixture.as_ref() {
-        output.push_str(&format!(
-            "- Fixture source: `{}` at `{}`\n",
-            markdown_code(&fixture.repository),
-            markdown_code(&fixture.revision)
-        ));
-    }
+    output.push_str(&format!(
+        "- Fixture source: `{}` at `{}`\n",
+        markdown_code(&report.fixture.repository),
+        markdown_code(&report.fixture.revision)
+    ));
     output.push('\n');
 
     let mut counts = BTreeMap::new();
@@ -1084,7 +1059,7 @@ pub fn render_comparison_markdown(report: &ComparisonReport) -> String {
 }
 
 /// Writes a deterministic Markdown comparison report.
-pub fn write_comparison_report(path: &Path, report: &ComparisonReport) -> Result<()> {
+pub(crate) fn write_comparison_report(path: &Path, report: &ComparisonReport) -> Result<()> {
     create_parent_directory(path)?;
     fs::write(path, render_comparison_markdown(report))
         .with_context(|| format!("failed to write conformance comparison report {path:?}"))

@@ -26,12 +26,12 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const LOOPBACK_BIND_ADDRESS: &str = "127.0.0.1:0";
 
 /// Maximum request size buffered before a request is sent to the upstream.
-pub const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 /// Failures that can occur while starting or stopping an [`AuthProxy`].
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum AuthProxyError {
+pub(crate) enum AuthProxyError {
     /// The upstream is not an absolute HTTP(S) URL without credentials or a fragment.
     #[error("upstream must be an absolute HTTP or HTTPS URL without credentials or a fragment")]
     InvalidUpstream,
@@ -70,7 +70,7 @@ struct ProxyState {
 /// The generated endpoint contains a random path and is the only accepted path.
 /// Call [`AuthProxy::shutdown`] to stop accepting connections and wait for active
 /// connections to finish.
-pub struct AuthProxy {
+pub(crate) struct AuthProxy {
     endpoint: Url,
     shutdown: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), AuthProxyError>>>,
@@ -87,7 +87,7 @@ impl AuthProxy {
     ///
     /// Returns an error if the upstream or token is invalid, the HTTP client
     /// cannot be configured, or the loopback listener cannot be bound.
-    pub async fn start(
+    pub(crate) async fn start(
         upstream: Url,
         bearer_token: impl AsRef<str>,
     ) -> Result<Self, AuthProxyError> {
@@ -102,7 +102,7 @@ impl AuthProxy {
     /// # Errors
     ///
     /// Returns the same errors as [`Self::start`].
-    pub async fn start_builtin_data_plane(
+    pub(crate) async fn start_builtin_data_plane(
         upstream: Url,
         bearer_token: impl AsRef<str>,
     ) -> Result<Self, AuthProxyError> {
@@ -114,7 +114,7 @@ impl AuthProxy {
     /// # Errors
     ///
     /// Returns the same errors as [`Self::start`].
-    pub async fn start_with_protocol_version(
+    pub(crate) async fn start_with_protocol_version(
         upstream: Url,
         bearer_token: impl AsRef<str>,
         protocol_version: Option<&str>,
@@ -184,7 +184,7 @@ impl AuthProxy {
 
     /// Returns the unguessable loopback URL external tools should target.
     #[must_use]
-    pub fn url(&self) -> &Url {
+    pub(crate) fn url(&self) -> &Url {
         &self.endpoint
     }
 
@@ -194,7 +194,7 @@ impl AuthProxy {
     ///
     /// Returns an error if the HTTP server failed or its task did not complete
     /// normally.
-    pub async fn shutdown(mut self) -> Result<(), AuthProxyError> {
+    pub(crate) async fn shutdown(mut self) -> Result<(), AuthProxyError> {
         self.signal_shutdown();
         let Some(task) = self.task.take() else {
             return Err(AuthProxyError::Task);

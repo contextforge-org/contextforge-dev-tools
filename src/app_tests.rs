@@ -5,7 +5,7 @@ use cf_integration::app::{
     Action, ConformanceAction, DebugAction, ResolvedLoadArgs, StackAction, resolve_action,
 };
 use cf_integration::cli::{Cli, LiveGroup, ProtocolVersion, TokenKind, TopologySelection};
-use cf_integration::conformance::results::{ConformanceServerEra, ConformanceTarget};
+use cf_integration::conformance::results::{ConformanceServerEra, SemanticLane};
 use cf_integration::infrastructure::StackMode;
 use cf_integration::infrastructure::config::Environment;
 use cf_integration::performance::LoadRequest;
@@ -176,7 +176,7 @@ fn live_resolves_lane_group_and_protocol_version() {
             ],
         ),
         Action::Live {
-            lane: ConformanceTarget::BuiltInDataPlane,
+            lane: SemanticLane::BuiltInDataPlane,
             group: LiveGroup::Mcp,
             protocol_version: "2025-06-18"
                 .parse::<ProtocolVersion>()
@@ -205,7 +205,7 @@ fn live_fixture_lane_bypasses_topology_and_cli_version_wins() {
             ],
         ),
         Action::Live {
-            lane: ConformanceTarget::FixtureDirect,
+            lane: SemanticLane::FixtureDirect,
             group: LiveGroup::Protocol,
             protocol_version: "2025-03-26"
                 .parse::<ProtocolVersion>()
@@ -240,9 +240,9 @@ fn conformance_defaults_to_all_three_ordered_lanes() {
         action(&["cf-integration", "conformance", "run"], &[]),
         Action::Conformance(ConformanceAction::Run {
             lanes: vec![
-                ConformanceTarget::FixtureDirect,
-                ConformanceTarget::BuiltInDataPlane,
-                ConformanceTarget::ExternalDataPlane,
+                SemanticLane::FixtureDirect,
+                SemanticLane::BuiltInDataPlane,
+                SemanticLane::ExternalDataPlane,
             ],
             client_versions: vec!["2026-07-28".to_owned()],
             server_eras: vec![ConformanceServerEra::Legacy, ConformanceServerEra::Modern],
@@ -289,10 +289,7 @@ fn conformance_lanes_are_deduplicated_and_normalized() {
             &[],
         ),
         Action::Conformance(ConformanceAction::Run {
-            lanes: vec![
-                ConformanceTarget::FixtureDirect,
-                ConformanceTarget::ExternalDataPlane,
-            ],
+            lanes: vec![SemanticLane::FixtureDirect, SemanticLane::ExternalDataPlane,],
             client_versions: vec!["2025-06-18".to_owned(), "2025-11-25".to_owned()],
             server_eras: vec![ConformanceServerEra::Modern, ConformanceServerEra::Legacy],
             results_dir: Some(PathBuf::from("results")),

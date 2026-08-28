@@ -30,25 +30,25 @@ mod tests;
 
 /// Runtime values needed by the public MCP probe.
 #[derive(Clone, PartialEq, Eq)]
-pub struct ProbeConfig {
+pub(crate) struct ProbeConfig {
     /// Stack topology whose public route is under test.
-    pub mode: GatewayTopology,
+    pub(crate) mode: GatewayTopology,
     /// Base URL of the public nginx endpoint.
-    pub base_url: String,
+    pub(crate) base_url: String,
     /// Virtual server identifier used in the public MCP route.
-    pub server_id: String,
+    pub(crate) server_id: String,
     /// Bearer token sent by authenticated probe steps.
-    pub bearer_token: String,
+    pub(crate) bearer_token: String,
     /// Maximum time spent waiting for the dataplane publisher configuration.
-    pub config_timeout: Duration,
+    pub(crate) config_timeout: Duration,
     /// Delay between authenticated initialize attempts.
-    pub retry_interval: Duration,
+    pub(crate) retry_interval: Duration,
     /// Maximum time allowed for any individual transport request.
-    pub request_timeout: Duration,
+    pub(crate) request_timeout: Duration,
     /// MCP protocol revision requested during initialization.
-    pub protocol_version: String,
+    pub(crate) protocol_version: String,
     /// Terminal-aware styling for human-readable probe results.
-    pub output_style: OutputStyle,
+    pub(crate) output_style: OutputStyle,
 }
 
 impl fmt::Debug for ProbeConfig {
@@ -69,20 +69,20 @@ impl fmt::Debug for ProbeConfig {
 
 /// Transport-neutral MCP POST request issued by the probe flow.
 #[derive(Clone, PartialEq)]
-pub struct ProbeRequest {
+pub(crate) struct ProbeRequest {
     /// Fully resolved public MCP URL.
-    pub url: String,
+    pub(crate) url: String,
     /// JSON-RPC request payload.
-    pub payload: Value,
+    pub(crate) payload: Value,
     /// Optional bearer token; omitted for the negative authentication check.
-    pub bearer_token: Option<String>,
+    pub(crate) bearer_token: Option<String>,
     /// Optional MCP session identifier.
-    pub session_id: Option<String>,
+    pub(crate) session_id: Option<String>,
     /// MCP protocol revision sent in the transport header, when applicable.
     ///
     /// Initialize requests omit this header. Requests after initialization use
     /// the version negotiated by the server.
-    pub protocol_version: Option<String>,
+    pub(crate) protocol_version: Option<String>,
 }
 
 impl fmt::Debug for ProbeRequest {
@@ -103,15 +103,15 @@ impl fmt::Debug for ProbeRequest {
 
 /// Parsed response returned by a [`ProbeTransport`].
 #[derive(Clone, PartialEq)]
-pub struct ProbeResponse {
+pub(crate) struct ProbeResponse {
     /// HTTP response status.
-    pub status: u16,
+    pub(crate) status: u16,
     /// MCP session identifier response header, when present.
-    pub session_id: Option<String>,
+    pub(crate) session_id: Option<String>,
     /// Parsed JSON-RPC response from either JSON or SSE.
-    pub message: Option<Value>,
+    pub(crate) message: Option<Value>,
     /// Harness backend identity parsed without retaining untrusted values.
-    pub backend_identity: BackendIdentity,
+    pub(crate) backend_identity: BackendIdentity,
 }
 
 impl fmt::Debug for ProbeResponse {
@@ -129,7 +129,7 @@ impl fmt::Debug for ProbeResponse {
 impl ProbeResponse {
     /// Creates a parsed probe response.
     #[must_use]
-    pub fn new(status: u16, session_id: Option<String>, message: Option<Value>) -> Self {
+    pub(crate) fn new(status: u16, session_id: Option<String>, message: Option<Value>) -> Self {
         Self {
             status,
             session_id,
@@ -140,7 +140,7 @@ impl ProbeResponse {
 
     /// Assigns the parsed harness backend identity.
     #[must_use]
-    pub fn with_backend_identity(mut self, backend_identity: BackendIdentity) -> Self {
+    pub(crate) fn with_backend_identity(mut self, backend_identity: BackendIdentity) -> Self {
         self.backend_identity = backend_identity;
         self
     }

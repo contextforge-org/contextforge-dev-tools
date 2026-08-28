@@ -13,7 +13,7 @@ use super::results::{CheckStatus, ConformanceResults, ConformanceServerEra, Sema
 const MAX_BASELINE_BYTES: u64 = 1024 * 1024;
 
 /// The semantic lanes in their stable reporting order.
-pub const ALL_CONFORMANCE_LANES: [SemanticLane; 3] = [
+pub(crate) const ALL_CONFORMANCE_LANES: [SemanticLane; 3] = [
     SemanticLane::FixtureDirect,
     SemanticLane::BuiltInDataPlane,
     SemanticLane::ExternalDataPlane,
@@ -22,7 +22,7 @@ pub const ALL_CONFORMANCE_LANES: [SemanticLane; 3] = [
 /// A baseline-eligible official check status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
-pub enum ScoredStatus {
+pub(crate) enum ScoredStatus {
     /// A required check failed.
     Failure,
     /// The oracle emitted a scored warning.
@@ -32,60 +32,60 @@ pub enum ScoredStatus {
 /// Stable identity of one scored official finding.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ScoredFinding {
+pub(crate) struct ScoredFinding {
     /// Official scenario name.
-    pub scenario: String,
+    pub(crate) scenario: String,
     /// Stable official check identifier.
-    pub check: String,
+    pub(crate) check: String,
     /// Scored status.
-    pub status: ScoredStatus,
+    pub(crate) status: ScoredStatus,
 }
 
 /// Strict YAML payload stored in one lane baseline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConformanceBaseline {
+pub(crate) struct ConformanceBaseline {
     /// Sorted scored findings expected for this lane.
-    pub findings: Vec<ScoredFinding>,
+    pub(crate) findings: Vec<ScoredFinding>,
 }
 
 /// One lane's evaluated baseline state.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BaselineComparison {
+pub(crate) struct BaselineComparison {
     /// Evaluated lane.
-    pub lane: SemanticLane,
+    pub(crate) lane: SemanticLane,
     /// Actual findings after direct-fixture subtraction where applicable.
-    pub actual: Vec<ScoredFinding>,
+    pub(crate) actual: Vec<ScoredFinding>,
     /// Findings loaded from the checked-in baseline.
-    pub expected: Vec<ScoredFinding>,
+    pub(crate) expected: Vec<ScoredFinding>,
     /// Actual findings absent from the baseline.
-    pub unexpected: Vec<ScoredFinding>,
+    pub(crate) unexpected: Vec<ScoredFinding>,
     /// Baseline findings absent from the actual result.
-    pub stale: Vec<ScoredFinding>,
+    pub(crate) stale: Vec<ScoredFinding>,
 }
 
 impl BaselineComparison {
     /// Whether the actual scored findings exactly match the baseline.
     #[must_use]
-    pub fn matches(&self) -> bool {
+    pub(crate) fn matches(&self) -> bool {
         self.unexpected.is_empty() && self.stale.is_empty()
     }
 }
 
 /// A staged baseline replacement produced by a successful evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BaselineUpdate {
+pub(crate) struct BaselineUpdate {
     relative_path: PathBuf,
     document: ConformanceBaseline,
 }
 
 /// Results for one client-version/server-era combination.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BaselineEvaluation {
+pub(crate) struct BaselineEvaluation {
     /// Per-lane comparisons in stable lane order.
-    pub comparisons: Vec<BaselineComparison>,
+    pub(crate) comparisons: Vec<BaselineComparison>,
     /// Documents to commit when blessing was requested.
-    pub updates: Vec<BaselineUpdate>,
+    pub(crate) updates: Vec<BaselineUpdate>,
 }
 
 /// Evaluates every selected lane against its strict baseline.
@@ -93,7 +93,7 @@ pub struct BaselineEvaluation {
 /// Routed findings reproduced by the direct fixture are removed before the
 /// routed lane is compared. Blessing still parses existing files when present,
 /// so malformed baselines cannot be silently replaced.
-pub fn evaluate_baselines(
+pub(crate) fn evaluate_baselines(
     results: &BTreeMap<SemanticLane, ConformanceResults>,
     selected_lanes: &[SemanticLane],
     baseline_root: &Path,
@@ -172,7 +172,7 @@ pub fn evaluate_baselines(
 }
 
 /// Writes one deterministic machine-readable lane report.
-pub fn write_baseline_report(
+pub(crate) fn write_baseline_report(
     path: &Path,
     client_version: &str,
     server_era: ConformanceServerEra,
@@ -209,7 +209,10 @@ pub fn write_baseline_report(
 }
 
 /// Commits all selected baseline updates as one directory transaction.
-pub fn bless_baselines_transactionally(root: &Path, updates: &[BaselineUpdate]) -> Result<()> {
+pub(crate) fn bless_baselines_transactionally(
+    root: &Path,
+    updates: &[BaselineUpdate],
+) -> Result<()> {
     if updates.is_empty() {
         bail!("no conformance baselines were selected for blessing");
     }
@@ -301,7 +304,7 @@ pub fn bless_baselines_transactionally(root: &Path, updates: &[BaselineUpdate]) 
 }
 
 /// Rejects unknown statuses and duplicate check identities in official output.
-pub fn validate_scored_results(results: &ConformanceResults) -> Result<()> {
+pub(crate) fn validate_scored_results(results: &ConformanceResults) -> Result<()> {
     scored_findings(results).map(|_| ())
 }
 

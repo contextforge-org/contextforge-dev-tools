@@ -5,22 +5,22 @@ use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 /// Legacy session-oriented MCP protocol version used by the control-plane lane.
-pub const PROTOCOL_VERSION: &str = "2025-11-25";
+pub(crate) const PROTOCOL_VERSION: &str = "2025-11-25";
 /// Stateless MCP protocol version used by the modern dataplane lane.
-pub const STATELESS_PROTOCOL_VERSION: &str = "2026-07-28";
+pub(crate) const STATELESS_PROTOCOL_VERSION: &str = "2026-07-28";
 /// Accepted MCP streamable-HTTP response media types.
-pub const ACCEPT: &str = "application/json, text/event-stream";
+pub(crate) const ACCEPT: &str = "application/json, text/event-stream";
 
 /// Builds a JSON-RPC request with a generated v4 UUID string ID.
 #[must_use]
 #[cfg(test)]
-pub fn jsonrpc(method: &str, params: Option<Value>) -> Value {
+pub(crate) fn jsonrpc(method: &str, params: Option<Value>) -> Value {
     jsonrpc_with_id(method, params, Value::String(Uuid::new_v4().to_string()))
 }
 
 /// Builds a deterministic JSON-RPC request with an explicit ID.
 #[must_use]
-pub fn jsonrpc_with_id(method: &str, params: Option<Value>, id: Value) -> Value {
+pub(crate) fn jsonrpc_with_id(method: &str, params: Option<Value>, id: Value) -> Value {
     let mut payload = Map::new();
     payload.insert("jsonrpc".to_owned(), Value::String("2.0".to_owned()));
     payload.insert("id".to_owned(), id);
@@ -33,13 +33,13 @@ pub fn jsonrpc_with_id(method: &str, params: Option<Value>, id: Value) -> Value 
 
 /// Returns whether a date-based MCP revision uses the stateless request lifecycle.
 #[must_use]
-pub fn is_stateless_protocol(protocol_version: &str) -> bool {
+pub(crate) fn is_stateless_protocol(protocol_version: &str) -> bool {
     protocol_version >= STATELESS_PROTOCOL_VERSION
 }
 
 /// Builds the mandatory per-request metadata for stateless MCP requests.
 #[must_use]
-pub fn request_metadata(protocol_version: &str) -> Value {
+pub(crate) fn request_metadata(protocol_version: &str) -> Value {
     json!({
         "io.modelcontextprotocol/protocolVersion": protocol_version,
         "io.modelcontextprotocol/clientInfo": {
@@ -52,7 +52,7 @@ pub fn request_metadata(protocol_version: &str) -> Value {
 
 /// Adds mandatory stateless metadata to an object-shaped request `params` value.
 #[must_use]
-pub fn with_request_metadata(params: Option<Value>, protocol_version: &str) -> Value {
+pub(crate) fn with_request_metadata(params: Option<Value>, protocol_version: &str) -> Value {
     let mut params = match params {
         Some(Value::Object(params)) => params,
         _ => Map::new(),
@@ -72,7 +72,7 @@ pub fn with_request_metadata(params: Option<Value>, protocol_version: &str) -> V
 
 /// Builds a stateless JSON-RPC request with mandatory per-request metadata.
 #[must_use]
-pub fn stateless_jsonrpc_with_id(
+pub(crate) fn stateless_jsonrpc_with_id(
     method: &str,
     params: Option<Value>,
     id: Value,
@@ -87,7 +87,7 @@ pub fn stateless_jsonrpc_with_id(
 
 /// Returns the MCP routing-name header value for name-targeted methods.
 #[must_use]
-pub fn routing_name<'a>(method: &str, params: Option<&'a Value>) -> Option<&'a str> {
+pub(crate) fn routing_name<'a>(method: &str, params: Option<&'a Value>) -> Option<&'a str> {
     let params = params?.as_object()?;
     match method {
         "tools/call" | "prompts/get" => params.get("name")?.as_str(),
@@ -100,20 +100,20 @@ pub fn routing_name<'a>(method: &str, params: Option<&'a Value>) -> Option<&'a s
 /// Builds an MCP initialize request with a generated v4 UUID string ID.
 #[must_use]
 #[cfg(test)]
-pub fn initialize() -> Value {
+pub(crate) fn initialize() -> Value {
     initialize_with_id(Value::String(Uuid::new_v4().to_string()))
 }
 
 /// Builds a deterministic MCP initialize request with an explicit ID.
 #[must_use]
 #[cfg(test)]
-pub fn initialize_with_id(id: Value) -> Value {
+pub(crate) fn initialize_with_id(id: Value) -> Value {
     initialize_with_id_and_version(id, PROTOCOL_VERSION)
 }
 
 /// Builds a deterministic MCP initialize request for an explicit protocol version.
 #[must_use]
-pub fn initialize_with_id_and_version(id: Value, protocol_version: &str) -> Value {
+pub(crate) fn initialize_with_id_and_version(id: Value, protocol_version: &str) -> Value {
     jsonrpc_with_id(
         "initialize",
         Some(json!({
@@ -137,7 +137,7 @@ pub fn initialize_with_id_and_version(id: Value, protocol_version: &str) -> Valu
 /// # Errors
 ///
 /// Returns the JSON parser error for a non-empty malformed JSON response.
-pub fn parse_mcp_body(body: &str, content_type: &str) -> serde_json::Result<Option<Value>> {
+pub(crate) fn parse_mcp_body(body: &str, content_type: &str) -> serde_json::Result<Option<Value>> {
     if body.is_empty() {
         return Ok(None);
     }
@@ -185,7 +185,7 @@ fn flush_sse_event(event_data: &mut String, has_data: &mut bool, message: &mut O
 
 /// Returns arguments for tool names the integration harness knows how to call.
 #[must_use]
-pub fn tool_call_args(tool_name: &str) -> Option<Value> {
+pub(crate) fn tool_call_args(tool_name: &str) -> Option<Value> {
     match tool_name {
         "echo" | "fast_time_echo" | "fast-time-echo" => Some(json!({"message": "cf-integration"})),
         "get_system_time"

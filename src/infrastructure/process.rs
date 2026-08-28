@@ -17,7 +17,7 @@ use crate::infrastructure::error::InfrastructureError;
 /// An owned child-process command description.
 #[must_use = "a command specification does nothing until a process runner executes it"]
 #[derive(Clone, PartialEq, Eq)]
-pub struct CommandSpec {
+pub(crate) struct CommandSpec {
     program: OsString,
     args: Vec<OsString>,
     cwd: Option<PathBuf>,
@@ -27,7 +27,7 @@ pub struct CommandSpec {
 
 impl CommandSpec {
     /// Creates a command specification for `program`.
-    pub fn new(program: impl Into<OsString>) -> Self {
+    pub(crate) fn new(program: impl Into<OsString>) -> Self {
         Self {
             program: program.into(),
             args: Vec::new(),
@@ -38,13 +38,13 @@ impl CommandSpec {
     }
 
     /// Appends one argument.
-    pub fn arg(mut self, argument: impl Into<OsString>) -> Self {
+    pub(crate) fn arg(mut self, argument: impl Into<OsString>) -> Self {
         self.args.push(argument.into());
         self
     }
 
     /// Appends multiple arguments.
-    pub fn args<I, S>(mut self, arguments: I) -> Self
+    pub(crate) fn args<I, S>(mut self, arguments: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<OsString>,
@@ -54,50 +54,50 @@ impl CommandSpec {
     }
 
     /// Sets the child working directory.
-    pub fn cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
+    pub(crate) fn cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
         self.cwd = Some(cwd.into());
         self
     }
 
     /// Adds or replaces one child environment override.
-    pub fn env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+    pub(crate) fn env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
         self.environment.insert(key.into(), value.into());
         self
     }
 
     /// Prevents the child from inheriting unspecified parent environment values.
-    pub fn clear_environment(mut self) -> Self {
+    pub(crate) fn clear_environment(mut self) -> Self {
         self.inherit_environment = false;
         self
     }
 
     /// Returns the program name or path.
     #[must_use]
-    pub fn program(&self) -> &OsStr {
+    pub(crate) fn program(&self) -> &OsStr {
         &self.program
     }
 
     /// Returns the ordered argument list.
     #[must_use]
-    pub fn arguments(&self) -> &[OsString] {
+    pub(crate) fn arguments(&self) -> &[OsString] {
         &self.args
     }
 
     /// Returns the configured child working directory.
     #[must_use]
-    pub fn working_directory(&self) -> Option<&Path> {
+    pub(crate) fn working_directory(&self) -> Option<&Path> {
         self.cwd.as_deref()
     }
 
     /// Returns deterministic child environment overrides.
     #[must_use]
-    pub fn environment(&self) -> &BTreeMap<OsString, OsString> {
+    pub(crate) fn environment(&self) -> &BTreeMap<OsString, OsString> {
         &self.environment
     }
 
     /// Returns whether unspecified parent environment values are inherited.
     #[must_use]
-    pub fn inherits_environment(&self) -> bool {
+    pub(crate) fn inherits_environment(&self) -> bool {
         self.inherit_environment
     }
 }
@@ -120,7 +120,7 @@ impl fmt::Debug for CommandSpec {
 
 /// Bytes captured from both child output streams.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapturedOutput {
+pub(crate) struct CapturedOutput {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
 }
@@ -128,32 +128,32 @@ pub struct CapturedOutput {
 impl CapturedOutput {
     /// Creates captured output from owned stream bytes.
     #[must_use]
-    pub fn new(stdout: Vec<u8>, stderr: Vec<u8>) -> Self {
+    pub(crate) fn new(stdout: Vec<u8>, stderr: Vec<u8>) -> Self {
         Self { stdout, stderr }
     }
 
     /// Returns captured standard output bytes.
     #[must_use]
-    pub fn stdout(&self) -> &[u8] {
+    pub(crate) fn stdout(&self) -> &[u8] {
         &self.stdout
     }
 
     /// Returns captured standard error bytes.
     #[must_use]
-    pub fn stderr(&self) -> &[u8] {
+    pub(crate) fn stderr(&self) -> &[u8] {
         &self.stderr
     }
 
     /// Splits captured output into owned standard output and error bytes.
     #[must_use]
     #[cfg(test)]
-    pub fn into_parts(self) -> (Vec<u8>, Vec<u8>) {
+    pub(crate) fn into_parts(self) -> (Vec<u8>, Vec<u8>) {
         (self.stdout, self.stderr)
     }
 }
 
 /// Injectable child-process execution boundary.
-pub trait ProcessRunner {
+pub(crate) trait ProcessRunner {
     /// Runs with inherited standard output and error.
     fn run(&self, spec: &CommandSpec) -> Result<(), InfrastructureError>;
 
@@ -222,14 +222,14 @@ pub trait ProcessRunner {
 
 /// Operating-system-backed process runner.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct SystemProcessRunner;
+pub(crate) struct SystemProcessRunner;
 
 /// Process runner that keeps ordinary child output in one aggregate log.
 ///
 /// Explicit per-command log paths remain authoritative, allowing callers to
 /// retain separate detailed logs for long-running tools.
 #[derive(Debug, Clone, Copy)]
-pub struct LoggingProcessRunner<'a, R> {
+pub(crate) struct LoggingProcessRunner<'a, R> {
     inner: &'a R,
     log_path: &'a Path,
 }
@@ -237,7 +237,7 @@ pub struct LoggingProcessRunner<'a, R> {
 impl<'a, R> LoggingProcessRunner<'a, R> {
     /// Wraps `inner`, redirecting inherited child output to `log_path`.
     #[must_use]
-    pub const fn new(inner: &'a R, log_path: &'a Path) -> Self {
+    pub(crate) const fn new(inner: &'a R, log_path: &'a Path) -> Self {
         Self { inner, log_path }
     }
 }

@@ -154,15 +154,13 @@ fn integration_root_cannot_be_used_as_a_checkout() {
     let request = CheckoutRequest::controlplane(&integration, "upstream", "main");
     let runner = RecordingRunner::default();
     let manager = CheckoutManager::new(&runner);
-    let mut warnings = Vec::new();
 
     let error = manager
-        .ensure(&integration, &request, &mut warnings)
+        .ensure(&integration, &request)
         .expect_err("the integration state root must never be replaced recursively");
 
     assert!(error.to_string().contains("integration root itself"));
     assert!(runner.commands().is_empty());
-    assert!(warnings.is_empty());
 }
 
 #[test]
@@ -217,14 +215,12 @@ fn missing_checkout_is_cloned_before_fetch_and_checkout() {
     let request = CheckoutRequest::controlplane(&directory, "upstream", "main");
     let runner = RecordingRunner::default();
     let manager = CheckoutManager::new(&runner);
-    let mut warnings = Vec::new();
 
     let status = manager
-        .ensure(&integration, &request, &mut warnings)
+        .ensure(&integration, &request)
         .expect("recorded checkout should succeed");
 
     assert_eq!(status, CheckoutStatus::Updated);
-    assert!(warnings.is_empty());
     assert!(integration.is_dir());
     let commands = runner.commands();
     assert_eq!(commands.len(), 10);
@@ -288,28 +284,23 @@ fn missing_checkout_is_cloned_before_fetch_and_checkout() {
 }
 
 #[test]
-fn failed_fetch_warns_and_uses_the_existing_generated_remote_ref() {
+fn failed_fetch_is_fatal_for_generated_checkouts() {
     let temporary = tempfile::tempdir().expect("temporary directory should be created");
     let integration = temporary.path().join(".integration");
     let directory = integration.join("controlplane");
     fs::create_dir_all(directory.join(".git")).expect("fake checkout should be created");
     let request = CheckoutRequest::controlplane(&directory, "upstream", "main");
-    let runner = RecordingRunner::with_results([Ok(()), Ok(()), Err("offline"), Ok(())]);
+    let runner = RecordingRunner::with_results([Ok(()), Ok(()), Err("offline")]);
     let manager = CheckoutManager::new(&runner);
-    let mut warnings = Vec::new();
 
-    let status = manager
-        .ensure(&integration, &request, &mut warnings)
-        .expect("an existing ref should still be checked out");
+    let failure = manager
+        .ensure(&integration, &request)
+        .expect_err("fetch failure must not use a stale local ref");
 
-    assert_eq!(status, CheckoutStatus::Updated);
-    assert_eq!(
-        warnings,
-        ["warning: fetch from upstream failed; using existing checkout"]
-    );
+    assert_eq!(failure.to_string(), "offline");
     let commands = runner.commands();
-    assert_eq!(commands.len(), 9);
-    assert!(commands.iter().any(|command| {
+    assert_eq!(commands.len(), 3);
+    assert!(!commands.iter().any(|command| {
         command
             .arguments()
             .iter()
@@ -318,47 +309,21 @@ fn failed_fetch_warns_and_uses_the_existing_generated_remote_ref() {
 }
 
 #[test]
-fn failed_dataplane_fetch_uses_the_dataplane_specific_warning() {
-    let temporary = tempfile::tempdir().expect("temporary directory should be created");
-    let integration = temporary.path().join(".integration");
-    let directory = integration.join("dataplane");
-    fs::create_dir_all(directory.join(".git")).expect("fake checkout should be created");
-    let request = CheckoutRequest::dataplane(&directory, "dataplane-upstream", "main");
-    let runner = RecordingRunner::with_results([Ok(()), Ok(()), Err("offline"), Ok(())]);
-    let manager = CheckoutManager::new(&runner);
-    let mut warnings = Vec::new();
-
-    manager
-        .ensure(&integration, &request, &mut warnings)
-        .expect("an existing dataplane ref should still be checked out");
-
-    assert_eq!(
-        warnings,
-        ["warning: fetch from dataplane-upstream failed; using existing dataplane checkout"]
-    );
-}
-
-#[test]
-fn failed_fetch_still_surfaces_an_unknown_local_ref_failure_and_warning() {
+fn failed_fetch_is_fatal_for_external_checkouts() {
     let temporary = tempfile::tempdir().expect("temporary directory should be created");
     let integration = temporary.path().join(".integration");
     let directory = temporary.path().join("external");
     fs::create_dir_all(directory.join(".git")).expect("fake checkout should be created");
     let request = CheckoutRequest::controlplane(&directory, "upstream", "missing-ref");
-    let runner = RecordingRunner::with_results([Ok(()), Err("offline"), Err("unknown ref")]);
+    let runner = RecordingRunner::with_results([Ok(()), Err("offline")]);
     let manager = CheckoutManager::new(&runner);
-    let mut warnings = Vec::new();
 
     let failure = manager
-        .ensure(&integration, &request, &mut warnings)
-        .expect_err("the checkout error must remain fatal");
+        .ensure(&integration, &request)
+        .expect_err("fetch failure must not use a stale external ref");
 
-    assert_eq!(failure.to_string(), "unknown ref");
-    assert_eq!(
-        warnings,
-        ["warning: fetch from upstream failed; using existing checkout"]
-    );
-    assert_eq!(runner.commands().len(), 3);
+    assert_eq!(failure.to_string(), "offline");
+    assert_eq!(runner.commands().len(), 2);
 }
 
 #[test]
@@ -369,14 +334,12 @@ fn dataplane_with_an_empty_ref_is_skipped_without_filesystem_or_process_changes(
         CheckoutRequest::dataplane(integration.join("dataplane"), "dataplane-upstream", "");
     let runner = RecordingRunner::default();
     let manager = CheckoutManager::new(&runner);
-    let mut warnings = Vec::new();
 
     let status = manager
-        .ensure(&integration, &request, &mut warnings)
+        .ensure(&integration, &request)
         .expect("published-image mode should be a no-op");
 
     assert_eq!(status, CheckoutStatus::Skipped);
-    assert!(warnings.is_empty());
     assert!(runner.commands().is_empty());
     assert!(!integration.exists());
 }
@@ -429,9 +392,8 @@ fn real_generated_checkout_resets_a_local_branch_to_origin() {
     let checkout = integration.join("controlplane");
     let request = fixture.request(&checkout, "main");
     let manager = CheckoutManager::new(&SystemProcessRunner);
-    let mut warnings = Vec::new();
     manager
-        .ensure(&integration, &request, &mut warnings)
+        .ensure(&integration, &request)
         .expect("initial generated checkout should succeed");
     git(Some(&checkout), ["config", "user.name", "Checkout Test"]);
     git(
@@ -448,7 +410,7 @@ fn real_generated_checkout_resets_a_local_branch_to_origin() {
         .expect("untracked generated file should be created");
 
     manager
-        .ensure(&integration, &request, &mut warnings)
+        .ensure(&integration, &request)
         .expect("generated checkout refresh should succeed");
 
     let head = git_stdout(&checkout, ["rev-parse", "HEAD"]);
@@ -461,7 +423,6 @@ fn real_generated_checkout_resets_a_local_branch_to_origin() {
     );
     assert!(!checkout.join("untracked.txt").exists());
     assert!(git_stdout(&checkout, ["status", "--porcelain"]).is_empty());
-    assert!(warnings.is_empty());
 }
 
 #[test]
@@ -477,23 +438,14 @@ fn real_generated_checkout_discards_conflicting_wip_before_switching_refs() {
     let integration = fixture.root.join(".integration");
     let checkout = integration.join("controlplane");
     let manager = CheckoutManager::new(&SystemProcessRunner);
-    let mut warnings = Vec::new();
     manager
-        .ensure(
-            &integration,
-            &fixture.request(&checkout, "main"),
-            &mut warnings,
-        )
+        .ensure(&integration, &fixture.request(&checkout, "main"))
         .expect("initial generated checkout should succeed");
     fs::write(checkout.join("state.txt"), "conflicting dirty state\n")
         .expect("generated checkout should be dirtied");
 
     manager
-        .ensure(
-            &integration,
-            &fixture.request(&checkout, "release"),
-            &mut warnings,
-        )
+        .ensure(&integration, &fixture.request(&checkout, "release"))
         .expect("generated checkout should clean before switching refs");
 
     assert_eq!(
@@ -512,9 +464,8 @@ fn successful_fetch_rejects_a_deleted_remote_branch_instead_of_using_stale_local
     let checkout = integration.join("controlplane");
     let request = fixture.request(&checkout, "obsolete");
     let manager = CheckoutManager::new(&SystemProcessRunner);
-    let mut warnings = Vec::new();
     manager
-        .ensure(&integration, &request, &mut warnings)
+        .ensure(&integration, &request)
         .expect("initial remote branch checkout should succeed");
     fs::write(
         checkout.join("state.txt"),
@@ -528,7 +479,7 @@ fn successful_fetch_rejects_a_deleted_remote_branch_instead_of_using_stale_local
     );
 
     let error = manager
-        .ensure(&integration, &request, &mut warnings)
+        .ensure(&integration, &request)
         .expect_err("a pruned remote branch must not fall back to a stale local branch");
 
     assert!(error.to_string().contains("not a fetched origin branch"));
@@ -546,13 +497,8 @@ fn successful_generated_fetch_rejects_a_deleted_remote_tag() {
     let integration = fixture.root.join(".integration");
     let checkout = integration.join("controlplane");
     let manager = CheckoutManager::new(&SystemProcessRunner);
-    let mut warnings = Vec::new();
     manager
-        .ensure(
-            &integration,
-            &fixture.request(&checkout, "obsolete-tag"),
-            &mut warnings,
-        )
+        .ensure(&integration, &fixture.request(&checkout, "obsolete-tag"))
         .expect("initial remote tag checkout should succeed");
     git(Some(&fixture.seed), ["tag", "--delete", "obsolete-tag"]);
     git(
@@ -561,11 +507,7 @@ fn successful_generated_fetch_rejects_a_deleted_remote_tag() {
     );
 
     let error = manager
-        .ensure(
-            &integration,
-            &fixture.request(&checkout, "obsolete-tag"),
-            &mut warnings,
-        )
+        .ensure(&integration, &fixture.request(&checkout, "obsolete-tag"))
         .expect_err("a pruned remote tag must not fall back to stale local state");
 
     assert!(error.to_string().contains("not a fetched origin branch"));
@@ -573,7 +515,6 @@ fn successful_generated_fetch_rejects_a_deleted_remote_tag() {
         &checkout,
         ["show-ref", "--verify", "--quiet", "refs/tags/obsolete-tag",],
     ));
-    assert!(warnings.is_empty());
 }
 
 #[test]
@@ -598,20 +539,14 @@ fn generated_checkout_updates_origin_when_the_configured_repository_changes() {
     let integration = first.root.join(".integration");
     let checkout = integration.join("controlplane");
     let manager = CheckoutManager::new(&SystemProcessRunner);
-    let mut warnings = Vec::new();
     manager
-        .ensure(
-            &integration,
-            &first.request(&checkout, "main"),
-            &mut warnings,
-        )
+        .ensure(&integration, &first.request(&checkout, "main"))
         .expect("initial generated checkout should succeed");
 
     manager
         .ensure(
             &integration,
             &CheckoutRequest::controlplane(&checkout, second.origin.as_os_str(), "main"),
-            &mut warnings,
         )
         .expect("generated checkout should follow the configured repository");
 
@@ -646,13 +581,8 @@ fn generated_checkout_rejects_two_offline_origin_change_attempts_without_using_o
     let integration = first.root.join(".integration");
     let checkout = integration.join("controlplane");
     let manager = CheckoutManager::new(&SystemProcessRunner);
-    let mut warnings = Vec::new();
     manager
-        .ensure(
-            &integration,
-            &first.request(&checkout, "main"),
-            &mut warnings,
-        )
+        .ensure(&integration, &first.request(&checkout, "main"))
         .expect("initial generated checkout should succeed");
     let first_head = git_stdout(&checkout, ["rev-parse", "HEAD"]);
     fs::write(checkout.join("state.txt"), "WIP from first repository\n")
@@ -663,7 +593,7 @@ fn generated_checkout_rejects_two_offline_origin_change_attempts_without_using_o
         .expect("second origin should be made unavailable");
 
     for attempt in 1..=2 {
-        let result = manager.ensure(&integration, &changed_request, &mut warnings);
+        let result = manager.ensure(&integration, &changed_request);
         assert!(
             result.is_err(),
             "offline changed origin attempt {attempt} must not reuse refs from the previous repository"
@@ -680,7 +610,6 @@ fn generated_checkout_rejects_two_offline_origin_change_attempts_without_using_o
             "WIP from first repository\n"
         );
     }
-    assert!(warnings.is_empty());
 }
 
 #[test]
@@ -690,14 +619,9 @@ fn generated_checkout_accepts_a_verified_commit_hash() {
     let integration = fixture.root.join(".integration");
     let checkout = integration.join("controlplane");
     let manager = CheckoutManager::new(&SystemProcessRunner);
-    let mut warnings = Vec::new();
 
     manager
-        .ensure(
-            &integration,
-            &fixture.request(&checkout, &revision),
-            &mut warnings,
-        )
+        .ensure(&integration, &fixture.request(&checkout, &revision))
         .expect("a fetched commit hash should be a valid checkout target");
 
     assert_eq!(git_stdout(&checkout, ["rev-parse", "HEAD"]), revision);
@@ -711,13 +635,8 @@ fn generated_symlink_to_external_checkout_is_rejected_without_touching_wip() {
     fs::create_dir_all(&integration).expect("integration directory should be created");
     let external = fixture.root.join("external-controlplane");
     let manager = CheckoutManager::new(&SystemProcessRunner);
-    let mut warnings = Vec::new();
     manager
-        .ensure(
-            &integration,
-            &fixture.request(&external, "main"),
-            &mut warnings,
-        )
+        .ensure(&integration, &fixture.request(&external, "main"))
         .expect("external checkout should be created");
     fs::write(external.join("state.txt"), "external dirty state\n")
         .expect("external checkout should be dirtied");
@@ -727,11 +646,7 @@ fn generated_symlink_to_external_checkout_is_rejected_without_touching_wip() {
     symlink(&external, &linked).expect("generated-looking symlink should be created");
 
     let error = manager
-        .ensure(
-            &integration,
-            &fixture.request(&linked, "main"),
-            &mut warnings,
-        )
+        .ensure(&integration, &fixture.request(&linked, "main"))
         .expect_err("a generated path resolving outside state must be rejected");
 
     assert!(error.to_string().contains("resolves outside"));
@@ -749,9 +664,8 @@ fn real_external_checkout_preserves_its_local_branch_position_after_fetch() {
     let checkout = fixture.root.join("external-controlplane");
     let request = fixture.request(&checkout, "main");
     let manager = CheckoutManager::new(&SystemProcessRunner);
-    let mut warnings = Vec::new();
     manager
-        .ensure(&integration, &request, &mut warnings)
+        .ensure(&integration, &request)
         .expect("initial external checkout should succeed");
     git(Some(&checkout), ["config", "user.name", "Checkout Test"]);
     git(
@@ -769,7 +683,7 @@ fn real_external_checkout_preserves_its_local_branch_position_after_fetch() {
         .expect("external untracked WIP should be created");
 
     manager
-        .ensure(&integration, &request, &mut warnings)
+        .ensure(&integration, &request)
         .expect("external checkout refresh should succeed");
 
     assert_eq!(git_stdout(&checkout, ["rev-parse", "HEAD"]), local_head);
@@ -787,7 +701,6 @@ fn real_external_checkout_preserves_its_local_branch_position_after_fetch() {
             "refs/tags/external-local-only",
         ],
     ));
-    assert!(warnings.is_empty());
 }
 
 #[test]
@@ -797,13 +710,8 @@ fn external_checkout_rejects_a_repository_mismatch_without_touching_wip() {
     let integration = first.root.join(".integration");
     let checkout = first.root.join("external-controlplane");
     let manager = CheckoutManager::new(&SystemProcessRunner);
-    let mut warnings = Vec::new();
     manager
-        .ensure(
-            &integration,
-            &first.request(&checkout, "main"),
-            &mut warnings,
-        )
+        .ensure(&integration, &first.request(&checkout, "main"))
         .expect("initial external checkout should succeed");
     fs::write(checkout.join("state.txt"), "external tracked WIP\n")
         .expect("external checkout should be dirtied");
@@ -814,7 +722,6 @@ fn external_checkout_rejects_a_repository_mismatch_without_touching_wip() {
         .ensure(
             &integration,
             &CheckoutRequest::controlplane(&checkout, second.origin.as_os_str(), "main"),
-            &mut warnings,
         )
         .expect_err("external checkout origin mismatch must fail without mutation");
 
@@ -855,10 +762,9 @@ fn real_external_git_worktree_is_reused_and_preserves_wip() {
         .expect("untracked worktree file should be created");
     let request = fixture.request(&worktree, "local-worktree");
     let manager = CheckoutManager::new(&SystemProcessRunner);
-    let mut warnings = Vec::new();
 
     manager
-        .ensure(&integration, &request, &mut warnings)
+        .ensure(&integration, &request)
         .expect("an existing Git worktree should be fetched without cloning over it");
 
     assert_eq!(
@@ -866,7 +772,6 @@ fn real_external_git_worktree_is_reused_and_preserves_wip() {
         "worktree tracked WIP\n"
     );
     assert!(worktree.join("untracked.txt").is_file());
-    assert!(warnings.is_empty());
 }
 
 #[test]
@@ -878,10 +783,9 @@ fn real_tag_checkout_uses_plain_checkout_and_detaches_head() {
     let checkout = integration.join("tagged-controlplane");
     let request = fixture.request(&checkout, "v1.0.0");
     let manager = CheckoutManager::new(&SystemProcessRunner);
-    let mut warnings = Vec::new();
 
     manager
-        .ensure(&integration, &request, &mut warnings)
+        .ensure(&integration, &request)
         .expect("tag checkout should succeed");
 
     let status = Command::new("git")
@@ -899,7 +803,6 @@ fn real_tag_checkout_uses_plain_checkout_and_detaches_head() {
         git_stdout(&checkout, ["rev-parse", "HEAD"]),
         git_stdout(&fixture.seed, ["rev-parse", "v1.0.0"])
     );
-    assert!(warnings.is_empty());
 }
 
 fn path_text(path: &Path) -> &str {

@@ -11,7 +11,7 @@ use crate::infrastructure::process::CommandSpec;
 
 /// User-selected Compose image build policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuildMode {
+pub(crate) enum BuildMode {
     /// Decide from image availability and checkout revision labels.
     Auto,
     /// Always ask Compose to build.
@@ -35,7 +35,7 @@ impl FromStr for BuildMode {
 
 /// Invalid `CF_COMPOSE_BUILD` value.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BuildModeParseError(String);
+pub(crate) struct BuildModeParseError(String);
 
 impl fmt::Display for BuildModeParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -51,28 +51,28 @@ impl std::error::Error for BuildModeParseError {}
 
 /// Runtime facts needed to resolve automatic image builds.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BuildInputs {
-    pub controlplane_image_prebuilt: bool,
-    pub controlplane_image_present: bool,
-    pub controlplane_checkout_revision: Option<String>,
-    pub controlplane_image_revision: Option<String>,
-    pub include_dataplane: bool,
-    pub dataplane_source_ref: Option<String>,
-    pub dataplane_image_present: bool,
-    pub dataplane_checkout_revision: Option<String>,
-    pub dataplane_image_revision: Option<String>,
+pub(crate) struct BuildInputs {
+    pub(crate) controlplane_image_prebuilt: bool,
+    pub(crate) controlplane_image_present: bool,
+    pub(crate) controlplane_checkout_revision: Option<String>,
+    pub(crate) controlplane_image_revision: Option<String>,
+    pub(crate) include_dataplane: bool,
+    pub(crate) dataplane_source_ref: Option<String>,
+    pub(crate) dataplane_image_present: bool,
+    pub(crate) dataplane_checkout_revision: Option<String>,
+    pub(crate) dataplane_image_revision: Option<String>,
 }
 
 /// Resolved Compose build decision and stable operator diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BuildDecision {
-    pub build: bool,
-    pub reasons: Vec<String>,
+pub(crate) struct BuildDecision {
+    pub(crate) build: bool,
+    pub(crate) reasons: Vec<String>,
 }
 
 /// Resolves `CF_COMPOSE_BUILD` without running Docker or Git.
 #[must_use]
-pub fn resolve_build(mode: BuildMode, inputs: &BuildInputs) -> BuildDecision {
+pub(crate) fn resolve_build(mode: BuildMode, inputs: &BuildInputs) -> BuildDecision {
     match mode {
         BuildMode::Always => BuildDecision {
             build: true,
@@ -143,7 +143,7 @@ fn matching_revision(checkout: Option<&str>, image: Option<&str>) -> bool {
 
 /// Destructive scope of a Compose cleanup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CleanupKind {
+pub(crate) enum CleanupKind {
     /// Remove containers and networks while retaining volumes.
     Down,
     /// Remove containers, networks, and volumes.
@@ -152,14 +152,14 @@ pub enum CleanupKind {
 
 /// One immutable stack command.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StackCommandPlan {
+pub(crate) struct StackCommandPlan {
     command: CommandSpec,
 }
 
 impl StackCommandPlan {
     /// Builds a mode-specific Compose `up` command.
     #[must_use]
-    pub fn up(
+    pub(crate) fn up(
         project: ComposeProject,
         mode: StackMode,
         build: bool,
@@ -184,7 +184,7 @@ impl StackCommandPlan {
 
     /// Starts the profile-gated Fast Test fixture and waits for its healthcheck.
     #[must_use]
-    pub fn fast_test_up(project: ComposeProject) -> Self {
+    pub(crate) fn fast_test_up(project: ComposeProject) -> Self {
         Self {
             command: project.command([
                 "--profile",
@@ -201,7 +201,7 @@ impl StackCommandPlan {
 
     /// Runs the one-shot Fast Test registration job to completion.
     #[must_use]
-    pub fn fast_test_register(project: ComposeProject) -> Self {
+    pub(crate) fn fast_test_register(project: ComposeProject) -> Self {
         Self {
             command: project.command([
                 "--profile",
@@ -216,7 +216,7 @@ impl StackCommandPlan {
 
     /// Builds a Compose cleanup command.
     #[must_use]
-    pub fn cleanup(project: ComposeProject, kind: CleanupKind) -> Self {
+    pub(crate) fn cleanup(project: ComposeProject, kind: CleanupKind) -> Self {
         let mut arguments = vec![OsString::from("down")];
         if kind == CleanupKind::Reset {
             arguments.push(OsString::from("--volumes"));
@@ -229,7 +229,7 @@ impl StackCommandPlan {
 
     /// Builds a Compose service-status command.
     #[must_use]
-    pub fn status(project: ComposeProject) -> Self {
+    pub(crate) fn status(project: ComposeProject) -> Self {
         Self {
             command: project.command(["ps"]),
         }
@@ -237,7 +237,7 @@ impl StackCommandPlan {
 
     /// Builds a Compose log-follow command, translating the public control-plane service name.
     #[must_use]
-    pub fn logs<I>(project: ComposeProject, services: I) -> Self
+    pub(crate) fn logs<I>(project: ComposeProject, services: I) -> Self
     where
         I: IntoIterator<Item = OsString>,
     {
@@ -250,7 +250,7 @@ impl StackCommandPlan {
 
     /// Builds a Compose rendered-config command.
     #[must_use]
-    pub fn config(project: ComposeProject, mode: StackMode) -> Self {
+    pub(crate) fn config(project: ComposeProject, mode: StackMode) -> Self {
         let arguments = if mode == StackMode::Dataplane {
             vec![
                 OsString::from("--profile"),
@@ -272,7 +272,7 @@ impl StackCommandPlan {
     }
 
     /// Returns the executable process specification.
-    pub fn command(&self) -> &CommandSpec {
+    pub(crate) fn command(&self) -> &CommandSpec {
         &self.command
     }
 }
@@ -291,30 +291,30 @@ fn compose_service_name(service: OsString) -> OsString {
 
 /// Captured runtime state for one Compose service.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServiceSnapshot {
-    pub running: bool,
-    pub completed_successfully: bool,
-    pub configured_image: Option<String>,
-    pub running_image_matches_configured: bool,
-    pub image_revision: Option<String>,
+pub(crate) struct ServiceSnapshot {
+    pub(crate) running: bool,
+    pub(crate) completed_successfully: bool,
+    pub(crate) configured_image: Option<String>,
+    pub(crate) running_image_matches_configured: bool,
+    pub(crate) image_revision: Option<String>,
 }
 
 /// Facts used to decide whether a running dataplane stack is current.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FreshnessSnapshot {
-    pub services: BTreeMap<String, ServiceSnapshot>,
-    pub controlplane_checkout_revision: Option<String>,
-    pub dataplane_checkout_revision: Option<String>,
-    pub controlplane_image_prebuilt: bool,
-    pub dataplane_source_enabled: bool,
-    pub expected_controlplane_image: String,
-    pub expected_dataplane_image: String,
-    pub expected_fast_time_image: String,
+pub(crate) struct FreshnessSnapshot {
+    pub(crate) services: BTreeMap<String, ServiceSnapshot>,
+    pub(crate) controlplane_checkout_revision: Option<String>,
+    pub(crate) dataplane_checkout_revision: Option<String>,
+    pub(crate) controlplane_image_prebuilt: bool,
+    pub(crate) dataplane_source_enabled: bool,
+    pub(crate) expected_controlplane_image: String,
+    pub(crate) expected_dataplane_image: String,
+    pub(crate) expected_fast_time_image: String,
 }
 
 /// Result of evaluating a running dataplane stack.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StackFreshness {
+pub(crate) enum StackFreshness {
     /// Every required service, image, and revision is current.
     Current,
     /// The first deterministic freshness failure.
@@ -324,7 +324,7 @@ pub enum StackFreshness {
 impl FreshnessSnapshot {
     /// Evaluates the shell-compatible stack freshness contract.
     #[must_use]
-    pub fn evaluate(&self) -> StackFreshness {
+    pub(crate) fn evaluate(&self) -> StackFreshness {
         for service in [
             "gateway",
             "dataplane",

@@ -4,17 +4,17 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use url::Url;
 
 /// Response header set by the harness-owned nginx boundary.
-pub const BACKEND_HEADER: &str = "x-cf-integration-backend";
+pub(crate) const BACKEND_HEADER: &str = "x-cf-integration-backend";
 /// Marker for a response served by `cf-dataplane`.
-pub const DATAPLANE_BACKEND: &str = "dataplane";
+pub(crate) const DATAPLANE_BACKEND: &str = "dataplane";
 /// Marker for a `/servers/.../mcp` response replayed on the control plane.
-pub const CONTROLPLANE_FALLBACK_BACKEND: &str = "controlplane-fallback";
+pub(crate) const CONTROLPLANE_FALLBACK_BACKEND: &str = "controlplane-fallback";
 /// Marker for a raw control-plane response in the dataplane topology.
-pub const CONTROLPLANE_BACKEND: &str = "controlplane";
+pub(crate) const CONTROLPLANE_BACKEND: &str = "controlplane";
 
 /// Parsed backend identity without retaining untrusted header contents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BackendIdentity {
+pub(crate) enum BackendIdentity {
     /// The response did not contain the marker.
     Missing,
     /// The response came from the dataplane route.
@@ -32,7 +32,7 @@ pub enum BackendIdentity {
 impl BackendIdentity {
     /// Parses exactly one backend marker from response headers.
     #[must_use]
-    pub fn from_headers(headers: &HeaderMap) -> Self {
+    pub(crate) fn from_headers(headers: &HeaderMap) -> Self {
         let mut values = headers.get_all(BACKEND_HEADER).iter();
         let Some(value) = values.next() else {
             return Self::Missing;
@@ -46,7 +46,7 @@ impl BackendIdentity {
     /// Returns a static dataplane validation failure without reflecting an
     /// untrusted header value.
     #[must_use]
-    pub const fn dataplane_error(self) -> Option<&'static str> {
+    pub(crate) const fn dataplane_error(self) -> Option<&'static str> {
         match self {
             Self::Dataplane => None,
             Self::Missing => Some("dataplane response backend marker is missing"),
@@ -73,7 +73,7 @@ impl BackendIdentity {
 
 /// Returns a safe diagnostic representation of one backend marker value.
 #[must_use]
-pub fn sanitized_backend_value(value: &HeaderValue) -> &'static str {
+pub(crate) fn sanitized_backend_value(value: &HeaderValue) -> &'static str {
     match BackendIdentity::from_value(value) {
         BackendIdentity::Dataplane => DATAPLANE_BACKEND,
         BackendIdentity::ControlplaneFallback => CONTROLPLANE_FALLBACK_BACKEND,
@@ -86,7 +86,7 @@ pub fn sanitized_backend_value(value: &HeaderValue) -> &'static str {
 
 /// Returns whether a URL is the fixed public dataplane MCP route.
 #[must_use]
-pub fn is_dataplane_endpoint(endpoint: &Url) -> bool {
+pub(crate) fn is_dataplane_endpoint(endpoint: &Url) -> bool {
     let Some(mut segments) = endpoint.path_segments() else {
         return false;
     };

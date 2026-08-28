@@ -21,7 +21,7 @@ const PROTOCOL_VERSION_ENV: &str = "MCP_PROTOCOL_VERSION";
 
 /// Fully resolved application operation.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Action {
+pub(crate) enum Action {
     Stack(StackAction),
     Probe {
         topology: StackMode,
@@ -40,7 +40,7 @@ pub enum Action {
 impl Action {
     /// Stable command path used by lifecycle output.
     #[must_use]
-    pub const fn description(&self) -> &'static str {
+    pub(crate) const fn description(&self) -> &'static str {
         match self {
             Self::Stack(StackAction::Up { .. }) => "stack up",
             Self::Stack(StackAction::Down { .. }) => "stack down",
@@ -59,7 +59,7 @@ impl Action {
 
     /// Returns whether this operation needs Compose overlays or runtime scripts.
     #[must_use]
-    pub const fn requires_runtime_assets(&self) -> bool {
+    pub(crate) const fn requires_runtime_assets(&self) -> bool {
         !matches!(
             self,
             Self::Conformance(ConformanceAction::Report { .. })
@@ -70,7 +70,7 @@ impl Action {
 
 /// Fully resolved stack operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StackAction {
+pub(crate) enum StackAction {
     Up {
         topology: StackMode,
         fresh: bool,
@@ -89,15 +89,15 @@ pub enum StackAction {
 
 /// Fully resolved load-test options.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ResolvedLoadArgs {
-    pub topology: StackMode,
-    pub protocol_version: ProtocolVersion,
-    pub request: LoadRequest,
+pub(crate) struct ResolvedLoadArgs {
+    pub(crate) topology: StackMode,
+    pub(crate) protocol_version: ProtocolVersion,
+    pub(crate) request: LoadRequest,
 }
 
 /// Fully resolved official conformance operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConformanceAction {
+pub(crate) enum ConformanceAction {
     Run {
         lanes: Vec<SemanticLane>,
         client_versions: Vec<String>,
@@ -115,7 +115,7 @@ pub enum ConformanceAction {
 
 /// Fully resolved manual debugging operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DebugAction {
+pub(crate) enum DebugAction {
     Inspect {
         topology: StackMode,
         protocol_version: ProtocolVersion,
@@ -134,7 +134,7 @@ pub enum DebugAction {
 ///
 /// Returns an error when a command needs `CF_MCP_STACK_MODE` and its value is
 /// neither `controlplane` nor `dataplane`.
-pub fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
+pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
     match cli.command {
         Command::Stack(args) => resolve_stack(args.command, environment).map(Action::Stack),
         Command::Probe(args) => {

@@ -7,14 +7,13 @@ use cf_integration::conformance::fixture::{
     OFFICIAL_CONFORMANCE_REPOSITORY, OFFICIAL_CONFORMANCE_REVISION, OFFICIAL_CONFORMANCE_SERVER_ID,
 };
 use cf_integration::conformance::results::{
-    CheckStatus, ComparisonClassification, ComparisonFixtureTrust, ComparisonReport,
-    ConformanceCheck, ConformanceFixtureMetadata, ConformanceResults, ConformanceRunMetadata,
+    CheckStatus, ComparisonClassification, ComparisonReport, ConformanceCheck,
+    ConformanceFixtureMetadata, ConformanceResults, ConformanceRunMetadata,
     ConformanceScenarioResult, ConformanceServerEra, DEFAULT_CONFORMANCE_SUITE,
     DEFAULT_MCP_SPEC_VERSION, OFFICIAL_CONFORMANCE_PACKAGE, ScenarioComparison, ScenarioOutcome,
-    SemanticLane, SpecReference, classify_outcomes, compare_result_sets_with_fixture_trust,
-    expected_server_scenarios, is_trusted_official_fixture, load_server_results,
-    official_server_command, render_comparison_markdown, validate_server_scenario_set,
-    write_comparison_report,
+    SemanticLane, SpecReference, classify_outcomes, compare_result_sets, expected_server_scenarios,
+    is_trusted_official_fixture, load_server_results, official_server_command,
+    render_comparison_markdown, validate_server_scenario_set, write_comparison_report,
 };
 
 const SPEC_REFERENCE: &str =
@@ -97,7 +96,7 @@ fn metadata_roundtrips_exact_fixture_provenance() {
         client_version: DEFAULT_MCP_SPEC_VERSION.to_owned(),
         server_era: ConformanceServerEra::Legacy,
         suite: DEFAULT_CONFORMANCE_SUITE.to_owned(),
-        fixture: Some(fixture_metadata()),
+        fixture: fixture_metadata(),
     };
 
     let serialized = serde_json::to_vec(&metadata).expect("metadata should serialize");
@@ -106,7 +105,7 @@ fn metadata_roundtrips_exact_fixture_provenance() {
 
     assert_eq!(roundtrip, metadata);
     assert_eq!(roundtrip.server_era, ConformanceServerEra::Legacy);
-    assert!(is_trusted_official_fixture(roundtrip.fixture.as_ref()));
+    assert!(is_trusted_official_fixture(&roundtrip.fixture));
 }
 
 #[test]
@@ -115,7 +114,8 @@ fn metadata_without_an_explicit_server_era_is_rejected() {
         "oracle": OFFICIAL_CONFORMANCE_PACKAGE,
         "target": "fixture direct",
         "client_version": "2025-11-25",
-        "suite": "all"
+        "suite": "all",
+        "fixture": fixture_metadata()
     }))
     .expect_err("metadata must identify the server era")
     .to_string();
@@ -124,10 +124,24 @@ fn metadata_without_an_explicit_server_era_is_rejected() {
 }
 
 #[test]
+fn metadata_without_fixture_provenance_is_rejected() {
+    let error = serde_json::from_value::<ConformanceRunMetadata>(serde_json::json!({
+        "oracle": OFFICIAL_CONFORMANCE_PACKAGE,
+        "target": "fixture direct",
+        "client_version": "2025-11-25",
+        "server_era": "legacy",
+        "suite": "all"
+    }))
+    .expect_err("fixture provenance is mandatory")
+    .to_string();
+
+    assert!(error.contains("fixture"));
+}
+
+#[test]
 fn fixture_trust_requires_every_pinned_identity() {
     let exact = fixture_metadata();
-    assert!(is_trusted_official_fixture(Some(&exact)));
-    assert!(!is_trusted_official_fixture(None));
+    assert!(is_trusted_official_fixture(&exact));
     for mismatch in [
         ConformanceFixtureMetadata {
             repository: "https://example.test/untrusted".to_owned(),
@@ -142,7 +156,7 @@ fn fixture_trust_requires_every_pinned_identity() {
             ..exact
         },
     ] {
-        assert!(!is_trusted_official_fixture(Some(&mismatch)));
+        assert!(!is_trusted_official_fixture(&mismatch));
     }
 }
 
@@ -267,7 +281,7 @@ fn scenario_outcomes_preserve_failure_warning_and_unknown_precedence() {
 }
 
 #[test]
-fn trusted_fixture_turns_fixture_shaped_gateway_failures_into_gateway_failures() {
+fn pinned_fixture_turns_fixture_shaped_gateway_failures_into_gateway_failures() {
     let mut missing = check("missing", CheckStatus::Failure);
     missing.error_message = Some("Tool not found: test_simple_tool".to_owned());
     let result = ConformanceScenarioResult {
@@ -277,10 +291,7 @@ fn trusted_fixture_turns_fixture_shaped_gateway_failures_into_gateway_failures()
     };
 
     assert_eq!(result.outcome(), ScenarioOutcome::FixtureFailure);
-    assert_eq!(
-        result.outcome_with_trusted_fixture(true),
-        ScenarioOutcome::NonCompliant
-    );
+    assert_eq!(result.gated_outcome(), ScenarioOutcome::NonCompliant);
 }
 
 #[test]
@@ -352,12 +363,7 @@ fn comparison_counts_raw_failures_without_expected_failure_suppression() {
     )]);
     let dataplane = results([result("scenario", [CheckStatus::Failure])]);
 
-    let compared = compare_result_sets_with_fixture_trust(
-        &fixture,
-        &controlplane,
-        &dataplane,
-        ComparisonFixtureTrust::default(),
-    );
+    let compared = compare_result_sets(&fixture, &controlplane, &dataplane);
 
     assert_eq!(compared.len(), 1);
     assert_eq!(
@@ -369,7 +375,7 @@ fn comparison_counts_raw_failures_without_expected_failure_suppression() {
 }
 
 #[test]
-fn comparison_uses_trust_independently_for_each_lane() {
+fn comparison_gates_fixture_shaped_failures_for_every_lane() {
     let mut missing = check("missing", CheckStatus::Failure);
     missing.error_message = Some("Tool not found: test_simple_tool".to_owned());
     let controlplane = results([ConformanceScenarioResult {
@@ -380,15 +386,7 @@ fn comparison_uses_trust_independently_for_each_lane() {
     let fixture = results([result("scenario", [CheckStatus::Success])]);
     let dataplane = results([result("scenario", [CheckStatus::Success])]);
 
-    let compared = compare_result_sets_with_fixture_trust(
-        &fixture,
-        &controlplane,
-        &dataplane,
-        ComparisonFixtureTrust {
-            built_in_data_plane: true,
-            ..ComparisonFixtureTrust::default()
-        },
-    );
+    let compared = compare_result_sets(&fixture, &controlplane, &dataplane);
 
     assert_eq!(
         compared[0].classification,
@@ -417,7 +415,7 @@ fn report_renders_raw_counts_and_no_expected_failure_column() {
         client_version: DEFAULT_MCP_SPEC_VERSION.to_owned(),
         server_era: ConformanceServerEra::Modern,
         suite: DEFAULT_CONFORMANCE_SUITE.to_owned(),
-        fixture: Some(fixture_metadata()),
+        fixture: fixture_metadata(),
         scenarios: vec![scenario],
     };
 

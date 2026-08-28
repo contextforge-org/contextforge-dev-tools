@@ -52,11 +52,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 
     pub(super) fn ensure_checkout(&self, request: &CheckoutRequest) -> AppResult<()> {
         let manager = CheckoutManager::new(&self.runner);
-        let mut warnings = Vec::new();
-        let result = manager.ensure(self.config.integration_dir(), request, &mut warnings);
-        for warning in warnings {
-            eprintln!("{}", OutputStyle::stderr().warning(&warning));
-        }
-        Ok(result.map(|_| ())?)
+        Ok(manager
+            .ensure(self.config.integration_dir(), request)
+            .map(|_| ())?)
     }
 }

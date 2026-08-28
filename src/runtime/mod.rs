@@ -18,11 +18,10 @@ use crate::conformance::fixture::{
     OFFICIAL_CONFORMANCE_SERVICE,
 };
 use crate::conformance::results::{
-    ComparisonFixtureTrust, ComparisonReport, ConformanceFixtureMetadata, ConformanceResults,
-    ConformanceRunMetadata, ConformanceServerEra, ConformanceTarget,
-    compare_result_sets_with_fixture_trust, expected_server_scenarios, is_trusted_official_fixture,
-    load_server_results, official_server_command, validate_server_scenario_set,
-    write_comparison_report,
+    ComparisonReport, ConformanceFixtureMetadata, ConformanceResults, ConformanceRunMetadata,
+    ConformanceServerEra, SemanticLane, compare_result_sets, expected_server_scenarios,
+    is_trusted_official_fixture, load_server_results, official_server_command,
+    validate_server_scenario_set, write_comparison_report,
 };
 use crate::infrastructure::checkout::{CheckoutManager, CheckoutRequest};
 use crate::infrastructure::compose::{ComposeProject, validate_integration_contract};
@@ -83,14 +82,14 @@ impl<R> RuntimeContext<R> {
 }
 
 /// Small CLI action dispatcher backed by concrete workflow owners.
-pub struct RuntimeDispatcher<R> {
+pub(crate) struct RuntimeDispatcher<R> {
     context: RuntimeContext<R>,
 }
 
 impl<R> RuntimeDispatcher<R> {
     /// Creates a dispatcher without starting any process.
     #[must_use]
-    pub fn new(config: AppConfig, runner: R) -> Self {
+    pub(crate) fn new(config: AppConfig, runner: R) -> Self {
         Self {
             context: RuntimeContext::new(config, runner),
         }
@@ -105,7 +104,7 @@ struct ConformanceWorkflow<'a, R>(&'a RuntimeContext<R>);
 
 impl<R: ProcessRunner> RuntimeDispatcher<R> {
     /// Dispatches one fully resolved operation through its workflow owner.
-    pub async fn execute(&self, action: Action) -> AppResult<()> {
+    pub(crate) async fn execute(&self, action: Action) -> AppResult<()> {
         match action {
             Action::Stack(action) => StackWorkflow(&self.context).execute(action).await,
             Action::Probe {
@@ -169,7 +168,7 @@ impl<'a, R: ProcessRunner> PerformanceWorkflow<'a, R> {
 impl<'a, R: ProcessRunner> LiveWorkflow<'a, R> {
     async fn execute(
         &self,
-        lane: ConformanceTarget,
+        lane: SemanticLane,
         group: LiveGroup,
         protocol_version: &ProtocolVersion,
     ) -> AppResult<()> {
