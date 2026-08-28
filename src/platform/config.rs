@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use uuid::Uuid;
 
+use crate::platform::assets::{contains_runtime_assets, materialize_runtime_assets};
+
 const ROOT_OVERRIDE: &str = "CF_INTEGRATION_ROOT";
-const COMPOSE_FILE: &str = "docker/docker-compose.cf-integration.yaml";
 const LOCAL_SECRETS_FILE: &str = "secrets.env";
 const REDACTED: &str = "<redacted>";
 
@@ -76,9 +77,9 @@ impl ImageSetting {
 
 /// Derived configuration used by integration commands.
 #[derive(Clone)]
-#[allow(dead_code)] // Retained for same-crate command modules added in later migration tasks.
 pub struct AppConfig {
-    root: PathBuf,
+    workspace_root: PathBuf,
+    asset_root: PathBuf,
     integration_dir: SourcedValue,
     controlplane_dir: SourcedValue,
     pub(crate) controlplane_repo: SourcedValue,
@@ -106,13 +107,25 @@ pub struct AppConfig {
     environment: LoadedEnvironment,
 }
 
-/// Configuration plus non-fatal environment loading warnings.
+/// Environment and workspace paths loaded before resolving an action.
 #[derive(Debug, Clone)]
-pub struct ConfigLoad {
-    /// Fully derived application configuration.
-    pub config: AppConfig,
-    /// Non-fatal `.env` parsing warnings.
-    pub warnings: Vec<String>,
+pub struct ConfigBootstrap {
+    workspace_root: PathBuf,
+    root_overridden: bool,
+    environment: LoadedEnvironment,
+}
+
+/// Filesystem resources required by a resolved action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfigRequirements {
+    runtime: bool,
+}
+
+impl ConfigRequirements {
+    /// Configuration for report and token operations that must not write files.
+    pub const READ_ONLY: Self = Self { runtime: false };
+    /// Configuration for operations backed by Compose or runtime scripts.
+    pub const RUNTIME: Self = Self { runtime: true };
 }
 
 impl fmt::Debug for SourcedValue {
@@ -150,7 +163,8 @@ impl fmt::Debug for AppConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("AppConfig")
-            .field("root", &REDACTED)
+            .field("workspace_root", &REDACTED)
+            .field("asset_root", &REDACTED)
             .field("controlplane_image", &self.controlplane_image)
             .field("dataplane_image", &self.dataplane_image)
             .field("environment", &self.environment)
@@ -177,16 +191,46 @@ impl LoadedEnvironment {
     }
 }
 
+impl ConfigBootstrap {
+    /// Loads process values and an optional workspace `.env` without writing files.
+    pub fn load(process: &Environment, cwd: &Path) -> Result<Self> {
+        let override_value = process
+            .get(OsStr::new(ROOT_OVERRIDE))
+            .filter(|value| !value.is_empty());
+        let workspace_root = override_value
+            .map(|value| absolute_path(cwd, value))
+            .unwrap_or_else(|| cwd.to_path_buf());
+        let environment = load_environment(&workspace_root, process)?;
+        Ok(Self {
+            workspace_root,
+            root_overridden: override_value.is_some(),
+            environment,
+        })
+    }
+
+    /// Returns the merged process and dotenv environment.
+    #[must_use]
+    pub fn environment(&self) -> &LoadedEnvironment {
+        &self.environment
+    }
+
+    /// Returns non-fatal dotenv parsing warnings.
+    #[must_use]
+    pub fn warnings(&self) -> &[String] {
+        self.environment.warnings()
+    }
+}
+
 impl AppConfig {
-    /// Loads the environment and derives configuration without global mutation.
+    /// Derives action-specific configuration from a side-effect-free bootstrap.
     ///
     /// # Errors
     ///
-    /// Returns an error when the repository root cannot be resolved or its
-    /// existing `.env` file cannot be read.
-    pub fn load(process: &Environment, executable: &Path, cwd: &Path) -> Result<ConfigLoad> {
-        let root = resolve_repository_root(process, executable, cwd)?;
-        let environment = load_environment(&root, process)?;
+    /// Returns an error when required runtime assets or local secrets cannot be
+    /// prepared.
+    pub fn load(bootstrap: ConfigBootstrap, requirements: ConfigRequirements) -> Result<Self> {
+        let root = bootstrap.workspace_root;
+        let environment = bootstrap.environment;
 
         let integration_dir = resolved_path(
             &root,
@@ -196,6 +240,20 @@ impl AppConfig {
                 root.join(".integration").into_os_string(),
             ),
         );
+        let asset_root = if requirements.runtime {
+            if contains_runtime_assets(&root) {
+                root.clone()
+            } else if bootstrap.root_overridden {
+                bail!(
+                    "{ROOT_OVERRIDE}={} does not contain the required docker/ and scripts/ runtime assets",
+                    root.display()
+                );
+            } else {
+                materialize_runtime_assets(Path::new(&integration_dir.value))?
+            }
+        } else {
+            root.clone()
+        };
         let controlplane_dir = resolved_path(
             &root,
             shell_value(
@@ -239,8 +297,9 @@ impl AppConfig {
             "CF_CONTROLPLANE_PROJECT",
             OsString::from("cf-controlplane-only"),
         );
-        let local_secrets = if first_nonempty(&environment, "JWT_SECRET_KEY").is_none()
-            || first_nonempty(&environment, "AUTH_ENCRYPTION_SECRET").is_none()
+        let local_secrets = if requirements.runtime
+            && (first_nonempty(&environment, "JWT_SECRET_KEY").is_none()
+                || first_nonempty(&environment, "AUTH_ENCRYPTION_SECRET").is_none())
         {
             Some(load_or_create_local_secrets(Path::new(
                 &integration_dir.value,
@@ -250,6 +309,7 @@ impl AppConfig {
         };
         let jwt_secret_key = match first_nonempty(&environment, "JWT_SECRET_KEY") {
             Some(value) => value.clone(),
+            None if !requirements.runtime => default_value(""),
             None => default_value(
                 &local_secrets
                     .as_ref()
@@ -259,6 +319,7 @@ impl AppConfig {
         };
         let auth_encryption_secret = match first_nonempty(&environment, "AUTH_ENCRYPTION_SECRET") {
             Some(value) => value.clone(),
+            None if !requirements.runtime => default_value(""),
             None => default_value(
                 &local_secrets
                     .as_ref()
@@ -298,45 +359,47 @@ impl AppConfig {
         let locust_users = present_value(&environment, "LOCUST_USERS", "100");
         let locust_spawn_rate = present_value(&environment, "LOCUST_SPAWN_RATE", "10");
         let locust_run_time = present_value(&environment, "LOCUST_RUN_TIME", "5m");
-        let warnings = environment.warnings.clone();
-
-        Ok(ConfigLoad {
-            config: Self {
-                root,
-                integration_dir,
-                controlplane_dir,
-                controlplane_repo,
-                controlplane_ref,
-                dataplane_dir,
-                dataplane_repo,
-                dataplane_ref,
-                integration_project,
-                controlplane_project,
-                jwt_secret_key,
-                auth_encryption_secret,
-                controlplane_image,
-                dataplane_image,
-                dataplane_platform,
-                compose_build,
-                fast_time_server_id,
-                fast_time_expected_image,
-                base_url,
-                platform_admin_email,
-                platform_admin_password,
-                key_file_password,
-                locust_users,
-                locust_spawn_rate,
-                locust_run_time,
-                environment,
-            },
-            warnings,
+        Ok(Self {
+            workspace_root: root,
+            asset_root,
+            integration_dir,
+            controlplane_dir,
+            controlplane_repo,
+            controlplane_ref,
+            dataplane_dir,
+            dataplane_repo,
+            dataplane_ref,
+            integration_project,
+            controlplane_project,
+            jwt_secret_key,
+            auth_encryption_secret,
+            controlplane_image,
+            dataplane_image,
+            dataplane_platform,
+            compose_build,
+            fast_time_server_id,
+            fast_time_expected_image,
+            base_url,
+            platform_admin_email,
+            platform_admin_password,
+            key_file_password,
+            locust_users,
+            locust_spawn_rate,
+            locust_run_time,
+            environment,
         })
     }
 
-    /// Returns the resolved integration repository root.
+    /// Returns the directory used for dotenv, reports, and relative overrides.
     #[must_use]
     pub fn root(&self) -> &Path {
-        &self.root
+        &self.workspace_root
+    }
+
+    /// Returns the root containing Compose overlays and runtime scripts.
+    #[must_use]
+    pub fn asset_root(&self) -> &Path {
+        &self.asset_root
     }
 
     /// Returns the resolved integration runtime directory.
@@ -760,60 +823,6 @@ pub fn load_environment(root: &Path, process: &Environment) -> Result<LoadedEnvi
     Ok(LoadedEnvironment { values, warnings })
 }
 
-/// Resolves the integration repository root in documented precedence order.
-///
-/// # Errors
-///
-/// Returns an error when none of the candidate paths contains both repository
-/// marker files.
-pub fn resolve_repository_root(
-    process: &Environment,
-    executable: &Path,
-    cwd: &Path,
-) -> Result<PathBuf> {
-    resolve_repository_root_with_manifest(
-        process,
-        executable,
-        cwd,
-        Path::new(env!("CARGO_MANIFEST_DIR")),
-    )
-}
-
-fn resolve_repository_root_with_manifest(
-    process: &Environment,
-    executable: &Path,
-    cwd: &Path,
-    manifest_root: &Path,
-) -> Result<PathBuf> {
-    if let Some(raw) = process.get(OsStr::new(ROOT_OVERRIDE))
-        && !raw.is_empty()
-    {
-        let candidate = absolute_path(cwd, raw);
-        if is_repository_root(&candidate) {
-            return Ok(candidate);
-        }
-    }
-
-    if let Some(candidate) = executable.ancestors().find(|path| is_repository_root(path)) {
-        return Ok(candidate.to_path_buf());
-    }
-
-    if let Some(candidate) = cwd.ancestors().find(|path| is_repository_root(path)) {
-        return Ok(candidate.to_path_buf());
-    }
-
-    if let Some(candidate) = manifest_root
-        .ancestors()
-        .find(|path| is_repository_root(path))
-    {
-        return Ok(candidate.to_path_buf());
-    }
-
-    bail!(
-        "failed to resolve cf-integration repository root: no candidate contains Cargo.toml and {COMPOSE_FILE}"
-    )
-}
-
 /// Returns `raw` unchanged when absolute, otherwise joined to `root`.
 #[must_use]
 pub fn absolute_path(root: &Path, raw: &OsStr) -> PathBuf {
@@ -845,10 +854,6 @@ fn strip_outer_quotes(value: &str) -> &str {
     }
 }
 
-fn is_repository_root(path: &Path) -> bool {
-    path.join("Cargo.toml").is_file() && path.join(COMPOSE_FILE).is_file()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -861,18 +866,12 @@ mod tests {
     }
 
     fn repository_root() -> tempfile::TempDir {
-        let root = tempfile::tempdir().expect("temporary repository root should be created");
-        fs::write(root.path().join("Cargo.toml"), "[package]\n")
-            .expect("temporary Cargo manifest should be written");
-        fs::create_dir_all(root.path().join("docker"))
-            .expect("temporary docker directory should be created");
-        fs::write(root.path().join(COMPOSE_FILE), "services: {}\n")
-            .expect("temporary Compose file should be written");
-        root
+        tempfile::tempdir().expect("temporary repository root should be created")
     }
 
-    fn load_app_config(root: &Path, process: &Environment) -> ConfigLoad {
-        AppConfig::load(process, &root.join("target/debug/cf-integration"), root)
+    fn load_app_config(root: &Path, process: &Environment) -> AppConfig {
+        let bootstrap = ConfigBootstrap::load(process, root).expect("bootstrap should load");
+        AppConfig::load(bootstrap, ConfigRequirements::RUNTIME)
             .expect("application config should load")
     }
 
@@ -882,32 +881,24 @@ mod tests {
     }
 
     #[test]
-    fn repository_root_failure_describes_required_markers() {
+    fn read_only_config_does_not_create_runtime_state() {
         let outside = tempfile::tempdir().expect("temporary directory should be created");
-        let executable = outside.path().join("bin/cf-integration");
-        let cwd = outside.path().join("work/nested");
-        let invalid_manifest_root = outside.path().join("manifest");
+        let bootstrap = ConfigBootstrap::load(&Environment::new(), outside.path())
+            .expect("bootstrap should load");
+        let config = AppConfig::load(bootstrap, ConfigRequirements::READ_ONLY)
+            .expect("read-only config should resolve");
 
-        let error = resolve_repository_root_with_manifest(
-            &Environment::new(),
-            &executable,
-            &cwd,
-            &invalid_manifest_root,
-        )
-        .expect_err("invalid candidates should fail root resolution");
-
-        let message = error.to_string();
-        assert!(message.contains("Cargo.toml"));
-        assert!(message.contains(COMPOSE_FILE));
+        assert_eq!(config.root(), outside.path());
+        assert!(!outside.path().join(".integration").exists());
     }
 
     #[test]
     fn app_config_uses_documented_defaults() {
         let root = repository_root();
 
-        let config = load_app_config(root.path(), &Environment::new()).config;
+        let config = load_app_config(root.path(), &Environment::new());
 
-        assert_eq!(config.root, root.path());
+        assert_eq!(config.workspace_root, root.path());
         assert_sourced(
             &config.integration_dir,
             root.path().join(".integration").as_os_str(),
@@ -1044,7 +1035,7 @@ mod tests {
             ("CF_CONTROLPLANE_REF", ""),
         ]);
 
-        let config = load_app_config(root.path(), &process).config;
+        let config = load_app_config(root.path(), &process);
 
         assert_sourced(
             &config.controlplane_repo,
@@ -1084,9 +1075,9 @@ mod tests {
         let empty_image_local =
             environment(&[("IMAGE_LOCAL", ""), ("CF_CONTROLPLANE_VERSION", "edge")]);
 
-        let primary_config = load_app_config(root.path(), &primary).config;
-        let local_config = load_app_config(root.path(), &image_local).config;
-        let empty_config = load_app_config(root.path(), &empty_image_local).config;
+        let primary_config = load_app_config(root.path(), &primary);
+        let local_config = load_app_config(root.path(), &image_local);
+        let empty_config = load_app_config(root.path(), &empty_image_local);
 
         assert_eq!(
             primary_config.controlplane_image.resolved,
@@ -1110,8 +1101,8 @@ mod tests {
     fn generated_local_secrets_are_stable_across_config_loads() {
         let root = repository_root();
 
-        let first = load_app_config(root.path(), &Environment::new()).config;
-        let second = load_app_config(root.path(), &Environment::new()).config;
+        let first = load_app_config(root.path(), &Environment::new());
+        let second = load_app_config(root.path(), &Environment::new());
 
         assert_eq!(first.jwt_secret_key, second.jwt_secret_key);
         assert_eq!(first.auth_encryption_secret, second.auth_encryption_secret);
@@ -1134,7 +1125,7 @@ mod tests {
             ),
         ]);
 
-        let config = load_app_config(root.path(), &process).config;
+        let config = load_app_config(root.path(), &process);
 
         assert_sourced(
             &config.jwt_secret_key,
@@ -1160,10 +1151,10 @@ mod tests {
         let published = environment(&[("CF_DATAPLANE_VERSION", "2.0.0")]);
         let explicit = environment(&[("CF_DATAPLANE_IMAGE", "direct/image:tag")]);
 
-        let source_config = load_app_config(root.path(), &source).config;
-        let local_config = load_app_config(root.path(), &local).config;
-        let published_config = load_app_config(root.path(), &published).config;
-        let explicit_config = load_app_config(root.path(), &explicit).config;
+        let source_config = load_app_config(root.path(), &source);
+        let local_config = load_app_config(root.path(), &local);
+        let published_config = load_app_config(root.path(), &published);
+        let explicit_config = load_app_config(root.path(), &explicit);
 
         assert_eq!(
             source_config.dataplane_image.resolved,
@@ -1194,9 +1185,9 @@ mod tests {
         let legacy = environment(&[("FAST_TIME_IMAGE", "legacy/image:tag")]);
         let empty = environment(&[("CF_FAST_TIME_EXPECTED_IMAGE", ""), ("FAST_TIME_IMAGE", "")]);
 
-        let expected_config = load_app_config(root.path(), &expected).config;
-        let legacy_config = load_app_config(root.path(), &legacy).config;
-        let empty_config = load_app_config(root.path(), &empty).config;
+        let expected_config = load_app_config(root.path(), &expected);
+        let legacy_config = load_app_config(root.path(), &legacy);
+        let empty_config = load_app_config(root.path(), &empty);
 
         assert_sourced(
             &expected_config.fast_time_expected_image,
@@ -1229,8 +1220,8 @@ mod tests {
             ("PLATFORM_ADMIN_PASSWORD", "integration-password"),
         ]);
 
-        let direct_config = load_app_config(root.path(), &direct).config;
-        let fallback_config = load_app_config(root.path(), &port_and_admin).config;
+        let direct_config = load_app_config(root.path(), &direct);
+        let fallback_config = load_app_config(root.path(), &port_and_admin);
 
         assert_sourced(
             &direct_config.base_url,
@@ -1261,7 +1252,7 @@ mod tests {
             .expect("dotenv should be written");
         let process = environment(&[("LOCUST_USERS", "")]);
 
-        let config = load_app_config(root.path(), &process).config;
+        let config = load_app_config(root.path(), &process);
 
         assert_sourced(&config.locust_users, OsStr::new(""), ValueOrigin::Process);
         assert_sourced(

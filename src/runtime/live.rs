@@ -130,7 +130,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             .map(|value| value.value.as_os_str());
         add_live_protocol_environment(
             command,
-            &self.config.root().join("scripts/live_protocol"),
+            &self.config.asset_root().join("scripts/live_protocol"),
             inherited_python_path,
             protocol_version.as_str(),
         )

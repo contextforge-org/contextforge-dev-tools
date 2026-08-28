@@ -99,13 +99,13 @@ impl LocustCommand {
         let volume = volume_argument(&report_dir);
         let project = match mode {
             StackMode::Dataplane => ComposeProject::dataplane(
-                config.root(),
+                config.asset_root(),
                 config.controlplane_dir(),
                 config.integration_project().value.clone(),
                 !config.dataplane_ref().value.is_empty(),
             ),
             StackMode::Controlplane => ComposeProject::controlplane(
-                config.root(),
+                config.asset_root(),
                 config.controlplane_dir(),
                 config.controlplane_project().value.clone(),
                 controlplane_sso_enabled(config),
@@ -124,7 +124,7 @@ impl LocustCommand {
                 OsString::from("locust"),
             ]),
             StackMode::Controlplane => {
-                let adapter_volume = adapter_volume_argument(config.root());
+                let adapter_volume = adapter_volume_argument(config.asset_root());
                 let arguments = vec![
                     OsString::from("run"),
                     OsString::from("--rm"),
@@ -162,7 +162,7 @@ impl LocustCommand {
         };
 
         let mut command = command
-            .env("CF_INTEGRATION_ROOT", config.root().as_os_str())
+            .env("CF_INTEGRATION_ROOT", config.asset_root().as_os_str())
             .env("CF_INTEGRATION_DIR", config.integration_dir().as_os_str())
             .env("MCP_STACK_MODE", mode_name)
             .env("MCPGATEWAY_BEARER_TOKEN", bearer_token)

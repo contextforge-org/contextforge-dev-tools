@@ -36,6 +36,18 @@ pub enum Action {
     Debug(DebugAction),
 }
 
+impl Action {
+    /// Returns whether this operation needs Compose overlays or runtime scripts.
+    #[must_use]
+    pub const fn requires_runtime_assets(&self) -> bool {
+        !matches!(
+            self,
+            Self::Conformance(ConformanceAction::Report { .. })
+                | Self::Debug(DebugAction::Token { .. })
+        )
+    }
+}
+
 /// Fully resolved stack operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StackAction {

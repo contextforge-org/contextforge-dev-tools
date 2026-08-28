@@ -1,15 +1,12 @@
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use cf_integration::platform::config::{
-    AppConfig, ConfigLoad, Environment, ValueOrigin, absolute_path, load_environment,
-    resolve_repository_root,
+    AppConfig, ConfigBootstrap, ConfigRequirements, Environment, ValueOrigin, absolute_path,
+    load_environment,
 };
 
-fn workspace_root() -> &'static Path {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-}
 use tempfile::TempDir;
 
 const ROOT_OVERRIDE: &str = "CF_INTEGRATION_ROOT";
@@ -36,15 +33,18 @@ fn repository_root() -> TempDir {
     root
 }
 
-fn nested_path(root: &Path, suffix: &str) -> PathBuf {
-    let path = root.join(suffix);
-    fs::create_dir_all(&path).expect("nested temporary directory should be created");
-    path
+#[derive(Debug)]
+struct TestConfigLoad {
+    config: AppConfig,
+    warnings: Vec<String>,
 }
 
-fn load_app_config(root: &Path, process: &Environment) -> ConfigLoad {
-    AppConfig::load(process, &root.join("target/debug/cf-integration"), root)
-        .expect("application config should load")
+fn load_app_config(root: &Path, process: &Environment) -> TestConfigLoad {
+    let bootstrap = ConfigBootstrap::load(process, root).expect("bootstrap should load");
+    let warnings = bootstrap.warnings().to_vec();
+    let config = AppConfig::load(bootstrap, ConfigRequirements::RUNTIME)
+        .expect("application config should load");
+    TestConfigLoad { config, warnings }
 }
 
 #[test]
@@ -221,76 +221,48 @@ fn absolute_path_keeps_absolute_values_unchanged() {
 }
 
 #[test]
-fn repository_root_prefers_process_override() {
+fn workspace_root_prefers_process_override() {
     let process_root = repository_root();
-    let executable_root = repository_root();
     let cwd_root = repository_root();
-    let executable = executable_root.path().join("bin/cf-integration");
-    let cwd = nested_path(cwd_root.path(), "work/nested");
     let process = Environment::from([(
         OsString::from(ROOT_OVERRIDE),
         process_root.path().as_os_str().to_owned(),
     )]);
 
-    let resolved = resolve_repository_root(&process, &executable, &cwd)
-        .expect("process repository root should resolve");
+    let bootstrap =
+        ConfigBootstrap::load(&process, cwd_root.path()).expect("bootstrap should load");
+    let config = AppConfig::load(bootstrap, ConfigRequirements::READ_ONLY)
+        .expect("read-only config should resolve");
 
-    assert_eq!(resolved, process_root.path());
+    assert_eq!(config.root(), process_root.path());
 }
 
 #[test]
-fn repository_root_uses_executable_ancestor_before_cwd() {
-    let executable_root = repository_root();
-    let cwd_root = repository_root();
-    let executable = executable_root.path().join("target/debug/cf-integration");
-    let cwd = nested_path(cwd_root.path(), "work/nested");
-
-    let resolved = resolve_repository_root(&Environment::new(), &executable, &cwd)
-        .expect("executable ancestor should resolve");
-
-    assert_eq!(resolved, executable_root.path());
-}
-
-#[test]
-fn repository_root_uses_cwd_ancestor_when_executable_has_no_root() {
+fn workspace_root_defaults_to_cwd_without_writing_files() {
     let outside = tempfile::tempdir().expect("temporary directory should be created");
-    let cwd_root = repository_root();
-    let executable = outside.path().join("bin/cf-integration");
-    let cwd = nested_path(cwd_root.path(), "work/nested");
+    let bootstrap =
+        ConfigBootstrap::load(&Environment::new(), outside.path()).expect("bootstrap should load");
+    let config = AppConfig::load(bootstrap, ConfigRequirements::READ_ONLY)
+        .expect("read-only config should resolve");
 
-    let resolved = resolve_repository_root(&Environment::new(), &executable, &cwd)
-        .expect("cwd ancestor should resolve");
-
-    assert_eq!(resolved, cwd_root.path());
+    assert_eq!(config.root(), outside.path());
+    assert!(!outside.path().join(".integration").exists());
 }
 
 #[test]
-fn repository_root_uses_validated_compile_time_manifest_fallback() {
-    let outside = tempfile::tempdir().expect("temporary directory should be created");
-    let executable = outside.path().join("bin/cf-integration");
-    let cwd = nested_path(outside.path(), "work/nested");
-
-    let resolved = resolve_repository_root(&Environment::new(), &executable, &cwd)
-        .expect("compile-time manifest root should resolve");
-
-    assert_eq!(resolved, workspace_root());
-}
-
-#[test]
-fn invalid_process_override_falls_through_to_executable_ancestor() {
+fn invalid_explicit_runtime_root_fails_closed() {
     let invalid_root = tempfile::tempdir().expect("temporary directory should be created");
-    let executable_root = repository_root();
-    let executable = executable_root.path().join("target/debug/cf-integration");
     let outside = tempfile::tempdir().expect("temporary directory should be created");
     let process = Environment::from([(
         OsString::from(ROOT_OVERRIDE),
         invalid_root.path().as_os_str().to_owned(),
     )]);
 
-    let resolved = resolve_repository_root(&process, &executable, outside.path())
-        .expect("invalid process override should fall through");
+    let bootstrap = ConfigBootstrap::load(&process, outside.path()).expect("bootstrap should load");
+    let error = AppConfig::load(bootstrap, ConfigRequirements::RUNTIME)
+        .expect_err("an explicit root without assets must fail");
 
-    assert_eq!(resolved, executable_root.path());
+    assert!(error.to_string().contains(ROOT_OVERRIDE));
 }
 
 #[test]

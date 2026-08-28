@@ -5,7 +5,9 @@ use std::path::Path;
 
 use cf_integration::load::{LoadRequest, LoadSettings, LocustCommand};
 use cf_integration::platform::StackMode;
-use cf_integration::platform::config::{AppConfig, Environment};
+use cf_integration::platform::config::{
+    AppConfig, ConfigBootstrap, ConfigRequirements, Environment,
+};
 use tempfile::TempDir;
 
 fn environment(values: &[(&str, &str)]) -> Environment {
@@ -34,9 +36,8 @@ fn repository_root(dotenv: Option<&str>) -> TempDir {
 }
 
 fn config(root: &Path, process: &Environment) -> AppConfig {
-    AppConfig::load(process, &root.join("target/debug/cf-integration"), root)
-        .expect("application config should load")
-        .config
+    let bootstrap = ConfigBootstrap::load(process, root).expect("bootstrap should load");
+    AppConfig::load(bootstrap, ConfigRequirements::RUNTIME).expect("application config should load")
 }
 
 fn args(smoke: bool) -> LoadRequest {
@@ -163,6 +164,7 @@ fn dataplane_locust_command_has_exact_compose_shape_and_environment() {
     .expect("dataplane Locust command should build");
 
     let integration_dir = root.path().join(".integration");
+    let asset_root = config.asset_root();
     let report_dir = integration_dir.join("reports/load/dataplane/locust");
     assert_eq!(run.report_dir(), report_dir);
     assert!(run.report_dir().is_dir());
@@ -177,15 +179,15 @@ fn dataplane_locust_command_has_exact_compose_shape_and_environment() {
                 .join("mcp-context-forge/docker-compose.yml")
                 .into_os_string(),
             OsString::from("-f"),
-            root.path()
+            asset_root
                 .join("docker/docker-compose.cf-controlplane-build-labels.yaml")
                 .into_os_string(),
             OsString::from("-f"),
-            root.path()
+            asset_root
                 .join("docker/docker-compose.cf-dataplane.yaml")
                 .into_os_string(),
             OsString::from("-f"),
-            root.path()
+            asset_root
                 .join("docker/docker-compose.cf-integration.yaml")
                 .into_os_string(),
             OsString::from("--profile"),
@@ -201,7 +203,7 @@ fn dataplane_locust_command_has_exact_compose_shape_and_environment() {
 
     let expected_environment = HashMap::from([
         ("CF_INTEGRATION_DIR", integration_dir.as_os_str()),
-        ("CF_INTEGRATION_ROOT", root.path().as_os_str()),
+        ("CF_INTEGRATION_ROOT", asset_root.as_os_str()),
         ("LOCUST_LOCUSTFILE", OsStr::new("locustfile_mcp.py")),
         ("LOCUST_MODE", OsStr::new("headless")),
         ("LOCUST_REQUEST_TIMEOUT_SECONDS", OsStr::new("60")),

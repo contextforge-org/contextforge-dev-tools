@@ -278,6 +278,29 @@ fn conformance_report_is_official_only() {
 }
 
 #[test]
+fn only_report_and_token_actions_skip_runtime_assets() {
+    let report = action(&["cf-integration", "conformance", "report"], &[]);
+    let token = action(
+        &["cf-integration", "debug", "token", "--kind", "admin"],
+        &[],
+    );
+    let stack = action(
+        &[
+            "cf-integration",
+            "stack",
+            "status",
+            "--topology",
+            "dataplane",
+        ],
+        &[],
+    );
+
+    assert!(!report.requires_runtime_assets());
+    assert!(!token.requires_runtime_assets());
+    assert!(stack.requires_runtime_assets());
+}
+
+#[test]
 fn debug_token_and_inspector_remain_explicit_non_gate_operations() {
     assert_eq!(
         action(

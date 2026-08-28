@@ -453,7 +453,7 @@ const fn gateway_topology(mode: StackMode) -> GatewayTopology {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use crate::platform::config::Environment;
+    use crate::platform::config::{ConfigBootstrap, ConfigRequirements, Environment};
     use crate::platform::process::SystemProcessRunner;
     use axum::Router;
     use axum::body::Body;
@@ -562,13 +562,9 @@ mod tests {
                 .iter()
                 .map(|(key, value)| (OsString::from(key), OsString::from(value))),
         );
-        AppConfig::load(
-            &environment,
-            &root.join("target/debug/cf-integration"),
-            root,
-        )
-        .expect("test application config should load")
-        .config
+        let bootstrap = ConfigBootstrap::load(&environment, root).expect("bootstrap should load");
+        AppConfig::load(bootstrap, ConfigRequirements::RUNTIME)
+            .expect("test application config should load")
     }
 
     #[tokio::test]

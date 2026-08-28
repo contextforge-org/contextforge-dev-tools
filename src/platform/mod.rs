@@ -1,5 +1,6 @@
 //! Source, process, configuration, Compose, and stack primitives.
 
+pub mod assets;
 pub mod checkout;
 pub mod compose;
 pub mod config;

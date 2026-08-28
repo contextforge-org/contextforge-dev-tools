@@ -193,29 +193,29 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
     pub(super) fn compose_project(&self, mode: StackMode) -> ComposeProject {
         let project = match mode {
             StackMode::Dataplane => ComposeProject::dataplane(
-                self.config.root(),
+                self.config.asset_root(),
                 self.config.controlplane_dir(),
                 self.config.integration_project().value.clone(),
                 !self.config.dataplane_ref().value.is_empty(),
             ),
             StackMode::Controlplane => ComposeProject::controlplane(
-                self.config.root(),
+                self.config.asset_root(),
                 self.config.controlplane_dir(),
                 self.config.controlplane_project().value.clone(),
                 self.environment_flag("CONTROLPLANE_ENABLE_SSO", false),
             ),
         };
-        project.with_conformance_overlay(self.config.root())
+        project.with_conformance_overlay(self.config.asset_root())
     }
 
     pub(super) fn conformance_compose_project(&self, mode: StackMode) -> ComposeProject {
         self.conformance_runtime_project(mode)
-            .with_conformance_fixture(self.config.root())
+            .with_conformance_fixture(self.config.asset_root())
     }
 
     fn conformance_runtime_project(&self, mode: StackMode) -> ComposeProject {
         self.compose_project(mode)
-            .with_conformance_runtime(self.config.root())
+            .with_conformance_runtime(self.config.asset_root())
     }
 
     pub(super) fn compose_environment(
@@ -236,7 +236,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             }
         }
         command = command
-            .env("CF_INTEGRATION_ROOT", self.config.root().as_os_str())
+            .env("CF_INTEGRATION_ROOT", self.config.asset_root().as_os_str())
             .env(
                 "CF_INTEGRATION_DIR",
                 self.config.integration_dir().as_os_str(),
@@ -722,7 +722,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                 let project = self
                     .compose_project(mode)
                     .with_profiles(["testing", "inspector", "sso"])
-                    .with_conformance_fixture(self.config.root());
+                    .with_conformance_fixture(self.config.asset_root());
                 let command = StackCommandPlan::cleanup(project, kind);
                 match self.compose_environment(command.command().clone(), mode, false) {
                     Ok(command) => {
