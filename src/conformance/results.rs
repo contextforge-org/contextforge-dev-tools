@@ -24,6 +24,40 @@ use crate::conformance::profile::{
 
 /// Default official server scenario suite.
 pub(crate) const DEFAULT_CONFORMANCE_SUITE: &str = "all";
+/// Client scenarios implemented by the external dataplane conformance driver.
+pub(crate) const DEFAULT_CLIENT_CONFORMANCE_SCENARIOS: &[&str] = &[
+    "tools_call",
+    "request-metadata",
+    "http-standard-headers",
+    "http-custom-headers",
+];
+
+/// Direction exercised by one official conformance run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ConformanceDirection {
+    /// The official client sends requests to a server implementation.
+    Server,
+    /// A client implementation sends requests to official scenario servers.
+    Client,
+}
+
+impl ConformanceDirection {
+    /// Stable artifact and report label.
+    #[must_use]
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Server => "server",
+            Self::Client => "client",
+        }
+    }
+}
+
+impl fmt::Display for ConformanceDirection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.label())
+    }
+}
 
 /// Exact provenance for the backing server used by an official run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +79,8 @@ pub(crate) struct ConformanceRunMetadata {
     pub(crate) oracle: String,
     /// Stack label exercised by this artifact.
     pub(crate) target: String,
+    /// Whether the gateway was the MCP server or MCP client under test.
+    pub(crate) direction: ConformanceDirection,
     /// MCP protocol revision used by the official conformance client.
     pub(crate) client_version: String,
     /// Protocol era exposed by the upstream fixture server.
@@ -267,6 +303,35 @@ pub(crate) fn official_server_command(
         .arg(spec_version)
         .arg("--expected-failures")
         .arg(expected_failures.as_os_str().to_owned())
+        .arg("--output-dir")
+        .arg(output_dir.as_os_str().to_owned())
+        .arg("--verbose")
+}
+
+/// Builds one exact official client-conformance scenario invocation.
+#[must_use = "a command specification does nothing until a process runner executes it"]
+pub(crate) fn official_client_command(
+    client_command: &str,
+    scenario: &str,
+    spec_version: &str,
+    expected_failures: &Path,
+    output_dir: &Path,
+) -> CommandSpec {
+    CommandSpec::new("npx")
+        .clear_environment()
+        .arg("-y")
+        .arg(OFFICIAL_CONFORMANCE_PACKAGE)
+        .arg("client")
+        .arg("--command")
+        .arg(client_command)
+        .arg("--scenario")
+        .arg(scenario)
+        .arg("--spec-version")
+        .arg(spec_version)
+        .arg("--expected-failures")
+        .arg(expected_failures.as_os_str().to_owned())
+        .arg("--timeout")
+        .arg("60000")
         .arg("--output-dir")
         .arg(output_dir.as_os_str().to_owned())
         .arg("--verbose")
@@ -518,7 +583,20 @@ pub(crate) fn validate_server_scenario_set(
     suite: &str,
     spec_version: &str,
 ) -> Result<()> {
-    let expected = expected_server_scenarios(suite, spec_version)?;
+    validate_scenario_set(
+        results,
+        expected_server_scenarios(suite, spec_version)?,
+        &format!("server suite {suite:?}"),
+        spec_version,
+    )
+}
+
+fn validate_scenario_set(
+    results: &ConformanceResults,
+    expected: BTreeSet<&str>,
+    selection: &str,
+    spec_version: &str,
+) -> Result<()> {
     let actual = results
         .scenarios
         .keys()
@@ -533,10 +611,36 @@ pub(crate) fn validate_server_scenario_set(
         .collect::<Vec<_>>();
     if !missing.is_empty() || !unexpected.is_empty() || !empty_checks.is_empty() {
         bail!(
-            "official conformance scenario set is incomplete for suite {suite:?} and specification {spec_version:?}; missing={missing:?}; unexpected={unexpected:?}; empty_checks={empty_checks:?}"
+            "official conformance scenario set is incomplete for {selection} and specification {spec_version:?}; missing={missing:?}; unexpected={unexpected:?}; empty_checks={empty_checks:?}"
         );
     }
     Ok(())
+}
+
+/// Returns the exact scoped client scenario set supported by the gateway driver.
+pub(crate) fn expected_client_scenarios(spec_version: &str) -> Result<BTreeSet<&'static str>> {
+    if spec_version != DEFAULT_MCP_SPEC_VERSION {
+        bail!(
+            "external dataplane client conformance supports specification {DEFAULT_MCP_SPEC_VERSION:?}, not {spec_version:?}"
+        );
+    }
+    Ok(DEFAULT_CLIENT_CONFORMANCE_SCENARIOS
+        .iter()
+        .copied()
+        .collect())
+}
+
+/// Requires parsed client results to exactly cover the scoped gateway scenarios.
+pub(crate) fn validate_client_scenario_set(
+    results: &ConformanceResults,
+    spec_version: &str,
+) -> Result<()> {
+    validate_scenario_set(
+        results,
+        expected_client_scenarios(spec_version)?,
+        "scoped client suite",
+        spec_version,
+    )
 }
 
 /// Recursively parses official `server-*/checks.json` result files.
@@ -544,6 +648,15 @@ pub(crate) fn validate_server_scenario_set(
 /// Symlinks are never followed, scenario directory names are strictly validated,
 /// and stored provenance is relative to `root`.
 pub(crate) fn load_server_results(root: &Path) -> Result<ConformanceResults> {
+    load_results(root, Some("server-"))
+}
+
+/// Recursively parses official client-scenario `checks.json` result files.
+pub(crate) fn load_client_results(root: &Path) -> Result<ConformanceResults> {
+    load_results(root, None)
+}
+
+fn load_results(root: &Path, directory_prefix: Option<&str>) -> Result<ConformanceResults> {
     let root = fs::canonicalize(root)
         .with_context(|| format!("failed to resolve conformance results root {root:?}"))?;
     if !root.is_dir() {
@@ -563,10 +676,10 @@ pub(crate) fn load_server_results(root: &Path) -> Result<ConformanceResults> {
             .file_name()
             .and_then(OsStr::to_str)
             .context("official result directory name is not valid UTF-8")?;
-        if !directory_name.starts_with("server-") {
+        if directory_prefix.is_some_and(|prefix| !directory_name.starts_with(prefix)) {
             continue;
         }
-        let scenario = scenario_from_result_directory(directory_name)?;
+        let scenario = scenario_from_result_directory(directory_name, directory_prefix)?;
         let metadata = fs::metadata(&path)
             .with_context(|| format!("failed to inspect official result file {path:?}"))?;
         if metadata.len() > MAX_CHECKS_FILE_BYTES {
@@ -624,10 +737,13 @@ fn collect_check_files(directory: &Path, output: &mut Vec<PathBuf>) -> Result<()
     Ok(())
 }
 
-fn scenario_from_result_directory(directory: &str) -> Result<String> {
-    let rest = directory
-        .strip_prefix("server-")
-        .context("official result directory must begin with server-")?;
+fn scenario_from_result_directory(directory: &str, prefix: Option<&str>) -> Result<String> {
+    let rest = match prefix {
+        Some(prefix) => directory
+            .strip_prefix(prefix)
+            .with_context(|| format!("official result directory must begin with {prefix}"))?,
+        None => directory,
+    };
     if rest.len() <= 25 {
         bail!("official result directory {directory:?} has no scenario or timestamp");
     }

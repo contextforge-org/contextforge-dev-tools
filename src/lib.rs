@@ -27,7 +27,17 @@ use runtime::RuntimeDispatcher;
 
 /// Runs the CLI using the current process arguments and environment.
 pub async fn run() -> ExitCode {
-    let cli = Cli::parse();
+    let arguments = std::env::args_os().collect::<Vec<_>>();
+    if conformance::client::is_internal_client_invocation(&arguments) {
+        return match conformance::client::run_internal_client(&arguments).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{}", OutputStyle::stderr().failure(&format!("{error:#}")));
+                ExitCode::FAILURE
+            }
+        };
+    }
+    let cli = Cli::parse_from(arguments);
     let environment: Environment = std::env::vars_os().collect();
     let cwd = match std::env::current_dir() {
         Ok(path) => path,

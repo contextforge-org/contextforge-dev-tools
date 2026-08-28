@@ -8,7 +8,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::results::{CheckStatus, ConformanceResults, ConformanceServerEra, SemanticLane};
+use super::results::{
+    CheckStatus, ConformanceDirection, ConformanceResults, ConformanceServerEra, SemanticLane,
+};
 
 const MAX_BASELINE_BYTES: u64 = 1024 * 1024;
 
@@ -103,6 +105,46 @@ pub(crate) fn evaluate_baselines(
     server_era: ConformanceServerEra,
     bless: bool,
 ) -> Result<BaselineEvaluation> {
+    evaluate_direction_baselines(
+        results,
+        selected_lanes,
+        baseline_root,
+        client_version,
+        server_era,
+        ConformanceDirection::Server,
+        bless,
+    )
+}
+
+/// Evaluates scoped client-conformance results without fixture subtraction.
+pub(crate) fn evaluate_client_baselines(
+    results: &BTreeMap<SemanticLane, ConformanceResults>,
+    selected_lanes: &[SemanticLane],
+    baseline_root: &Path,
+    client_version: &str,
+    server_era: ConformanceServerEra,
+    bless: bool,
+) -> Result<BaselineEvaluation> {
+    evaluate_direction_baselines(
+        results,
+        selected_lanes,
+        baseline_root,
+        client_version,
+        server_era,
+        ConformanceDirection::Client,
+        bless,
+    )
+}
+
+fn evaluate_direction_baselines(
+    results: &BTreeMap<SemanticLane, ConformanceResults>,
+    selected_lanes: &[SemanticLane],
+    baseline_root: &Path,
+    client_version: &str,
+    server_era: ConformanceServerEra,
+    direction: ConformanceDirection,
+    bless: bool,
+) -> Result<BaselineEvaluation> {
     let selected = selected_lanes.iter().copied().collect::<BTreeSet<_>>();
     if selected.is_empty() {
         bail!("at least one conformance lane must be selected");
@@ -113,7 +155,10 @@ pub(crate) fn evaluate_baselines(
             SemanticLane::BuiltInDataPlane | SemanticLane::ExternalDataPlane
         )
     });
-    if routed_selected && !results.contains_key(&SemanticLane::FixtureDirect) {
+    if direction == ConformanceDirection::Server
+        && routed_selected
+        && !results.contains_key(&SemanticLane::FixtureDirect)
+    {
         bail!("missing fixture-direct lane required to gate routed findings");
     }
     for lane in &selected {
@@ -138,10 +183,11 @@ pub(crate) fn evaluate_baselines(
                 .get(&lane)
                 .ok_or_else(|| anyhow!("missing selected conformance lane {}", lane.slug()))?,
         )?;
-        if lane != SemanticLane::FixtureDirect {
+        if direction == ConformanceDirection::Server && lane != SemanticLane::FixtureDirect {
             actual = actual.difference(&direct).cloned().collect();
         }
-        let path = baseline_path(baseline_root, client_version, server_era, lane);
+        let path =
+            direction_baseline_path(baseline_root, client_version, server_era, direction, lane);
         let loaded = read_baseline_optional(&path)?;
         if loaded.is_none() && !bless {
             bail!("missing conformance baseline {}", path.display());
@@ -160,7 +206,7 @@ pub(crate) fn evaluate_baselines(
         });
         if bless {
             updates.push(BaselineUpdate {
-                relative_path: baseline_relative_path(client_version, server_era, lane),
+                relative_path: baseline_relative_path(client_version, server_era, direction, lane),
                 document: ConformanceBaseline {
                     findings: actual.into_iter().collect(),
                 },
@@ -180,11 +226,44 @@ pub(crate) fn write_baseline_report(
     server_era: ConformanceServerEra,
     comparison: &BaselineComparison,
 ) -> Result<()> {
+    write_direction_baseline_report(
+        path,
+        client_version,
+        server_era,
+        ConformanceDirection::Server,
+        comparison,
+    )
+}
+
+/// Writes one deterministic machine-readable client-lane report.
+pub(crate) fn write_client_baseline_report(
+    path: &Path,
+    client_version: &str,
+    server_era: ConformanceServerEra,
+    comparison: &BaselineComparison,
+) -> Result<()> {
+    write_direction_baseline_report(
+        path,
+        client_version,
+        server_era,
+        ConformanceDirection::Client,
+        comparison,
+    )
+}
+
+fn write_direction_baseline_report(
+    path: &Path,
+    client_version: &str,
+    server_era: ConformanceServerEra,
+    direction: ConformanceDirection,
+    comparison: &BaselineComparison,
+) -> Result<()> {
     #[derive(Serialize)]
     #[serde(deny_unknown_fields)]
     struct Report<'a> {
         client_version: &'a str,
         server_era: ConformanceServerEra,
+        direction: ConformanceDirection,
         lane: &'a str,
         actual: &'a [ScoredFinding],
         expected: &'a [ScoredFinding],
@@ -200,6 +279,7 @@ pub(crate) fn write_baseline_report(
     let source = yaml_serde::to_string(&Report {
         client_version,
         server_era,
+        direction,
         lane: comparison.lane.slug(),
         actual: &comparison.actual,
         expected: &comparison.expected,
@@ -339,23 +419,50 @@ fn scored_findings(results: &ConformanceResults) -> Result<BTreeSet<ScoredFindin
     Ok(findings)
 }
 
+#[cfg(test)]
 fn baseline_path(
     root: &Path,
     client_version: &str,
     server_era: ConformanceServerEra,
     lane: SemanticLane,
 ) -> PathBuf {
-    root.join(baseline_relative_path(client_version, server_era, lane))
+    direction_baseline_path(
+        root,
+        client_version,
+        server_era,
+        ConformanceDirection::Server,
+        lane,
+    )
+}
+
+fn direction_baseline_path(
+    root: &Path,
+    client_version: &str,
+    server_era: ConformanceServerEra,
+    direction: ConformanceDirection,
+    lane: SemanticLane,
+) -> PathBuf {
+    root.join(baseline_relative_path(
+        client_version,
+        server_era,
+        direction,
+        lane,
+    ))
 }
 
 fn baseline_relative_path(
     client_version: &str,
     server_era: ConformanceServerEra,
+    direction: ConformanceDirection,
     lane: SemanticLane,
 ) -> PathBuf {
-    PathBuf::from(client_version)
-        .join(server_era.label())
-        .join(format!("{}.yml", lane.slug()))
+    let root = PathBuf::from(client_version).join(server_era.label());
+    match direction {
+        ConformanceDirection::Server => root.join(format!("{}.yml", lane.slug())),
+        ConformanceDirection::Client => root
+            .join(direction.label())
+            .join(format!("{}.yml", lane.slug())),
+    }
 }
 
 fn read_baseline_optional(path: &Path) -> Result<Option<ConformanceBaseline>> {
@@ -509,6 +616,30 @@ mod tests {
         .expect("baseline should be written");
     }
 
+    fn write_client_document(
+        root: &Path,
+        client_version: &str,
+        era: ConformanceServerEra,
+        lane: SemanticLane,
+        findings: Vec<ScoredFinding>,
+    ) {
+        let path = direction_baseline_path(
+            root,
+            client_version,
+            era,
+            ConformanceDirection::Client,
+            lane,
+        );
+        fs::create_dir_all(path.parent().expect("client baseline path parent"))
+            .expect("client baseline directory");
+        fs::write(
+            path,
+            yaml_serde::to_string(&ConformanceBaseline { findings })
+                .expect("client baseline should serialize"),
+        )
+        .expect("client baseline should be written");
+    }
+
     #[test]
     fn routed_comparison_subtracts_findings_reproduced_by_direct_fixture() {
         let directory = tempfile::tempdir().expect("temporary baseline root");
@@ -575,6 +706,48 @@ mod tests {
                 .all(BaselineComparison::matches)
         );
         assert_eq!(evaluation.comparisons[1].actual, [routed]);
+    }
+
+    #[test]
+    fn client_comparison_gates_external_lane_without_fixture_subtraction() {
+        let directory = tempfile::tempdir().expect("temporary baseline root");
+        let root = directory.path();
+        let client = "2026-07-28";
+        let era = ConformanceServerEra::Modern;
+        let expected = ScoredFinding {
+            scenario: "http-custom-headers".to_owned(),
+            check: "custom-header".to_owned(),
+            name: String::new(),
+            status: ScoredStatus::Failure,
+        };
+        write_client_document(
+            root,
+            client,
+            era,
+            SemanticLane::ExternalDataPlane,
+            vec![expected.clone()],
+        );
+        let actual = BTreeMap::from([(
+            SemanticLane::ExternalDataPlane,
+            results(
+                "http-custom-headers",
+                vec![check("custom-header", CheckStatus::Failure)],
+            ),
+        )]);
+
+        let evaluation = evaluate_client_baselines(
+            &actual,
+            &[SemanticLane::ExternalDataPlane],
+            root,
+            client,
+            era,
+            false,
+        )
+        .expect("client baseline should not require fixture-direct results");
+
+        assert_eq!(evaluation.comparisons.len(), 1);
+        assert!(evaluation.comparisons[0].matches());
+        assert_eq!(evaluation.comparisons[0].actual, [expected]);
     }
 
     #[test]
@@ -659,6 +832,19 @@ mod tests {
                     panic!("default baseline {} must be valid: {error}", path.display())
                 });
             }
+            let client_path = direction_baseline_path(
+                &root,
+                "2026-07-28",
+                era,
+                ConformanceDirection::Client,
+                SemanticLane::ExternalDataPlane,
+            );
+            read_baseline(&client_path).unwrap_or_else(|error| {
+                panic!(
+                    "default client baseline {} must be valid: {error}",
+                    client_path.display()
+                )
+            });
         }
     }
 

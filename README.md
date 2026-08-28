@@ -158,11 +158,16 @@ rejection and external dataplane backend identity.
 The official runner is pinned to
 `@modelcontextprotocol/conformance@0.2.0-alpha.11`. Its TypeScript fixture is
 built from revision `c321dd32035556e6769d3724a8ee97d87c3faaac`. A default run
-starts workflow-owned stacks, runs all three semantic lanes against separate
-`legacy` and `modern` fixtures, records raw official results without
-suppression, writes deterministic comparisons, and continues through every
-selected client-version/server-era combination before returning one result.
-`dual` is supported only when selected explicitly.
+starts workflow-owned stacks and runs both conformance directions. The server
+suite sends the official client directly to the fixture and through the
+built-in and external dataplane routes. For protocol `2026-07-28`, the client
+suite also makes the external dataplane send requests to the official scenario
+servers. The four downstream scenarios are `tools_call`, `request-metadata`,
+`http-standard-headers`, and `http-custom-headers`; they run automatically
+whenever `external-data-plane` is selected. The workflow records raw official
+results without suppression, writes deterministic comparisons, and continues
+through every selected client-version/server-era combination before returning
+one aggregated result. `dual` is supported only when selected explicitly.
 
 The client protocol and fixture server era are independent:
 
@@ -177,7 +182,8 @@ cf-integration conformance run \
 The repeated client and server selections form a Cartesian product. Artifacts
 default below `CF_INTEGRATION_DIR/conformance/<client-version>/<server-era>/`
 and reports below `reports/conformance/<client-version>/<server-era>/`.
-Per-lane baseline reports are one level deeper. `--results-dir`,
+Server artifacts retain the lane directly below the era. Client artifacts and
+reports use `client/external-data-plane/` below the era. `--results-dir`,
 `--baseline-dir`, and `--output-dir` override those roots.
 
 Baselines use this strict layout:
@@ -189,6 +195,8 @@ tests/conformance/baselines/
       fixture-direct.yml
       built-in-data-plane.yml
       external-data-plane.yml
+      client/
+        external-data-plane.yml
 ```
 
 Each file contains sorted `FAILURE` and `WARNING` check identities. They are
@@ -196,13 +204,15 @@ required to distinguish expected failures from regressions and are embedded
 for installed binaries. Every completed lane is printed in nextest style even
 when a later lane fails operationally. The direct fixture is gated
 independently; findings reproduced there are subtracted from routed lanes
-before comparison. Unexpected, stale, unknown, malformed, incomplete,
+before server comparison. Client findings are gated independently without
+fixture subtraction. Unexpected, stale, unknown, malformed, incomplete,
 missing, and operational results fail the matrix. `--bless` replaces all
-selected baselines in one directory transaction only after every combination
-succeeds. Outside a developer checkout, an omitted `--baseline-dir` writes
-blessed baselines beneath the current workspace rather than modifying embedded
-assets. Report regeneration discovers every partition beneath the selected
-result root and accepts `--results-dir` and `--output-dir`.
+selected server and client baselines in one directory transaction only after
+every combination succeeds. Outside a developer checkout, an omitted
+`--baseline-dir` writes blessed baselines beneath the current workspace rather
+than modifying embedded assets. Server comparison regeneration discovers every
+protocol/era partition beneath the selected result root and accepts
+`--results-dir` and `--output-dir`.
 
 ## Canonical configuration
 

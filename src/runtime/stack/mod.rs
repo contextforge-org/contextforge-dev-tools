@@ -228,7 +228,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .with_conformance_fixture(self.config.asset_root())
     }
 
-    fn conformance_runtime_project(&self, mode: StackMode) -> ComposeProject {
+    pub(super) fn conformance_runtime_project(&self, mode: StackMode) -> ComposeProject {
         self.compose_project(mode)
             .with_conformance_runtime(self.config.asset_root())
     }

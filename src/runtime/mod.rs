@@ -10,7 +10,12 @@ use std::time::Duration;
 
 use crate::conformance::baseline::{
     BaselineComparison, BaselineUpdate, bless_baselines_transactionally, evaluate_baselines,
-    validate_scored_results, write_baseline_report,
+    evaluate_client_baselines, validate_scored_results, write_baseline_report,
+    write_client_baseline_report,
+};
+use crate::conformance::client::{
+    CLIENT_BASE_URL_ENV, CLIENT_COMPOSE_ARGS_ENV, CLIENT_SERVER_ID_ENV, CLIENT_TOKEN_ENV,
+    INTERNAL_CLIENT_COMMAND,
 };
 use crate::conformance::fixture::{
     ConformanceFixtureClient, OFFICIAL_CONFORMANCE_BACKEND_URL, OFFICIAL_CONFORMANCE_PROXY_SERVICE,
@@ -18,10 +23,12 @@ use crate::conformance::fixture::{
     OFFICIAL_CONFORMANCE_SERVICE,
 };
 use crate::conformance::results::{
-    ComparisonReport, ConformanceFixtureMetadata, ConformanceResults, ConformanceRunMetadata,
-    ConformanceServerEra, SemanticLane, compare_result_sets, expected_server_scenarios,
-    is_trusted_official_fixture, load_server_results, official_server_command,
-    validate_server_scenario_set, write_comparison_report,
+    ComparisonReport, ConformanceDirection, ConformanceFixtureMetadata, ConformanceResults,
+    ConformanceRunMetadata, ConformanceServerEra, DEFAULT_CLIENT_CONFORMANCE_SCENARIOS,
+    SemanticLane, compare_result_sets, expected_client_scenarios, expected_server_scenarios,
+    is_trusted_official_fixture, load_client_results, load_server_results, official_client_command,
+    official_server_command, validate_client_scenario_set, validate_server_scenario_set,
+    write_comparison_report,
 };
 use crate::infrastructure::checkout::{CheckoutManager, CheckoutRequest};
 use crate::infrastructure::compose::{ComposeProject, validate_integration_contract};

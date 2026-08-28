@@ -8,12 +8,14 @@ use cf_integration::conformance::fixture::{
 };
 use cf_integration::conformance::results::{
     CheckStatus, ComparisonClassification, ComparisonReport, ConformanceCheck,
-    ConformanceFixtureMetadata, ConformanceResults, ConformanceRunMetadata,
-    ConformanceScenarioResult, ConformanceServerEra, DEFAULT_CONFORMANCE_SUITE,
-    DEFAULT_MCP_SPEC_VERSION, OFFICIAL_CONFORMANCE_PACKAGE, ScenarioComparison, ScenarioOutcome,
-    SemanticLane, SpecReference, classify_outcomes, compare_result_sets, expected_server_scenarios,
-    is_trusted_official_fixture, load_server_results, official_server_command,
-    render_comparison_markdown, validate_server_scenario_set, write_comparison_report,
+    ConformanceDirection, ConformanceFixtureMetadata, ConformanceResults, ConformanceRunMetadata,
+    ConformanceScenarioResult, ConformanceServerEra, DEFAULT_CLIENT_CONFORMANCE_SCENARIOS,
+    DEFAULT_CONFORMANCE_SUITE, DEFAULT_MCP_SPEC_VERSION, OFFICIAL_CONFORMANCE_PACKAGE,
+    ScenarioComparison, ScenarioOutcome, SemanticLane, SpecReference, classify_outcomes,
+    compare_result_sets, expected_client_scenarios, expected_server_scenarios,
+    is_trusted_official_fixture, load_client_results, load_server_results, official_client_command,
+    official_server_command, render_comparison_markdown, validate_client_scenario_set,
+    validate_server_scenario_set, write_comparison_report,
 };
 
 const SPEC_REFERENCE: &str =
@@ -112,6 +114,7 @@ fn metadata_roundtrips_exact_fixture_provenance() {
     let metadata = ConformanceRunMetadata {
         oracle: OFFICIAL_CONFORMANCE_PACKAGE.to_owned(),
         target: "control-plane".to_owned(),
+        direction: ConformanceDirection::Server,
         client_version: DEFAULT_MCP_SPEC_VERSION.to_owned(),
         server_era: ConformanceServerEra::Legacy,
         suite: DEFAULT_CONFORMANCE_SUITE.to_owned(),
@@ -132,6 +135,7 @@ fn metadata_without_an_explicit_server_era_is_rejected() {
     let error = serde_json::from_value::<ConformanceRunMetadata>(serde_json::json!({
         "oracle": OFFICIAL_CONFORMANCE_PACKAGE,
         "target": "fixture direct",
+        "direction": "server",
         "client_version": "2025-11-25",
         "suite": "all",
         "fixture": fixture_metadata()
@@ -143,10 +147,27 @@ fn metadata_without_an_explicit_server_era_is_rejected() {
 }
 
 #[test]
+fn metadata_without_an_explicit_direction_is_rejected() {
+    let error = serde_json::from_value::<ConformanceRunMetadata>(serde_json::json!({
+        "oracle": OFFICIAL_CONFORMANCE_PACKAGE,
+        "target": "fixture direct",
+        "client_version": "2026-07-28",
+        "server_era": "modern",
+        "suite": "all",
+        "fixture": fixture_metadata()
+    }))
+    .expect_err("metadata must identify the conformance direction")
+    .to_string();
+
+    assert!(error.contains("direction"));
+}
+
+#[test]
 fn metadata_without_fixture_provenance_is_rejected() {
     let error = serde_json::from_value::<ConformanceRunMetadata>(serde_json::json!({
         "oracle": OFFICIAL_CONFORMANCE_PACKAGE,
         "target": "fixture direct",
+        "direction": "server",
         "client_version": "2025-11-25",
         "server_era": "legacy",
         "suite": "all"
@@ -251,6 +272,79 @@ fn official_command_is_pinned_complete_and_ordered() {
             OsString::from("--verbose"),
         ]
     );
+}
+
+#[test]
+fn official_client_command_is_scoped_complete_and_ordered() {
+    let spec = official_client_command(
+        "cf-integration __client-conformance",
+        "tools_call",
+        DEFAULT_MCP_SPEC_VERSION,
+        Path::new("expected-failures.yml"),
+        Path::new("results"),
+    );
+
+    assert!(!spec.inherits_environment());
+    assert_eq!(
+        spec.arguments(),
+        &[
+            OsString::from("-y"),
+            OsString::from(OFFICIAL_CONFORMANCE_PACKAGE),
+            OsString::from("client"),
+            OsString::from("--command"),
+            OsString::from("cf-integration __client-conformance"),
+            OsString::from("--scenario"),
+            OsString::from("tools_call"),
+            OsString::from("--spec-version"),
+            OsString::from(DEFAULT_MCP_SPEC_VERSION),
+            OsString::from("--expected-failures"),
+            OsString::from("expected-failures.yml"),
+            OsString::from("--timeout"),
+            OsString::from("60000"),
+            OsString::from("--output-dir"),
+            OsString::from("results"),
+            OsString::from("--verbose"),
+        ]
+    );
+}
+
+#[test]
+fn scoped_client_catalog_is_exact_and_versioned() {
+    assert_eq!(
+        expected_client_scenarios(DEFAULT_MCP_SPEC_VERSION)
+            .expect("current client scenario catalog should be pinned"),
+        DEFAULT_CLIENT_CONFORMANCE_SCENARIOS
+            .iter()
+            .copied()
+            .collect()
+    );
+    assert!(expected_client_scenarios("2025-11-25").is_err());
+}
+
+#[test]
+fn client_results_parse_and_require_every_scoped_scenario() {
+    let directory = tempfile::tempdir().expect("temporary result directory");
+    for (index, scenario) in DEFAULT_CLIENT_CONFORMANCE_SCENARIOS.iter().enumerate() {
+        let result_directory = directory
+            .path()
+            .join(format!("{scenario}-2026-08-28T22-20-5{index}-000Z"));
+        fs::create_dir(&result_directory).expect("client result directory");
+        fs::write(
+            result_directory.join("checks.json"),
+            format!(r#"[{{"id":"{scenario}-check","status":"SUCCESS"}}]"#),
+        )
+        .expect("client checks should be written");
+    }
+
+    let parsed = load_client_results(directory.path()).expect("client results should parse");
+    validate_client_scenario_set(&parsed, DEFAULT_MCP_SPEC_VERSION)
+        .expect("complete scoped client result set should validate");
+    assert_eq!(parsed.scenarios.len(), 4);
+
+    fs::remove_dir_all(directory.path().join("tools_call-2026-08-28T22-20-50-000Z"))
+        .expect("one client result should be removed");
+    let partial = load_client_results(directory.path()).expect("partial results should parse");
+    assert!(validate_client_scenario_set(&partial, DEFAULT_MCP_SPEC_VERSION).is_err());
 }
 
 #[test]

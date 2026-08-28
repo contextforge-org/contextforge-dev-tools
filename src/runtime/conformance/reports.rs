@@ -120,6 +120,12 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         }
         verify_completion_marker(&artifact.completion)?;
         let metadata = read_run_metadata(&artifact.metadata)?;
+        if metadata.direction != ConformanceDirection::Server {
+            return Err(AppFailure::from(anyhow!(
+                "conformance metadata direction {} does not match server",
+                metadata.direction
+            )));
+        }
         if metadata.target != target.label() {
             return Err(AppFailure::from(anyhow!(
                 "conformance metadata target {:?} does not match {target}",
@@ -175,6 +181,48 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             }
         }
         Ok(results)
+    }
+
+    pub(super) fn load_completed_client_conformance_results(
+        &self,
+        paths: &ConformancePaths,
+    ) -> AppResult<BTreeMap<SemanticLane, ConformanceResults>> {
+        let lane = SemanticLane::ExternalDataPlane;
+        let artifact = paths.client_conformance_lane(lane);
+        if !artifact.metadata.is_file()
+            && !artifact.official_results.is_dir()
+            && !artifact.completion.is_file()
+        {
+            return Ok(BTreeMap::new());
+        }
+        if !artifact.metadata.is_file()
+            || !artifact.official_results.is_dir()
+            || !artifact.completion.is_file()
+        {
+            return Err(AppFailure::from(anyhow!(
+                "incomplete client-conformance artifacts for {lane} beneath {}",
+                artifact.root.display()
+            )));
+        }
+        verify_completion_marker(&artifact.completion)?;
+        let metadata = read_run_metadata(&artifact.metadata)?;
+        if metadata.direction != ConformanceDirection::Client || metadata.target != lane.label() {
+            return Err(AppFailure::from(anyhow!(
+                "client-conformance metadata does not match external dataplane"
+            )));
+        }
+        if metadata.oracle != crate::conformance::results::OFFICIAL_CONFORMANCE_PACKAGE
+            || !is_trusted_official_fixture(&metadata.fixture)
+        {
+            return Err(AppFailure::from(anyhow!(
+                "client-conformance artifacts do not identify the pinned official runner"
+            )));
+        }
+        let results = load_client_results(&artifact.official_results).map_err(AppFailure::from)?;
+        validate_client_scenario_set(&results, &metadata.client_version)
+            .map_err(AppFailure::from)?;
+        validate_scored_results(&results).map_err(AppFailure::from)?;
+        Ok(BTreeMap::from([(lane, results)]))
     }
 }
 
@@ -238,8 +286,27 @@ impl ConformancePaths {
             .join("baseline-comparison.yml")
     }
 
+    pub(super) fn client_baseline_report(&self, target: SemanticLane) -> PathBuf {
+        self.report_output
+            .join("client")
+            .join(target.slug())
+            .join("baseline-comparison.yml")
+    }
+
     pub(super) fn conformance_lane(&self, target: SemanticLane) -> ConformanceLanePaths {
         let root = self.conformance_root.join(target.slug());
+        ConformanceLanePaths {
+            official_results: root.join("official"),
+            runner_log: root.join("runner.log"),
+            expected_failures: root.join("expected-failures.yml"),
+            metadata: root.join("metadata.json"),
+            completion: root.join("complete"),
+            root,
+        }
+    }
+
+    pub(super) fn client_conformance_lane(&self, target: SemanticLane) -> ConformanceLanePaths {
+        let root = self.conformance_root.join("client").join(target.slug());
         ConformanceLanePaths {
             official_results: root.join("official"),
             runner_log: root.join("runner.log"),
@@ -258,6 +325,11 @@ impl ConformancePaths {
         ] {
             remove_artifact_directory(&self.conformance_lane(target).root)?;
         }
+        remove_artifact_directory(
+            &self
+                .client_conformance_lane(SemanticLane::ExternalDataPlane)
+                .root,
+        )?;
         Ok(())
     }
 }
@@ -400,6 +472,18 @@ pub(super) fn mark_conformance_complete(
     Ok(true)
 }
 
+pub(super) fn mark_client_conformance_complete(
+    results: &ConformanceResults,
+    target: SemanticLane,
+    spec_version: &str,
+    path: &Path,
+) -> AppResult<()> {
+    validate_client_scenario_set(results, spec_version)
+        .with_context(|| format!("official client conformance did not complete for {target}"))
+        .map_err(AppFailure::from)?;
+    write_completion_marker(path)
+}
+
 fn verify_completion_marker(path: &Path) -> AppResult<()> {
     let marker = fs::read(path)
         .with_context(|| format!("failed to read conformance completion marker {path:?}"))
@@ -499,6 +583,7 @@ mod tests {
         ConformanceRunMetadata {
             oracle: OFFICIAL_CONFORMANCE_PACKAGE.to_owned(),
             target: target.label().to_owned(),
+            direction: ConformanceDirection::Server,
             client_version: "2026-07-28".to_owned(),
             server_era: ConformanceServerEra::Dual,
             suite: "all".to_owned(),

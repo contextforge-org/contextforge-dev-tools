@@ -38,6 +38,8 @@ services:
       mcpnet:
         aliases:
           - cf-dataplane
+    extra_hosts:
+      - host.docker.internal:host-gateway
     expose:
       - "4445"
     environment:

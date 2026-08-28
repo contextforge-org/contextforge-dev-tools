@@ -7,7 +7,10 @@ use reports::*;
 use std::fmt::Write as _;
 use std::time::Instant;
 
+use crate::conformance::DEFAULT_MCP_SPEC_VERSION;
 use crate::conformance::results::{DEFAULT_CONFORMANCE_SUITE, ScenarioOutcome};
+
+const CLIENT_CONFORMANCE_SERVER_ID: &str = "dataplane-client-conformance";
 
 impl<R: ProcessRunner> RuntimeContext<R> {
     fn require_loopback_fixture_base_url(&self) -> AppResult<()> {
@@ -175,6 +178,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                     "{}",
                                     render_conformance_results(
                                         &results,
+                                        ConformanceDirection::Server,
                                         Some(&evaluation.comparisons),
                                         matrix_started.elapsed(),
                                         OutputStyle::stdout(),
@@ -188,6 +192,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                     "{}",
                                     render_conformance_results(
                                         &results,
+                                        ConformanceDirection::Server,
                                         None,
                                         matrix_started.elapsed(),
                                         OutputStyle::stdout(),
@@ -230,6 +235,79 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                         Err(error) => {
                             failures.push(format!("{} baseline gate: {error}", paths.identity()));
                         }
+                    }
+
+                    match executor.load_completed_client_conformance_results(&paths) {
+                        Err(error) => {
+                            failures.push(format!("{} client artifacts: {error}", paths.identity()))
+                        }
+                        Ok(client_results) if !client_results.is_empty() => {
+                            match evaluate_client_baselines(
+                                &client_results,
+                                &[SemanticLane::ExternalDataPlane],
+                                &baseline_root,
+                                &client_version,
+                                server_era,
+                                bless,
+                            ) {
+                                Ok(evaluation) => {
+                                    println!(
+                                        "{}",
+                                        render_conformance_results(
+                                            &client_results,
+                                            ConformanceDirection::Client,
+                                            Some(&evaluation.comparisons),
+                                            matrix_started.elapsed(),
+                                            OutputStyle::stdout(),
+                                            bless,
+                                        )
+                                    );
+                                    for comparison in &evaluation.comparisons {
+                                        let report = paths.client_baseline_report(comparison.lane);
+                                        if let Err(error) = write_client_baseline_report(
+                                            &report,
+                                            &client_version,
+                                            server_era,
+                                            comparison,
+                                        ) {
+                                            failures.push(format!(
+                                                "{} client {} baseline report: {error}",
+                                                paths.identity(),
+                                                comparison.lane.slug()
+                                            ));
+                                        }
+                                        if !bless && !comparison.matches() {
+                                            failures.push(format!(
+                                                "{} client {} baseline mismatch: unexpected={:?}; stale={:?}",
+                                                paths.identity(),
+                                                comparison.lane.slug(),
+                                                comparison.unexpected,
+                                                comparison.stale
+                                            ));
+                                        }
+                                    }
+                                    updates.extend(evaluation.updates);
+                                }
+                                Err(error) => {
+                                    println!(
+                                        "{}",
+                                        render_conformance_results(
+                                            &client_results,
+                                            ConformanceDirection::Client,
+                                            None,
+                                            matrix_started.elapsed(),
+                                            OutputStyle::stdout(),
+                                            bless,
+                                        )
+                                    );
+                                    failures.push(format!(
+                                        "{} client baseline gate: {error}",
+                                        paths.identity()
+                                    ));
+                                }
+                            }
+                        }
+                        Ok(_) => {}
                     }
                 }
 
@@ -544,6 +622,32 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             }
         }
 
+        if !interrupted
+            && spec_version == DEFAULT_MCP_SPEC_VERSION
+            && lanes.contains(&SemanticLane::ExternalDataPlane)
+        {
+            let client = self.run_external_client_conformance(
+                spec_version,
+                server_era,
+                paths,
+                cancellation_receiver.clone(),
+            );
+            tokio::pin!(client);
+            tokio::select! {
+                result = &mut client => {
+                    if let Err(error) = result {
+                        failures.push(format!("external dataplane client: {error}"));
+                    }
+                }
+                () = interrupt.as_mut() => {
+                    interrupted = true;
+                    cancellation_sender.send_replace(true);
+                    let _ = client.await;
+                    failures.push("external dataplane client: conformance workflow interrupted by Ctrl-C".to_owned());
+                }
+            }
+        }
+
         if failures.is_empty()
             && !interrupted
             && [
@@ -624,6 +728,224 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         finish_with_cleanup(result.err(), shutdown)
     }
 
+    async fn run_external_client_conformance(
+        &self,
+        spec_version: &str,
+        server_era: ConformanceServerEra,
+        paths: &ConformancePaths,
+        cancellation: tokio::sync::watch::Receiver<bool>,
+    ) -> AppResult<()> {
+        expected_client_scenarios(spec_version).map_err(AppFailure::from)?;
+        let stack_progress = Activity::spinner("Prepare external dataplane client conformance");
+        let stack_result = self
+            .stack_up_for_conformance(StackMode::Dataplane, true)
+            .await;
+        stack_progress.finish(stack_result.is_ok());
+        let mut failure = stack_result.err();
+        let mut token = None;
+        let mut publisher_stopped = false;
+
+        if failure.is_none() {
+            match self.issue_conformance_token().await {
+                Ok(issued) => token = Some(issued),
+                Err(error) => failure = Some(error),
+            }
+        }
+        if failure.is_none() {
+            let progress = Activity::spinner("Pause the control-plane publisher");
+            let result = self.set_control_plane_publisher(false).await;
+            progress.finish(result.is_ok());
+            if result.is_ok() {
+                publisher_stopped = true;
+            }
+            failure = result.err();
+        }
+        if failure.is_none() {
+            match token.as_ref() {
+                Some(issued) => {
+                    failure = self
+                        .run_official_client_conformance(
+                            spec_version,
+                            server_era,
+                            &issued.value,
+                            paths,
+                            cancellation,
+                        )
+                        .await
+                        .err();
+                }
+                None => {
+                    failure = Some(AppFailure::from(anyhow!(
+                        "client conformance token was not available after issuance"
+                    )));
+                }
+            }
+        }
+
+        if publisher_stopped {
+            let progress = Activity::spinner("Restore the control-plane publisher");
+            let result = self.set_control_plane_publisher(true).await;
+            progress.finish(result.is_ok());
+            failure = finish_with_cleanup(failure, result).err();
+        }
+        if let Some(token) = token.as_ref() {
+            failure = finish_with_cleanup(failure, self.revoke_managed_token(token).await).err();
+        }
+        finish_with_cleanup(
+            failure,
+            self.cleanup(topology_selection(StackMode::Dataplane), CleanupKind::Down),
+        )
+    }
+
+    async fn set_control_plane_publisher(&self, running: bool) -> AppResult<()> {
+        let project = self.conformance_runtime_project(StackMode::Dataplane);
+        let command = if running {
+            project.command(["up", "-d", "--wait", "--no-deps", "gateway"])
+        } else {
+            project.command(["stop", "gateway"])
+        };
+        let command = self.compose_environment(command, StackMode::Dataplane, true)?;
+        self.runner
+            .run_async(&command)
+            .await
+            .map_err(AppFailure::from)
+    }
+
+    async fn run_official_client_conformance(
+        &self,
+        spec_version: &str,
+        server_era: ConformanceServerEra,
+        token: &str,
+        paths: &ConformancePaths,
+        cancellation: tokio::sync::watch::Receiver<bool>,
+    ) -> AppResult<()> {
+        let expected_scenarios =
+            expected_client_scenarios(spec_version).map_err(AppFailure::from)?;
+        let target = SemanticLane::ExternalDataPlane;
+        let lane_paths = paths.client_conformance_lane(target);
+        remove_file_if_exists(&lane_paths.completion)?;
+        recreate_directory(&lane_paths.official_results)?;
+        fs::create_dir_all(&lane_paths.root)
+            .with_context(|| {
+                format!(
+                    "failed to create client-conformance artifact directory {:?}",
+                    lane_paths.root
+                )
+            })
+            .map_err(AppFailure::from)?;
+        fs::write(&lane_paths.expected_failures, "client: []\n")
+            .with_context(|| {
+                format!(
+                    "failed to write empty client expected-failure file {:?}",
+                    lane_paths.expected_failures
+                )
+            })
+            .map_err(AppFailure::from)?;
+        write_run_metadata(
+            &lane_paths.metadata,
+            &ConformanceRunMetadata {
+                oracle: crate::conformance::results::OFFICIAL_CONFORMANCE_PACKAGE.to_owned(),
+                target: target.label().to_owned(),
+                direction: ConformanceDirection::Client,
+                client_version: spec_version.to_owned(),
+                server_era,
+                suite: "scoped".to_owned(),
+                fixture: ConformanceFixtureMetadata {
+                    repository: OFFICIAL_CONFORMANCE_REPOSITORY.to_owned(),
+                    revision: OFFICIAL_CONFORMANCE_REVISION.to_owned(),
+                    server_id: OFFICIAL_CONFORMANCE_SERVER_ID.to_owned(),
+                },
+            },
+        )?;
+
+        let compose = self.compose_environment(
+            self.conformance_runtime_project(StackMode::Dataplane)
+                .command(std::iter::empty::<&str>()),
+            StackMode::Dataplane,
+            true,
+        )?;
+        let compose_args = compose
+            .arguments()
+            .iter()
+            .map(|argument| {
+                argument
+                    .to_str()
+                    .context("client conformance Compose argument is not UTF-8")
+            })
+            .collect::<anyhow::Result<Vec<_>>>()
+            .and_then(|arguments| {
+                serde_json::to_string(&arguments)
+                    .context("failed to serialize client conformance Compose arguments")
+            })
+            .map_err(AppFailure::from)?;
+        let (client_command, client_path) = client_driver_command().map_err(AppFailure::from)?;
+        let progress = Activity::spinner(format!(
+            "Run external dataplane client ({} scenarios)",
+            expected_scenarios.len()
+        ));
+        let mut operational_failures = Vec::new();
+        for scenario in DEFAULT_CLIENT_CONFORMANCE_SCENARIOS {
+            let mut command = allowlisted_npx_environment(
+                official_client_command(
+                    &client_command,
+                    scenario,
+                    spec_version,
+                    &lane_paths.expected_failures,
+                    &lane_paths.official_results,
+                )
+                .cwd(self.config.root()),
+            );
+            for (key, value) in compose.environment() {
+                command = command.env(key.clone(), value.clone());
+            }
+            command = command
+                .env(CLIENT_COMPOSE_ARGS_ENV, &compose_args)
+                .env(CLIENT_BASE_URL_ENV, self.base_url()?)
+                .env(CLIENT_SERVER_ID_ENV, CLIENT_CONFORMANCE_SERVER_ID)
+                .env(CLIENT_TOKEN_ENV, token)
+                .env("PATH", client_path.clone());
+            let result = self
+                .runner
+                .run_async_cancellable_to_log(
+                    &command,
+                    cancellation.clone(),
+                    &lane_paths.root.join(format!("runner-{scenario}.log")),
+                )
+                .await
+                .map_err(AppFailure::from);
+            if !conformance_process_completed(&result)
+                && let Err(error) = result
+            {
+                operational_failures.push(format!("{scenario}: {error}"));
+            }
+        }
+
+        let results = load_client_results(&lane_paths.official_results).map_err(AppFailure::from);
+        let validation = results.and_then(|results| {
+            validate_scored_results(&results).map_err(AppFailure::from)?;
+            mark_client_conformance_complete(
+                &results,
+                target,
+                spec_version,
+                &lane_paths.completion,
+            )?;
+            Ok(())
+        });
+        if let Err(error) = validation {
+            operational_failures.push(error.to_string());
+        }
+        let result = if operational_failures.is_empty() {
+            Ok(())
+        } else {
+            Err(AppFailure::from(anyhow!(
+                "client conformance did not complete: {}",
+                operational_failures.join("; ")
+            )))
+        };
+        progress.finish(result.is_ok());
+        result
+    }
+
     async fn run_official_conformance_direct(
         &self,
         run: &DirectConformanceRun<'_>,
@@ -675,6 +997,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             &ConformanceRunMetadata {
                 oracle: crate::conformance::results::OFFICIAL_CONFORMANCE_PACKAGE.to_owned(),
                 target: run.target.label().to_owned(),
+                direction: ConformanceDirection::Server,
                 client_version: run.spec_version.to_owned(),
                 server_era: run.server_era,
                 suite: DEFAULT_CONFORMANCE_SUITE.to_owned(),
@@ -753,6 +1076,7 @@ fn conformance_matrix(
 
 fn render_conformance_results(
     results: &BTreeMap<SemanticLane, ConformanceResults>,
+    direction: ConformanceDirection,
     comparisons: Option<&[BaselineComparison]>,
     elapsed: Duration,
     style: OutputStyle,
@@ -774,7 +1098,7 @@ fn render_conformance_results(
         });
         let total = lane_results.scenarios.len();
         let divider = style.info("────────────");
-        let heading = style.heading(&format!(" MCP conformance results: {lane}"));
+        let heading = style.heading(&format!(" MCP {direction} conformance results: {lane}"));
         let _ = writeln!(output, "{divider}\n{heading}");
         for (index, result) in lane_results.scenarios.values().enumerate() {
             let status = conformance_test_status(result, comparison, blessing);
@@ -786,7 +1110,12 @@ fn render_conformance_results(
                 TestStatus::Skip => skipped += 1,
                 TestStatus::Unknown => ambiguous += 1,
             }
-            let name = format!("{}::{}", lane.slug(), result.scenario);
+            let name = format!(
+                "{}::{}::{}",
+                direction.label(),
+                lane.slug(),
+                result.scenario
+            );
             let _ = writeln!(
                 output,
                 "{}",
@@ -943,6 +1272,35 @@ where
 
 fn interrupted_conformance_failure() -> AppFailure {
     AppFailure::from(anyhow!("conformance workflow interrupted by Ctrl-C"))
+}
+
+fn client_driver_command() -> anyhow::Result<(String, OsString)> {
+    let executable =
+        std::env::current_exe().context("failed to locate the cf-integration binary")?;
+    let file_name = executable
+        .file_name()
+        .and_then(OsStr::to_str)
+        .context("cf-integration binary name is not UTF-8")?;
+    if !file_name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(anyhow!(
+            "cf-integration binary name contains characters unsupported by the official client runner"
+        ));
+    }
+    let directory = executable
+        .parent()
+        .context("cf-integration binary path has no parent directory")?;
+    let inherited = std::env::var_os("PATH").context("PATH is required for client conformance")?;
+    let search_path = std::env::join_paths(
+        std::iter::once(directory.to_owned()).chain(std::env::split_paths(&inherited)),
+    )
+    .context("failed to prepend cf-integration to the client-conformance PATH")?;
+    Ok((
+        format!("{file_name} {INTERNAL_CLIENT_COMMAND}"),
+        search_path,
+    ))
 }
 
 #[cfg(test)]
@@ -1102,6 +1460,7 @@ mod tests {
 
         let rendered = render_conformance_results(
             &results,
+            ConformanceDirection::Server,
             Some(&[comparison]),
             Duration::from_millis(1_250),
             OutputStyle::plain(),
@@ -1110,7 +1469,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "────────────\n MCP conformance results: external dataplane\n       XFAIL (1/2) external-data-plane::failing\n        PASS (2/2) external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 1 xfailed, 0 xpassed, 0 failed, 0 skipped, 0 unknown"
+            "────────────\n MCP server conformance results: external dataplane\n       XFAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 1 xfailed, 0 xpassed, 0 failed, 0 skipped, 0 unknown"
         );
     }
 
@@ -1118,6 +1477,7 @@ mod tests {
     fn conformance_results_render_without_a_baseline_when_the_gate_cannot_load() {
         let rendered = render_conformance_results(
             &result_map(mixed_conformance_results()),
+            ConformanceDirection::Server,
             None,
             Duration::from_millis(1_250),
             OutputStyle::plain(),
@@ -1126,8 +1486,24 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "────────────\n MCP conformance results: external dataplane\n        FAIL (1/2) external-data-plane::failing\n        PASS (2/2) external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 0 xfailed, 0 xpassed, 1 failed, 0 skipped, 0 unknown"
+            "────────────\n MCP server conformance results: external dataplane\n        FAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 0 xfailed, 0 xpassed, 1 failed, 0 skipped, 0 unknown"
         );
+    }
+
+    #[test]
+    fn client_conformance_results_render_the_downstream_direction() {
+        let rendered = render_conformance_results(
+            &result_map(mixed_conformance_results()),
+            ConformanceDirection::Client,
+            None,
+            Duration::from_millis(1_250),
+            OutputStyle::plain(),
+            false,
+        );
+
+        assert!(rendered.contains("MCP client conformance results: external dataplane"));
+        assert!(rendered.contains("client::external-data-plane::failing"));
+        assert!(rendered.contains("client::external-data-plane::passing"));
     }
 
     #[test]
@@ -1166,6 +1542,7 @@ mod tests {
         };
         let rendered = render_conformance_results(
             &results,
+            ConformanceDirection::Server,
             Some(&[comparison]),
             Duration::from_millis(1_250),
             OutputStyle::colored(),

@@ -265,6 +265,11 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
         .contains(",nginx}"),
         "the default MCP Host allowlist must accept containerized Locust through nginx"
     );
+    assert_eq!(
+        compose["services"]["dataplane"]["extra_hosts"][0].as_str(),
+        Some("host.docker.internal:host-gateway"),
+        "client conformance must let the dataplane reach the official scenario server"
+    );
     for obsolete in [
         "CONTEXTFORGE_GATEWAY_RS_ADDRESS",
         "CONTEXTFORGE_GATEWAY_RS_REDIS_HOSTNAME",
@@ -409,6 +414,8 @@ services:
   gateway:
     environment:
       GATEWAY_TOOL_NAME_SEPARATOR: "_"
+    volumes:
+      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/conformance/write_client_config.py:/opt/contextforge-conformance/write_client_config.py:ro
   mcp_conformance_server:
     profiles: ["conformance"]
     image: cf-integration/mcp-conformance-server:0.2.0-alpha.11
