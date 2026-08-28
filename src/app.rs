@@ -5,6 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use crate::compliance::DEFAULT_MCP_SPEC_VERSION;
 use crate::compliance::conformance::{ConformanceServerEra, SemanticLane};
 use crate::load::LoadRequest;
 use crate::platform::StackMode;
@@ -80,9 +81,12 @@ pub struct ResolvedLoadArgs {
 pub enum ConformanceAction {
     Run {
         lanes: Vec<SemanticLane>,
-        spec_version: String,
-        server_era: ConformanceServerEra,
+        client_versions: Vec<String>,
+        server_eras: Vec<ConformanceServerEra>,
         results_dir: Option<PathBuf>,
+        baseline_dir: Option<PathBuf>,
+        bless: bool,
+        output_dir: Option<PathBuf>,
     },
     Report {
         results_dir: Option<PathBuf>,
@@ -160,9 +164,12 @@ pub fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
         Command::Conformance(args) => Ok(Action::Conformance(match args.command {
             ConformanceCommand::Run(args) => ConformanceAction::Run {
                 lanes: resolve_lanes(args.lane.into_iter().map(Into::into)),
-                spec_version: args.protocol_version.to_string(),
-                server_era: args.server_era.into(),
+                client_versions: resolve_client_versions(args.protocol_version),
+                server_eras: resolve_server_eras(args.server_era),
                 results_dir: args.results_dir,
+                baseline_dir: args.baseline_dir,
+                bless: args.bless,
+                output_dir: args.output_dir,
             },
             ConformanceCommand::Report(args) => ConformanceAction::Report {
                 results_dir: args.results_dir,
@@ -268,6 +275,36 @@ fn resolve_lanes(lanes: impl IntoIterator<Item = SemanticLane>) -> Vec<SemanticL
             .filter(|lane| selected.contains(lane))
             .collect()
     }
+}
+
+fn resolve_client_versions(versions: Vec<ProtocolVersion>) -> Vec<String> {
+    if versions.is_empty() {
+        return vec![DEFAULT_MCP_SPEC_VERSION.to_owned()];
+    }
+    let mut seen = BTreeSet::new();
+    versions
+        .into_iter()
+        .map(|version| version.to_string())
+        .filter(|version| seen.insert(version.clone()))
+        .collect()
+}
+
+fn resolve_server_eras(
+    eras: Vec<crate::cli::CliConformanceServerEra>,
+) -> Vec<ConformanceServerEra> {
+    let eras = if eras.is_empty() {
+        vec![
+            crate::cli::CliConformanceServerEra::Legacy,
+            crate::cli::CliConformanceServerEra::Modern,
+        ]
+    } else {
+        eras
+    };
+    let mut seen = BTreeSet::new();
+    eras.into_iter()
+        .map(Into::into)
+        .filter(|era| seen.insert(*era))
+        .collect()
 }
 
 fn resolve_topology(explicit: Option<CliTopology>, environment: &Environment) -> Result<StackMode> {

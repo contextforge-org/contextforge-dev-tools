@@ -378,14 +378,12 @@ fn conformance_defaults_to_all_lanes_and_july_revision_at_resolution_time() {
         panic!("expected conformance run")
     };
     assert!(args.lane.is_empty());
-    assert_eq!(
-        args.protocol_version,
-        "2026-07-28"
-            .parse::<ProtocolVersion>()
-            .expect("valid protocol version")
-    );
-    assert_eq!(args.server_era, CliConformanceServerEra::Dual);
+    assert!(args.protocol_version.is_empty());
+    assert!(args.server_era.is_empty());
     assert!(args.results_dir.is_none());
+    assert!(args.baseline_dir.is_none());
+    assert!(!args.bless);
+    assert!(args.output_dir.is_none());
 }
 
 #[test]
@@ -402,8 +400,17 @@ fn conformance_accepts_repeatable_exact_lanes_and_supported_revisions() {
         "external-data-plane",
         "--protocol-version",
         "2025-11-25",
+        "--protocol-version",
+        "2026-07-28",
         "--server-era",
         "legacy",
+        "--server-era",
+        "dual",
+        "--baseline-dir",
+        "baselines",
+        "--output-dir",
+        "reports",
+        "--bless",
     ])
     .command
     else {
@@ -415,11 +422,25 @@ fn conformance_accepts_repeatable_exact_lanes_and_supported_revisions() {
     );
     assert_eq!(
         args.protocol_version,
-        "2025-11-25"
-            .parse::<ProtocolVersion>()
-            .expect("valid protocol version")
+        [
+            "2025-11-25"
+                .parse::<ProtocolVersion>()
+                .expect("valid protocol version"),
+            "2026-07-28"
+                .parse::<ProtocolVersion>()
+                .expect("valid protocol version"),
+        ]
     );
-    assert_eq!(args.server_era, CliConformanceServerEra::Legacy);
+    assert_eq!(
+        args.server_era,
+        [
+            CliConformanceServerEra::Legacy,
+            CliConformanceServerEra::Dual
+        ]
+    );
+    assert_eq!(args.baseline_dir, Some("baselines".into()));
+    assert_eq!(args.output_dir, Some("reports".into()));
+    assert!(args.bless);
     rejected(&[
         "cf-integration",
         "conformance",
@@ -442,6 +463,18 @@ fn conformance_accepts_repeatable_exact_lanes_and_supported_revisions() {
         "--baseline",
         "known.yml",
     ]);
+}
+
+#[test]
+fn root_version_flag_reports_the_package_version() {
+    let error = Cli::try_parse_from(["cf-integration", "--version"])
+        .expect_err("version should short-circuit parsing");
+
+    assert_eq!(error.kind(), ErrorKind::DisplayVersion);
+    assert_eq!(
+        error.to_string().trim(),
+        format!("cf-integration {}", env!("CARGO_PKG_VERSION"))
+    );
 }
 
 #[test]

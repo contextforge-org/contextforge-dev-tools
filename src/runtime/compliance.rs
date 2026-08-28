@@ -137,35 +137,115 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         match action {
             ConformanceAction::Run {
                 lanes,
-                spec_version,
-                server_era,
+                client_versions,
+                server_eras,
                 results_dir,
+                baseline_dir,
+                bless,
+                output_dir,
             } => {
                 let artifact_root = results_dir
                     .as_deref()
                     .unwrap_or_else(|| self.config.integration_dir());
-                let setup_log = artifact_root.join("conformance").join("setup.log");
-                if let Some(parent) = setup_log.parent() {
-                    fs::create_dir_all(parent)
-                        .with_context(|| {
-                            format!("failed to create conformance log directory {parent:?}")
-                        })
-                        .map_err(AppFailure::from)?;
+                let baseline_root = baseline_dir
+                    .unwrap_or_else(|| self.config.root().join("tests/conformance/baselines"));
+                let report_root = output_dir.unwrap_or_else(|| self.config.root().join("reports"));
+                let mut failures = Vec::new();
+                let mut updates = Vec::<BaselineUpdate>::new();
+
+                for (client_version, server_era) in
+                    conformance_matrix(&client_versions, &server_eras)
+                {
+                    let paths = CompliancePaths::new(
+                        artifact_root,
+                        report_root.clone(),
+                        &client_version,
+                        server_era,
+                    );
+                    let setup_log = paths.setup_log();
+                    let setup_result = prepare_setup_log(&setup_log);
+                    if let Err(error) = setup_result {
+                        failures.push(format!("{} setup: {error}", paths.identity()));
+                        continue;
+                    }
+                    let quiet_runner = LoggingProcessRunner::new(&self.runner, &setup_log);
+                    let executor = RuntimeContext::new(self.config.clone(), quiet_runner);
+                    if let Err(error) = executor
+                        .run_conformance(&lanes, &client_version, server_era, &paths)
+                        .await
+                    {
+                        failures.push(format!("{}: {error}", paths.identity()));
+                    }
+                    println!(
+                        "{} {}",
+                        OutputStyle::stdout().info("  Setup output"),
+                        setup_log.display()
+                    );
+
+                    let evaluated = executor
+                        .load_selected_conformance_results(&paths, &lanes)
+                        .and_then(|results| {
+                            evaluate_baselines(
+                                &results,
+                                &lanes,
+                                &baseline_root,
+                                &client_version,
+                                server_era,
+                                bless,
+                            )
+                            .map_err(AppFailure::from)
+                        });
+                    match evaluated {
+                        Ok(evaluation) => {
+                            for comparison in &evaluation.comparisons {
+                                let report = paths.baseline_report(comparison.lane);
+                                if let Err(error) = write_baseline_report(
+                                    &report,
+                                    &client_version,
+                                    server_era,
+                                    comparison,
+                                ) {
+                                    failures.push(format!(
+                                        "{} {} baseline report: {error}",
+                                        paths.identity(),
+                                        comparison.lane.slug()
+                                    ));
+                                }
+                                if !bless && !comparison.matches() {
+                                    failures.push(format!(
+                                        "{} {} baseline mismatch: unexpected={:?}; stale={:?}",
+                                        paths.identity(),
+                                        comparison.lane.slug(),
+                                        comparison.unexpected,
+                                        comparison.stale
+                                    ));
+                                }
+                            }
+                            updates.extend(evaluation.updates);
+                        }
+                        Err(error) => {
+                            failures.push(format!("{} baseline gate: {error}", paths.identity()));
+                        }
+                    }
                 }
-                fs::write(&setup_log, [])
-                    .with_context(|| format!("failed to clear conformance log {setup_log:?}"))
-                    .map_err(AppFailure::from)?;
-                let quiet_runner = LoggingProcessRunner::new(&self.runner, &setup_log);
-                let executor = RuntimeContext::new(self.config.clone(), quiet_runner);
-                let result = executor
-                    .run_conformance(&lanes, &spec_version, server_era, results_dir.as_deref())
-                    .await;
-                println!(
-                    "{} {}",
-                    OutputStyle::stdout().info("  Setup output"),
-                    setup_log.display()
-                );
-                result
+
+                if failures.is_empty() && bless {
+                    bless_baselines_transactionally(&baseline_root, &updates)
+                        .map_err(AppFailure::from)?;
+                    println!(
+                        "{} {}",
+                        OutputStyle::stdout().success("Conformance baselines updated:"),
+                        baseline_root.display()
+                    );
+                }
+                if failures.is_empty() {
+                    Ok(())
+                } else {
+                    Err(AppFailure::from(anyhow!(
+                        "conformance matrix completed with failures:\n- {}",
+                        failures.join("\n- ")
+                    )))
+                }
             }
             ConformanceAction::Report {
                 results_dir,
@@ -179,9 +259,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         lanes: &[ConformanceTarget],
         spec_version: &str,
         server_era: ConformanceServerEra,
-        results_dir: Option<&Path>,
+        paths: &CompliancePaths,
     ) -> AppResult<()> {
-        self.run_conformance_with_interrupt(lanes, spec_version, server_era, results_dir, async {
+        self.run_conformance_with_interrupt(lanes, spec_version, server_era, paths, async {
             if tokio::signal::ctrl_c().await.is_err() {
                 std::future::pending::<()>().await;
             }
@@ -194,7 +274,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         lanes: &[ConformanceTarget],
         spec_version: &str,
         server_era: ConformanceServerEra,
-        results_dir: Option<&Path>,
+        paths: &CompliancePaths,
         interrupt: I,
     ) -> AppResult<()>
     where
@@ -209,10 +289,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .map_err(AppFailure::from)?;
         self.require_loopback_fixture_base_url()?;
 
-        let paths = CompliancePaths::new(
-            results_dir.unwrap_or_else(|| self.config.integration_dir()),
-            self.config.root().join("reports"),
-        );
         paths.clear_conformance()?;
 
         let topologies = conformance_topologies(lanes);
@@ -294,7 +370,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                             fixture: metadata,
                             cancellation: cancellation_receiver.clone(),
                         };
-                        let direct = self.run_official_conformance_direct(&run, &paths);
+                        let direct = self.run_official_conformance_direct(&run, paths);
                         tokio::pin!(direct);
                         tokio::select! {
                             result = &mut direct => {
@@ -402,7 +478,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                         fixture: metadata,
                                         cancellation: cancellation_receiver.clone(),
                                     },
-                                    &paths,
+                                    paths,
                                 )
                                 .await
                                 .err()
@@ -472,9 +548,17 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             }
         }
 
-        if !interrupted {
+        if !interrupted
+            && [
+                ConformanceTarget::FixtureDirect,
+                ConformanceTarget::BuiltInDataPlane,
+                ConformanceTarget::ExternalDataPlane,
+            ]
+            .iter()
+            .all(|lane| lanes.contains(lane))
+        {
             match self.write_comparison_from_artifacts(
-                &paths,
+                paths,
                 Some((spec_version, server_era, DEFAULT_CONFORMANCE_SUITE)),
             ) {
                 Ok(path) => println!(
@@ -601,7 +685,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             &ConformanceRunMetadata {
                 oracle: crate::compliance::conformance::OFFICIAL_CONFORMANCE_PACKAGE.to_owned(),
                 target: run.target.label().to_owned(),
-                spec_version: run.spec_version.to_owned(),
+                client_version: run.spec_version.to_owned(),
                 server_era: run.server_era,
                 suite: DEFAULT_CONFORMANCE_SUITE.to_owned(),
                 fixture: Some(run.fixture.clone()),
@@ -673,9 +757,34 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             style.info(" Full output"),
             lane_paths.runner_log.display()
         );
-        process_result?;
         Ok(())
     }
+}
+
+fn prepare_setup_log(path: &Path) -> AppResult<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppFailure::from(anyhow!("conformance setup log has no parent")))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create conformance log directory {parent:?}"))
+        .map_err(AppFailure::from)?;
+    fs::write(path, [])
+        .with_context(|| format!("failed to clear conformance log {path:?}"))
+        .map_err(AppFailure::from)
+}
+
+fn conformance_matrix(
+    client_versions: &[String],
+    server_eras: &[ConformanceServerEra],
+) -> Vec<(String, ConformanceServerEra)> {
+    client_versions
+        .iter()
+        .flat_map(|client_version| {
+            server_eras
+                .iter()
+                .map(|server_era| (client_version.clone(), *server_era))
+        })
+        .collect()
 }
 
 fn render_conformance_lane_header(
@@ -971,6 +1080,22 @@ mod tests {
                 OutputStyle::plain(),
             ),
             "────────────\n MCP conformance lane: fixture direct\n    Starting 40 scenarios with @modelcontextprotocol/conformance@0.2.0-alpha.11 (client 2026-07-28, server legacy)"
+        );
+    }
+
+    #[test]
+    fn conformance_matrix_is_the_ordered_cartesian_product() {
+        assert_eq!(
+            conformance_matrix(
+                &["2025-11-25".to_owned(), "2026-07-28".to_owned()],
+                &[ConformanceServerEra::Legacy, ConformanceServerEra::Modern,],
+            ),
+            [
+                ("2025-11-25".to_owned(), ConformanceServerEra::Legacy),
+                ("2025-11-25".to_owned(), ConformanceServerEra::Modern),
+                ("2026-07-28".to_owned(), ConformanceServerEra::Legacy),
+                ("2026-07-28".to_owned(), ConformanceServerEra::Modern),
+            ]
         );
     }
 

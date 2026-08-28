@@ -10,19 +10,30 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         results_dir: Option<&Path>,
         output_dir: Option<&Path>,
     ) -> AppResult<()> {
-        let paths = CompliancePaths::new(
-            results_dir.unwrap_or_else(|| self.config.integration_dir()),
-            output_dir
-                .map(Path::to_owned)
-                .unwrap_or_else(|| self.config.root().join("reports")),
-        );
-        let comparison = self.write_comparison_from_artifacts(&paths, None)?;
-        println!(
-            "{} {}",
-            OutputStyle::stdout().info("Conformance comparison:"),
-            comparison.display()
-        );
-        Ok(())
+        let artifact_root = results_dir.unwrap_or_else(|| self.config.integration_dir());
+        let report_root = output_dir
+            .map(Path::to_owned)
+            .unwrap_or_else(|| self.config.root().join("reports"));
+        let runs = discover_conformance_runs(artifact_root, &report_root)?;
+        let mut failures = Vec::new();
+        for paths in runs {
+            match self.write_comparison_from_artifacts(&paths, None) {
+                Ok(comparison) => println!(
+                    "{} {}",
+                    OutputStyle::stdout().info("Conformance comparison:"),
+                    comparison.display()
+                ),
+                Err(error) => failures.push(format!("{}: {error}", paths.identity())),
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(AppFailure::from(anyhow!(
+                "conformance report regeneration completed with failures:\n- {}",
+                failures.join("\n- ")
+            )))
+        }
     }
 
     pub(super) fn write_comparison_from_artifacts(
@@ -39,6 +50,21 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             return Err(AppFailure::from(anyhow!(
                 "no official conformance artifacts found beneath {}",
                 paths.conformance_root.display()
+            )));
+        }
+        let missing = [
+            (ConformanceTarget::FixtureDirect, fixture.is_none()),
+            (ConformanceTarget::BuiltInDataPlane, built_in.is_none()),
+            (ConformanceTarget::ExternalDataPlane, external.is_none()),
+        ]
+        .into_iter()
+        .filter_map(|(lane, missing)| missing.then_some(lane.slug()))
+        .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(AppFailure::from(anyhow!(
+                "missing conformance lanes for {}: {}",
+                paths.identity(),
+                missing.join(", ")
             )));
         }
 
@@ -81,7 +107,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         write_comparison_report(
             &output,
             &ComparisonReport {
-                spec_version: metadata.spec_version.clone(),
+                client_version: metadata.client_version.clone(),
                 server_era: metadata.server_era,
                 suite: metadata.suite.clone(),
                 fixture: metadata.fixture.clone(),
@@ -129,9 +155,31 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             )));
         }
         let results = load_server_results(&artifact.official_results).map_err(AppFailure::from)?;
-        validate_server_scenario_set(&results, &metadata.suite, &metadata.spec_version)
+        validate_server_scenario_set(&results, &metadata.suite, &metadata.client_version)
             .map_err(AppFailure::from)?;
+        validate_scored_results(&results).map_err(AppFailure::from)?;
         Ok(Some(LoadedConformanceArtifact { results, metadata }))
+    }
+
+    pub(super) fn load_selected_conformance_results(
+        &self,
+        paths: &CompliancePaths,
+        lanes: &[ConformanceTarget],
+    ) -> AppResult<BTreeMap<ConformanceTarget, ConformanceResults>> {
+        let mut results = BTreeMap::new();
+        for lane in lanes {
+            let artifact = self
+                .load_conformance_artifact(paths, *lane)?
+                .ok_or_else(|| {
+                    AppFailure::from(anyhow!(
+                        "missing selected conformance lane {} for {}",
+                        lane.slug(),
+                        paths.identity()
+                    ))
+                })?;
+            results.insert(*lane, artifact.results);
+        }
+        Ok(results)
     }
 }
 
@@ -139,18 +187,47 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 pub(super) struct CompliancePaths {
     pub(super) conformance_root: PathBuf,
     pub(super) report_output: PathBuf,
+    client_version: String,
+    server_era: ConformanceServerEra,
 }
 
 impl CompliancePaths {
-    pub(super) fn new(artifact_root: &Path, report_output: PathBuf) -> Self {
+    pub(super) fn new(
+        artifact_root: &Path,
+        report_root: PathBuf,
+        client_version: &str,
+        server_era: ConformanceServerEra,
+    ) -> Self {
         Self {
-            conformance_root: artifact_root.join("conformance"),
-            report_output,
+            conformance_root: artifact_root
+                .join("conformance")
+                .join(client_version)
+                .join(server_era.label()),
+            report_output: report_root
+                .join("conformance")
+                .join(client_version)
+                .join(server_era.label()),
+            client_version: client_version.to_owned(),
+            server_era,
         }
     }
 
+    pub(super) fn identity(&self) -> String {
+        format!("client {}, server {}", self.client_version, self.server_era)
+    }
+
+    pub(super) fn setup_log(&self) -> PathBuf {
+        self.conformance_root.join("setup.log")
+    }
+
+    pub(super) fn baseline_report(&self, target: ConformanceTarget) -> PathBuf {
+        self.report_output
+            .join(target.slug())
+            .join("baseline-comparison.yml")
+    }
+
     pub(super) fn conformance_lane(&self, target: ConformanceTarget) -> ConformanceLanePaths {
-        let root = self.conformance_root.join(conformance_target_slug(target));
+        let root = self.conformance_root.join(target.slug());
         ConformanceLanePaths {
             official_results: root.join("official"),
             runner_log: root.join("runner.log"),
@@ -186,6 +263,73 @@ pub(super) struct ConformanceLanePaths {
 struct LoadedConformanceArtifact {
     results: ConformanceResults,
     metadata: ConformanceRunMetadata,
+}
+
+fn discover_conformance_runs(
+    artifact_root: &Path,
+    report_root: &Path,
+) -> AppResult<Vec<CompliancePaths>> {
+    let root = artifact_root.join("conformance");
+    let version_entries = strict_directories(&root, "client-version")?;
+    let mut runs = Vec::new();
+    for version_entry in version_entries {
+        let client_version = version_entry
+            .file_name()
+            .into_string()
+            .map_err(|_| AppFailure::from(anyhow!("client-version directory is not UTF-8")))?;
+        ProtocolVersion::from_str(&client_version).map_err(|error| {
+            AppFailure::from(anyhow!(
+                "invalid conformance client-version directory {client_version:?}: {error}"
+            ))
+        })?;
+        for era_entry in strict_directories(&version_entry.path(), "server-era")? {
+            let label = era_entry
+                .file_name()
+                .into_string()
+                .map_err(|_| AppFailure::from(anyhow!("server-era directory is not UTF-8")))?;
+            let server_era = ConformanceServerEra::from_label(&label).ok_or_else(|| {
+                AppFailure::from(anyhow!(
+                    "unknown conformance server-era directory {label:?}"
+                ))
+            })?;
+            runs.push(CompliancePaths::new(
+                artifact_root,
+                report_root.to_owned(),
+                &client_version,
+                server_era,
+            ));
+        }
+    }
+    if runs.is_empty() {
+        return Err(AppFailure::from(anyhow!(
+            "no partitioned official conformance artifacts found beneath {}",
+            root.display()
+        )));
+    }
+    Ok(runs)
+}
+
+fn strict_directories(path: &Path, dimension: &str) -> AppResult<Vec<fs::DirEntry>> {
+    let mut entries = fs::read_dir(path)
+        .with_context(|| format!("failed to read conformance {dimension} directory {path:?}"))
+        .map_err(AppFailure::from)?
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("failed to enumerate conformance directory {path:?}"))
+        .map_err(AppFailure::from)?;
+    entries.sort_by_key(fs::DirEntry::file_name);
+    for entry in &entries {
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect conformance entry {:?}", entry.path()))
+            .map_err(AppFailure::from)?;
+        if !file_type.is_dir() || file_type.is_symlink() {
+            return Err(AppFailure::from(anyhow!(
+                "unexpected non-directory entry in conformance {dimension} directory: {}",
+                entry.path().display()
+            )));
+        }
+    }
+    Ok(entries)
 }
 
 pub(super) fn recreate_directory(path: &Path) -> AppResult<()> {
@@ -290,7 +434,7 @@ fn compatible_metadata<'a>(
                 "direct fixture, built-in data-plane, and external data-plane conformance fixture provenance mismatch"
             )));
         }
-        if candidate.spec_version != metadata.spec_version
+        if candidate.client_version != metadata.client_version
             || candidate.server_era != metadata.server_era
             || candidate.suite != metadata.suite
             || candidate.oracle != metadata.oracle
@@ -301,7 +445,7 @@ fn compatible_metadata<'a>(
         }
     }
     if let Some((spec_version, server_era, suite)) = expected_run
-        && (metadata.spec_version != spec_version
+        && (metadata.client_version != spec_version
             || metadata.server_era != server_era
             || metadata.suite != suite)
     {
@@ -316,14 +460,6 @@ pub(super) const fn conformance_target(topology: StackMode) -> ConformanceTarget
     match topology {
         StackMode::Controlplane => ConformanceTarget::BuiltInDataPlane,
         StackMode::Dataplane => ConformanceTarget::ExternalDataPlane,
-    }
-}
-
-const fn conformance_target_slug(target: ConformanceTarget) -> &'static str {
-    match target {
-        ConformanceTarget::FixtureDirect => "fixture-direct",
-        ConformanceTarget::BuiltInDataPlane => "built-in-data-plane",
-        ConformanceTarget::ExternalDataPlane => "external-data-plane",
     }
 }
 
@@ -350,7 +486,7 @@ mod tests {
         ConformanceRunMetadata {
             oracle: OFFICIAL_CONFORMANCE_PACKAGE.to_owned(),
             target: target.label().to_owned(),
-            spec_version: "2026-07-28".to_owned(),
+            client_version: "2026-07-28".to_owned(),
             server_era: ConformanceServerEra::Dual,
             suite: "all".to_owned(),
             fixture: Some(ConformanceFixtureMetadata {
@@ -363,32 +499,48 @@ mod tests {
 
     #[test]
     fn conformance_paths_partition_all_three_lanes() {
-        let paths = CompliancePaths::new(Path::new("artifacts"), PathBuf::from("reports"));
+        let paths = CompliancePaths::new(
+            Path::new("artifacts"),
+            PathBuf::from("reports"),
+            "2026-07-28",
+            ConformanceServerEra::Modern,
+        );
 
         assert_eq!(
             paths
                 .conformance_lane(ConformanceTarget::FixtureDirect)
                 .root,
-            PathBuf::from("artifacts/conformance/fixture-direct")
+            PathBuf::from("artifacts/conformance/2026-07-28/modern/fixture-direct")
         );
         assert_eq!(
             paths
                 .conformance_lane(ConformanceTarget::BuiltInDataPlane)
                 .root,
-            PathBuf::from("artifacts/conformance/built-in-data-plane")
+            PathBuf::from("artifacts/conformance/2026-07-28/modern/built-in-data-plane")
         );
         assert_eq!(
             paths
                 .conformance_lane(ConformanceTarget::ExternalDataPlane)
                 .root,
-            PathBuf::from("artifacts/conformance/external-data-plane")
+            PathBuf::from("artifacts/conformance/2026-07-28/modern/external-data-plane")
+        );
+        assert_eq!(
+            paths.baseline_report(ConformanceTarget::BuiltInDataPlane),
+            PathBuf::from(
+                "reports/conformance/2026-07-28/modern/built-in-data-plane/baseline-comparison.yml"
+            )
         );
     }
 
     #[test]
     fn clearing_a_run_removes_every_lane_to_prevent_stale_comparisons() {
         let directory = tempfile::tempdir().expect("temporary artifact root");
-        let paths = CompliancePaths::new(directory.path(), PathBuf::from("reports"));
+        let paths = CompliancePaths::new(
+            directory.path(),
+            PathBuf::from("reports"),
+            "2026-07-28",
+            ConformanceServerEra::Dual,
+        );
         for target in [
             ConformanceTarget::FixtureDirect,
             ConformanceTarget::BuiltInDataPlane,
@@ -424,7 +576,7 @@ mod tests {
         )
         .expect("selected lanes should be compatible");
 
-        assert_eq!(selected.spec_version, "2026-07-28");
+        assert_eq!(selected.client_version, "2026-07-28");
     }
 
     #[test]

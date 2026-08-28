@@ -33,9 +33,9 @@ thiserror = "2.0.18"
 tokio = { version = "1.48", features = ["macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 url = "2.5.8"
 uuid = { version = "1.23.1", features = ["v4", "serde"] }
+yaml_serde = "0.10"
 
 [dev-dependencies]
-serde_yaml = "0.9"
 tempfile = "3"
 tokio-stream = "0.1.18"
 

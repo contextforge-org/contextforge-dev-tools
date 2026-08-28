@@ -5,7 +5,6 @@ use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use crate::compliance::DEFAULT_MCP_SPEC_VERSION;
 use crate::mcp::protocol::PROTOCOL_VERSION;
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
@@ -78,7 +77,7 @@ fn parse_run_time(value: &str) -> Result<String, String> {
 
 /// Orchestrates control-plane and dataplane integration workflows.
 #[derive(Debug, Clone, PartialEq, Parser)]
-#[command(name = "cf-integration", arg_required_else_help = true)]
+#[command(name = "cf-integration", version, arg_required_else_help = true)]
 pub struct Cli {
     /// Workflow to run.
     #[command(subcommand)]
@@ -350,17 +349,29 @@ pub struct ConformanceRunArgs {
     #[arg(long, value_enum, action = ArgAction::Append)]
     pub lane: Vec<CliLane>,
 
-    /// MCP protocol version used by the official client.
-    #[arg(long = "protocol-version", default_value = DEFAULT_MCP_SPEC_VERSION)]
-    pub protocol_version: ProtocolVersion,
+    /// MCP protocol version used by the official client; repeat for a matrix.
+    #[arg(long = "protocol-version", action = ArgAction::Append)]
+    pub protocol_version: Vec<ProtocolVersion>,
 
-    /// Protocol era exposed by the upstream fixture server.
-    #[arg(long, value_enum, default_value = "dual")]
-    pub server_era: CliConformanceServerEra,
+    /// Protocol era exposed by the fixture; repeat for a matrix.
+    #[arg(long, value_enum, action = ArgAction::Append)]
+    pub server_era: Vec<CliConformanceServerEra>,
 
     /// Result artifact root; defaults below CF_INTEGRATION_DIR.
     #[arg(long)]
     pub results_dir: Option<PathBuf>,
+
+    /// Baseline root; defaults to tests/conformance/baselines.
+    #[arg(long)]
+    pub baseline_dir: Option<PathBuf>,
+
+    /// Replace selected baselines atomically after every run succeeds.
+    #[arg(long)]
+    pub bless: bool,
+
+    /// Report root; defaults to the repository reports directory.
+    #[arg(long)]
+    pub output_dir: Option<PathBuf>,
 }
 
 impl From<CliLane> for crate::compliance::conformance::ConformanceTarget {
@@ -374,7 +385,7 @@ impl From<CliLane> for crate::compliance::conformance::ConformanceTarget {
 }
 
 /// Protocol behavior exposed by the pinned upstream fixture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 pub enum CliConformanceServerEra {
     /// Accept both initialization-based and per-request clients.
     Dual,

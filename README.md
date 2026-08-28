@@ -123,11 +123,13 @@ cf-integration live --lane fixture-direct --group protocol \
 
 cf-integration conformance run
 cf-integration conformance run \
-  --lane fixture-direct \
-  --lane external-data-plane \
+  --protocol-version 2025-11-25 \
   --protocol-version 2026-07-28 \
+  --server-era legacy \
   --server-era modern
+cf-integration conformance run --server-era dual --bless
 cf-integration conformance report
+cf-integration --version
 ```
 
 Workflows accept only `--lane`; `--topology` is reserved for stack commands.
@@ -149,21 +151,46 @@ rejection and external data-plane backend identity.
 The official runner is pinned to
 `@modelcontextprotocol/conformance@0.2.0-alpha.11`. Its TypeScript fixture is
 built from revision `c321dd32035556e6769d3724a8ee97d87c3faaac`. A default run
-starts workflow-owned stacks, runs all three semantic lanes, records raw
-official results without suppression, writes a deterministic comparison, and
-continues cleanup after failure or interruption.
+starts workflow-owned stacks, runs all three semantic lanes against separate
+`legacy` and `modern` fixtures, records raw official results without
+suppression, writes deterministic comparisons, and continues through every
+selected client-version/server-era combination before returning one result.
+`dual` is supported only when selected explicitly.
 
 The client protocol and fixture server era are independent:
 
 ```bash
 cf-integration conformance run \
-  --protocol-version 2025-11-25 --server-era legacy
-cf-integration conformance run \
-  --protocol-version 2026-07-28 --server-era modern
+  --protocol-version 2025-11-25 \
+  --protocol-version 2026-07-28 \
+  --server-era legacy \
+  --server-era modern
 ```
 
-Artifacts default below `CF_INTEGRATION_DIR/conformance`. Report regeneration
-accepts `--results-dir` and `--output-dir`.
+The repeated client and server selections form a Cartesian product. Artifacts
+default below `CF_INTEGRATION_DIR/conformance/<client-version>/<server-era>/`
+and reports below `reports/conformance/<client-version>/<server-era>/`.
+Per-lane baseline reports are one level deeper. `--results-dir`,
+`--baseline-dir`, and `--output-dir` override those roots.
+
+Baselines use this strict layout:
+
+```text
+tests/conformance/baselines/
+  <client-version>/
+    <server-era>/
+      fixture-direct.yml
+      built-in-data-plane.yml
+      external-data-plane.yml
+```
+
+Each file contains sorted `FAILURE` and `WARNING` check identities. The direct
+fixture is gated independently; findings reproduced there are subtracted from
+routed lanes before comparison. Unexpected, stale, unknown, malformed,
+incomplete, missing, and operational results fail the matrix. `--bless`
+replaces all selected baselines in one directory transaction only after every
+combination succeeds. Report regeneration discovers every partition beneath
+the selected result root and accepts `--results-dir` and `--output-dir`.
 
 ## Canonical configuration
 
@@ -218,7 +245,7 @@ Only `cf-integration` is published:
 ```text
 src/platform/    configuration, assets, processes, checkouts, Compose plans
 src/mcp/         unified MCP client, protocol messages, auth proxy, probe
-src/compliance/  official fixture, result parsing, lane comparison
+src/compliance/  official fixture, strict baselines, result parsing, comparison
 src/load/        Locust settings and report auditing
 src/runtime/     dispatcher and concrete workflow/session owners
 docker/          embedded Compose and nginx assets

@@ -13,7 +13,7 @@ services:
     restart: "no"
     environment:
       PORT: "3000"
-      MCP_CONFORMANCE_SERVER_ERA: ${CF_CONFORMANCE_SERVER_ERA:-dual}
+      MCP_CONFORMANCE_SERVER_ERA: ${CF_CONFORMANCE_SERVER_ERA:?Set CF_CONFORMANCE_SERVER_ERA to legacy, modern, or dual}
     ports:
       - "127.0.0.1:${CF_CONFORMANCE_PORT:-0}:3000"
     networks:

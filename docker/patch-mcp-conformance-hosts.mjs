@@ -25,10 +25,8 @@ const versionListOld = `const LEGACY_SESSION_PROTOCOL_VERSIONS = [
 ];`;
 const versionListReplacement = `${versionListOld}
 
-// Harness-only switch for exercising cross-era gateway paths. The upstream
-// fixture remains dual-era by default.
-const CONFORMANCE_SERVER_ERA =
-  process.env.MCP_CONFORMANCE_SERVER_ERA ?? 'dual';
+// Harness-only switch for exercising explicit cross-era gateway paths.
+const CONFORMANCE_SERVER_ERA = process.env.MCP_CONFORMANCE_SERVER_ERA;
 if (!['dual', 'legacy', 'modern'].includes(CONFORMANCE_SERVER_ERA)) {
   throw new Error(
     \`invalid MCP_CONFORMANCE_SERVER_ERA: \${CONFORMANCE_SERVER_ERA}\`

@@ -42,10 +42,9 @@ pub struct ConformanceRunMetadata {
     pub oracle: String,
     /// Stack label exercised by this artifact.
     pub target: String,
-    /// MCP specification revision used by the official client.
-    pub spec_version: String,
+    /// MCP protocol revision used by the official conformance client.
+    pub client_version: String,
     /// Protocol era exposed by the upstream fixture server.
-    #[serde(default)]
     pub server_era: ConformanceServerEra,
     /// Official scenario suite label.
     pub suite: String,
@@ -55,11 +54,10 @@ pub struct ConformanceRunMetadata {
 }
 
 /// Protocol behavior exposed by the pinned upstream fixture.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConformanceServerEra {
     /// Serve both initialization-based and per-request protocol behavior.
-    #[default]
     Dual,
     /// Serve only initialization-based protocol behavior.
     Legacy,
@@ -75,6 +73,17 @@ impl ConformanceServerEra {
             Self::Dual => "dual",
             Self::Legacy => "legacy",
             Self::Modern => "modern",
+        }
+    }
+
+    /// Parses a stable artifact path component.
+    #[must_use]
+    pub fn from_label(value: &str) -> Option<Self> {
+        match value {
+            "dual" => Some(Self::Dual),
+            "legacy" => Some(Self::Legacy),
+            "modern" => Some(Self::Modern),
+            _ => None,
         }
     }
 }
@@ -104,6 +113,16 @@ impl SemanticLane {
             Self::FixtureDirect => "fixture direct",
             Self::BuiltInDataPlane => "built-in data-plane route",
             Self::ExternalDataPlane => "external data-plane route",
+        }
+    }
+
+    /// Stable artifact and baseline path component.
+    #[must_use]
+    pub const fn slug(self) -> &'static str {
+        match self {
+            Self::FixtureDirect => "fixture-direct",
+            Self::BuiltInDataPlane => "built-in-data-plane",
+            Self::ExternalDataPlane => "external-data-plane",
         }
     }
 }
@@ -929,8 +948,8 @@ fn reference_key(reference: &SpecReference) -> String {
 /// Inputs for a deterministic Markdown comparison report.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComparisonReport {
-    /// MCP specification version used by the official client in all result sets.
-    pub spec_version: String,
+    /// MCP protocol version used by the official client in all result sets.
+    pub client_version: String,
     /// Protocol era exposed by the upstream fixture in all result sets.
     pub server_era: ConformanceServerEra,
     /// Official scenario suite exercised by all result sets.
@@ -949,7 +968,7 @@ pub fn render_comparison_markdown(report: &ComparisonReport) -> String {
     output.push_str(&format!(
         "- Official oracle: `{}`\n- Client specification: `{}`\n- Upstream server era: `{}`\n- Suite: `{}`\n",
         OFFICIAL_CONFORMANCE_PACKAGE,
-        markdown_code(&report.spec_version),
+        markdown_code(&report.client_version),
         report.server_era,
         markdown_code(&report.suite)
     ));

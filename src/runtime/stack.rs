@@ -11,7 +11,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     "{}",
                     OutputStyle::stderr().info("Starting the pinned MCP conformance server.")
                 );
-                self.start_conformance_service(topology, ConformanceServerEra::default())
+                self.start_conformance_service(topology, ConformanceServerEra::Legacy)
                     .await?;
                 let conformance_endpoint = self.conformance_fixture_endpoint(topology)?;
                 self.print_stack_endpoints(topology, &conformance_endpoint)

@@ -1,5 +1,6 @@
 //! Operating-system-backed execution of resolved CLI actions.
 
+use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::future::Future;
@@ -7,6 +8,10 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 
+use crate::compliance::baseline::{
+    BaselineUpdate, bless_baselines_transactionally, evaluate_baselines, validate_scored_results,
+    write_baseline_report,
+};
 use crate::compliance::conformance::{
     ComparisonFixtureTrust, ComparisonReport, ConformanceFixtureMetadata, ConformanceResults,
     ConformanceRunMetadata, ConformanceServerEra, ConformanceTarget,

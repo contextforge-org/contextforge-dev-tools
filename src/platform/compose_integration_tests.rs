@@ -109,8 +109,8 @@ fn conformance_runtime_matches_the_python_builtin_image_contract() {
     let compose =
         fs::read_to_string(root.join("docker/docker-compose.cf-conformance-runtime.yaml"))
             .expect("read conformance runtime overlay");
-    let compose: serde_yaml::Value =
-        serde_yaml::from_str(&compose).expect("parse conformance runtime overlay");
+    let compose: yaml_serde::Value =
+        yaml_serde::from_str(&compose).expect("parse conformance runtime overlay");
 
     let gateway = &compose["services"]["gateway"];
     assert_eq!(gateway["environment"]["GUNICORN_WORKERS"], "1");
@@ -149,12 +149,12 @@ fn shared_metadata_overlay_clears_obsolete_fast_time_arguments() {
         workspace_root().join("docker/docker-compose.cf-controlplane-build-labels.yaml"),
     )
     .expect("read shared control-plane metadata overlay");
-    let overlay: serde_yaml::Value =
-        serde_yaml::from_str(&compose).expect("parse shared control-plane metadata overlay");
+    let overlay: yaml_serde::Value =
+        yaml_serde::from_str(&compose).expect("parse shared control-plane metadata overlay");
 
     assert_eq!(
         overlay["services"]["fast_time_server"]["command"],
-        serde_yaml::Value::Sequence(Vec::new())
+        yaml_serde::Value::Sequence(Vec::new())
     );
     let gateway_environment = overlay["services"]["gateway"]["environment"]
         .as_mapping()
@@ -167,7 +167,7 @@ fn shared_metadata_overlay_clears_obsolete_fast_time_arguments() {
         "REQUIRE_PASSWORD_CHANGE_FOR_DEFAULT_PASSWORD",
     ] {
         assert!(
-            gateway_environment.contains_key(serde_yaml::Value::String(key.to_owned())),
+            gateway_environment.contains_key(yaml_serde::Value::String(key.to_owned())),
             "shared gateway environment must define {key}"
         );
     }
@@ -179,18 +179,18 @@ fn compose_overlays_assign_short_container_display_names() {
         workspace_root().join("docker/docker-compose.cf-controlplane-build-labels.yaml"),
     )
     .expect("read shared control-plane metadata overlay");
-    let shared: serde_yaml::Value =
-        serde_yaml::from_str(&shared).expect("parse shared control-plane metadata overlay");
+    let shared: yaml_serde::Value =
+        yaml_serde::from_str(&shared).expect("parse shared control-plane metadata overlay");
     let dataplane =
         fs::read_to_string(workspace_root().join("docker/docker-compose.cf-dataplane.yaml"))
             .expect("read dataplane Compose overlay");
-    let dataplane: serde_yaml::Value =
-        serde_yaml::from_str(&dataplane).expect("parse dataplane Compose overlay");
+    let dataplane: yaml_serde::Value =
+        yaml_serde::from_str(&dataplane).expect("parse dataplane Compose overlay");
     let conformance =
         fs::read_to_string(workspace_root().join("docker/docker-compose.cf-conformance.yaml"))
             .expect("read conformance Compose overlay");
-    let conformance: serde_yaml::Value =
-        serde_yaml::from_str(&conformance).expect("parse conformance Compose overlay");
+    let conformance: yaml_serde::Value =
+        yaml_serde::from_str(&conformance).expect("parse conformance Compose overlay");
 
     for (service, expected_name) in [
         ("gateway", "cf-controlplane"),
@@ -237,8 +237,8 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
     let root = workspace_root();
     let compose = fs::read_to_string(root.join("docker/docker-compose.cf-dataplane.yaml"))
         .expect("read dataplane Compose overlay");
-    let compose: serde_yaml::Value =
-        serde_yaml::from_str(&compose).expect("parse dataplane Compose overlay");
+    let compose: yaml_serde::Value =
+        yaml_serde::from_str(&compose).expect("parse dataplane Compose overlay");
     let environment = compose["services"]["dataplane"]["environment"]
         .as_mapping()
         .expect("dataplane environment must be a mapping");
@@ -256,12 +256,12 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
         "CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_ORIGINS",
     ] {
         assert!(
-            environment.contains_key(serde_yaml::Value::String(key.to_owned())),
+            environment.contains_key(yaml_serde::Value::String(key.to_owned())),
             "dataplane environment must define {key}"
         );
     }
     assert_eq!(
-        environment[serde_yaml::Value::String(
+        environment[yaml_serde::Value::String(
             "CONTEXTFORGE_DATA_PLANE_TOKEN_VERIFICATION_PRIVATE_KEY".to_owned()
         )]
         .as_str(),
@@ -270,7 +270,7 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
     );
     assert!(
         environment
-            [serde_yaml::Value::String("CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS".to_owned())]
+            [yaml_serde::Value::String("CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS".to_owned())]
         .as_str()
         .expect("MCP Host allowlist must be text")
         .contains(",nginx}"),
@@ -284,15 +284,15 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
         "CONTEXTFORGE_GATEWAY_RS_USER_CONFIG_CACHE_EXPIRY_SECONDS",
     ] {
         assert!(
-            !environment.contains_key(serde_yaml::Value::String(obsolete.to_owned())),
+            !environment.contains_key(yaml_serde::Value::String(obsolete.to_owned())),
             "obsolete dataplane environment key must be absent: {obsolete}"
         );
     }
 
     let build = fs::read_to_string(root.join("docker/docker-compose.cf-dataplane-build.yaml"))
         .expect("read dataplane build overlay");
-    let build: serde_yaml::Value =
-        serde_yaml::from_str(&build).expect("parse dataplane build overlay");
+    let build: yaml_serde::Value =
+        yaml_serde::from_str(&build).expect("parse dataplane build overlay");
     assert_eq!(
         build["services"]["dataplane"]["build"]["dockerfile"].as_str(),
         Some("docker/Dockerfile")
@@ -412,9 +412,9 @@ fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
     assert!(patch.contains("isModernEraRequest"));
     assert!(patch.contains("UnsupportedProtocolVersionError"));
 
-    let actual_compose: serde_yaml::Value =
-        serde_yaml::from_str(&compose).expect("parse conformance Compose overlay");
-    let expected_compose: serde_yaml::Value = serde_yaml::from_str(
+    let actual_compose: yaml_serde::Value =
+        yaml_serde::from_str(&compose).expect("parse conformance Compose overlay");
+    let expected_compose: yaml_serde::Value = yaml_serde::from_str(
         r#"
 services:
   gateway:
@@ -431,7 +431,7 @@ services:
     restart: "no"
     environment:
       PORT: "3000"
-      MCP_CONFORMANCE_SERVER_ERA: ${CF_CONFORMANCE_SERVER_ERA:-dual}
+      MCP_CONFORMANCE_SERVER_ERA: ${CF_CONFORMANCE_SERVER_ERA:?Set CF_CONFORMANCE_SERVER_ERA to legacy, modern, or dual}
     ports:
       - "127.0.0.1:${CF_CONFORMANCE_PORT:-0}:3000"
     networks:
@@ -491,7 +491,8 @@ fn conformance_fixture_patch_is_fail_closed_and_adds_server_era_routing() {
     let (status, patched) = run_fixture_patch(&source);
     assert!(status.success());
     assert!(patched.contains(replacement));
-    assert!(patched.contains("process.env.MCP_CONFORMANCE_SERVER_ERA ?? 'dual'"));
+    assert!(patched.contains("process.env.MCP_CONFORMANCE_SERVER_ERA;"));
+    assert!(!patched.contains("?? 'dual'"));
     assert!(patched.contains("CONFORMANCE_SERVER_ERA === 'legacy' && isModernEraRequest"));
     assert!(patched.contains("CONFORMANCE_SERVER_ERA === 'modern'"));
     assert!(!patched.contains(old));

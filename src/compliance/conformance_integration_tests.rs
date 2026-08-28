@@ -94,7 +94,7 @@ fn metadata_roundtrips_exact_fixture_provenance() {
     let metadata = ConformanceRunMetadata {
         oracle: OFFICIAL_CONFORMANCE_PACKAGE.to_owned(),
         target: "control-plane".to_owned(),
-        spec_version: DEFAULT_MCP_SPEC_VERSION.to_owned(),
+        client_version: DEFAULT_MCP_SPEC_VERSION.to_owned(),
         server_era: ConformanceServerEra::Legacy,
         suite: DEFAULT_CONFORMANCE_SUITE.to_owned(),
         fixture: Some(fixture_metadata()),
@@ -110,16 +110,17 @@ fn metadata_roundtrips_exact_fixture_provenance() {
 }
 
 #[test]
-fn historical_metadata_defaults_to_dual_server_era() {
-    let metadata: ConformanceRunMetadata = serde_json::from_value(serde_json::json!({
+fn metadata_without_an_explicit_server_era_is_rejected() {
+    let error = serde_json::from_value::<ConformanceRunMetadata>(serde_json::json!({
         "oracle": OFFICIAL_CONFORMANCE_PACKAGE,
         "target": "fixture direct",
-        "spec_version": "2025-11-25",
+        "client_version": "2025-11-25",
         "suite": "all"
     }))
-    .expect("historical metadata should remain readable");
+    .expect_err("metadata must identify the server era")
+    .to_string();
 
-    assert_eq!(metadata.server_era, ConformanceServerEra::Dual);
+    assert!(error.contains("server_era"));
 }
 
 #[test]
@@ -413,7 +414,7 @@ fn report_renders_raw_counts_and_no_expected_failure_column() {
         }],
     };
     let report = ComparisonReport {
-        spec_version: DEFAULT_MCP_SPEC_VERSION.to_owned(),
+        client_version: DEFAULT_MCP_SPEC_VERSION.to_owned(),
         server_era: ConformanceServerEra::Modern,
         suite: DEFAULT_CONFORMANCE_SUITE.to_owned(),
         fixture: Some(fixture_metadata()),
