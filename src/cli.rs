@@ -163,7 +163,7 @@ pub(crate) struct RoutedWorkflowTargetArgs {
     #[arg(long, value_enum)]
     pub(crate) lane: Option<CliTopology>,
 
-    /// MCP version; defaults to MCP_PROTOCOL_VERSION, then 2025-11-25.
+    /// MCP version; defaults to MCP_PROTOCOL_VERSION, then 2026-07-28.
     #[arg(long)]
     pub(crate) protocol_version: Option<ProtocolVersion>,
 }
@@ -175,7 +175,7 @@ pub(crate) struct WorkflowTargetArgs {
     #[arg(long, value_enum)]
     pub(crate) lane: Option<CliLane>,
 
-    /// MCP version; defaults to MCP_PROTOCOL_VERSION, then 2025-11-25.
+    /// MCP version; defaults to MCP_PROTOCOL_VERSION, then 2026-07-28.
     #[arg(long)]
     pub(crate) protocol_version: Option<ProtocolVersion>,
 }

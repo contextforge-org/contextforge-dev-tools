@@ -76,15 +76,15 @@ fn every_subcommand_reports_its_resolved_topology_at_startup() {
         ),
         (
             &["cf-integration", "probe"],
-            "Topology: external dataplane\nProtocol version: 2025-11-25",
+            "Topology: external dataplane\nProtocol version: 2026-07-28",
         ),
         (
             &["cf-integration", "load"],
-            "Topology: external dataplane\nProtocol version: 2025-11-25",
+            "Topology: external dataplane\nProtocol version: 2026-07-28",
         ),
         (
             &["cf-integration", "live"],
-            "Topology: external dataplane\nProtocol version: 2025-11-25",
+            "Topology: external dataplane\nProtocol version: 2026-07-28",
         ),
         (
             &["cf-integration", "conformance", "run"],
@@ -96,7 +96,7 @@ fn every_subcommand_reports_its_resolved_topology_at_startup() {
         ),
         (
             &["cf-integration", "debug", "inspect"],
-            "Topology: external dataplane\nProtocol version: 2025-11-25",
+            "Topology: external dataplane\nProtocol version: 2026-07-28",
         ),
         (
             &["cf-integration", "debug", "token", "--kind", "admin"],

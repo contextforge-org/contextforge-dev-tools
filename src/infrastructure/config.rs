@@ -16,9 +16,6 @@ use crate::infrastructure::assets::{contains_runtime_assets, materialize_runtime
 const ROOT_OVERRIDE: &str = "CF_INTEGRATION_ROOT";
 const LOCAL_SECRETS_FILE: &str = "secrets.env";
 const REDACTED: &str = "<redacted>";
-// Published from contextforge-data-plane commit 52eea91 and verified against
-// the default v1.0.7 control plane and fast-time fixture.
-const DEFAULT_DATAPLANE_IMAGE: &str = "ghcr.io/contextforge-org/contextforge-data-plane@sha256:f227d4ea4922cda2c6ee3c529f6a224b54ca906379ac62b9700b0b1e1ef90740";
 
 /// Environment values supplied without mutating the process environment.
 pub(crate) type Environment = HashMap<OsString, OsString>;
@@ -55,6 +52,7 @@ pub(crate) struct LoadedEnvironment {
 pub(crate) struct ImageSetting {
     resolved: OsString,
     prebuilt: bool,
+    tracks_main_revision: bool,
 }
 
 impl ImageSetting {
@@ -68,6 +66,12 @@ impl ImageSetting {
     #[must_use]
     pub(crate) fn is_prebuilt(&self) -> bool {
         self.prebuilt
+    }
+
+    /// Returns whether the image tag must be derived from the fetched main branch.
+    #[must_use]
+    pub(crate) fn tracks_main_revision(&self) -> bool {
+        self.tracks_main_revision
     }
 }
 
@@ -150,6 +154,7 @@ impl fmt::Debug for ImageSetting {
             .debug_struct("ImageSetting")
             .field("resolved", &REDACTED)
             .field("prebuilt", &self.prebuilt)
+            .field("tracks_main_revision", &self.tracks_main_revision)
             .finish()
     }
 }
@@ -277,11 +282,8 @@ impl AppConfig {
             "CF_CONTROLPLANE_REPO",
             OsString::from("https://github.com/IBM/mcp-context-forge.git"),
         );
-        let controlplane_ref = shell_value(
-            &environment,
-            "CF_CONTROLPLANE_REF",
-            OsString::from("v1.0.7"),
-        );
+        let controlplane_ref =
+            shell_value(&environment, "CF_CONTROLPLANE_REF", OsString::from("main"));
         let dataplane_repo = shell_value(
             &environment,
             "CF_DATAPLANE_REPO",
@@ -597,20 +599,26 @@ fn prefixed_value(prefix: &str, suffix: &OsStr) -> OsString {
 }
 
 fn controlplane_image(environment: &LoadedEnvironment) -> ImageSetting {
-    let resolved = first_nonempty(environment, "CF_CONTROLPLANE_IMAGE")
-        .map(|value| value.value.clone())
-        .unwrap_or_else(|| {
+    let (resolved, tracks_main_revision) =
+        if let Some(image) = first_nonempty(environment, "CF_CONTROLPLANE_IMAGE") {
+            (image.value.clone(), false)
+        } else {
             let version = shell_value(
                 environment,
                 "CF_CONTROLPLANE_VERSION",
-                OsString::from("latest"),
+                OsString::from("main"),
             );
-            prefixed_value("ghcr.io/ibm/mcp-context-forge:", &version.value)
-        });
+            let tracks_main_revision = version.value == OsStr::new("main");
+            (
+                prefixed_value("ghcr.io/ibm/mcp-context-forge:", &version.value),
+                tracks_main_revision,
+            )
+        };
 
     ImageSetting {
         resolved,
         prebuilt: true,
+        tracks_main_revision,
     }
 }
 
@@ -625,18 +633,22 @@ fn dataplane_image(environment: &LoadedEnvironment, dataplane_ref: &SourcedValue
             OsString::from("contextforge-org/contextforge-data-plane:local"),
         )
         .value
-    } else if let Some(version) = first_nonempty(environment, "CF_DATAPLANE_VERSION") {
+    } else {
+        let version = shell_value(
+            environment,
+            "CF_DATAPLANE_VERSION",
+            OsString::from("latest"),
+        );
         prefixed_value(
             "ghcr.io/contextforge-org/contextforge-data-plane:",
             &version.value,
         )
-    } else {
-        OsString::from(DEFAULT_DATAPLANE_IMAGE)
     };
 
     ImageSetting {
         resolved,
         prebuilt: explicitly_set || dataplane_ref.value.is_empty(),
+        tracks_main_revision: false,
     }
 }
 
@@ -910,7 +922,7 @@ mod tests {
         );
         assert_sourced(
             &config.controlplane_ref,
-            OsStr::new("v1.0.7"),
+            OsStr::new("main"),
             ValueOrigin::Default,
         );
         assert_sourced(
@@ -943,12 +955,13 @@ mod tests {
         assert_eq!(config.auth_encryption_secret.value.len(), 64);
         assert_eq!(
             config.controlplane_image.resolved,
-            OsStr::new("ghcr.io/ibm/mcp-context-forge:latest")
+            OsStr::new("ghcr.io/ibm/mcp-context-forge:main")
         );
         assert!(config.controlplane_image.prebuilt);
+        assert!(config.controlplane_image.tracks_main_revision);
         assert_eq!(
             config.dataplane_image.resolved,
-            OsStr::new(DEFAULT_DATAPLANE_IMAGE)
+            OsStr::new("ghcr.io/contextforge-org/contextforge-data-plane:latest")
         );
         assert_sourced(
             &config.dataplane_platform,
@@ -1035,7 +1048,7 @@ mod tests {
         );
         assert_sourced(
             &config.controlplane_ref,
-            OsStr::new("v1.0.7"),
+            OsStr::new("main"),
             ValueOrigin::Default,
         );
         assert_sourced(

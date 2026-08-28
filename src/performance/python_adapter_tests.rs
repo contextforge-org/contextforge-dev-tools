@@ -37,7 +37,7 @@ fn locust_adapter_and_compose_overlay_do_not_reference_the_removed_helper() {
         !compose.contains("JWT_SECRET_KEY="),
         "the load container receives a bearer token and must not receive the signing key"
     );
-    assert!(compose.contains("MCP_PROTOCOL_VERSION=${MCP_PROTOCOL_VERSION:-2025-11-25}"));
+    assert!(compose.contains("MCP_PROTOCOL_VERSION=${MCP_PROTOCOL_VERSION:-2026-07-28}"));
     assert!(
         compose.contains("LOCUST_REQUEST_TIMEOUT_SECONDS=${LOCUST_REQUEST_TIMEOUT_SECONDS:-60}")
     );
@@ -80,7 +80,7 @@ fn locust_adapter_imports_without_the_removed_helper_and_handles_mcp_bodies() {
 import json
 import locustfile_mcp as adapter
 
-assert adapter.PROTOCOL_VERSION == "2025-11-25"
+assert adapter.PROTOCOL_VERSION == "2026-07-28"
 assert adapter.ACCEPT == "application/json, text/event-stream"
 assert adapter.REQUEST_TIMEOUT_SECONDS == 60.0
 assert adapter.mcp_path() == "/servers/server%2Fid/mcp"
@@ -116,10 +116,10 @@ for unsafe in ("delete_everything_echo", "prefix-get_system_time", "shell"):
 user = adapter.MCPGatewayUser.__new__(adapter.MCPGatewayUser)
 user._session_id = None
 initialize_headers = user._headers(include_protocol_version=False)
-assert "Mcp-Protocol-Version" not in initialize_headers
+assert initialize_headers["Mcp-Protocol-Version"] == "2026-07-28"
 user._session_id = "session-id"
 request_headers = user._headers()
-assert request_headers["Mcp-Protocol-Version"] == "2025-11-25"
+assert request_headers["Mcp-Protocol-Version"] == "2026-07-28"
 assert request_headers["Mcp-Session-Id"] == "session-id"
 
 class Total:
@@ -333,6 +333,7 @@ assert user.client.timeouts == [
         .env("MCP_SERVER_ID", "server-id")
         .env("MCPGATEWAY_BEARER_TOKEN", "token")
         .env("LOCUST_REQUEST_TIMEOUT_SECONDS", "2.5")
+        .env("MCP_PROTOCOL_VERSION", "2025-11-25")
         .output()
         .expect("Python adapter timeout check should run");
 

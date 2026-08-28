@@ -239,6 +239,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         mode: StackMode,
         checkout_labels: bool,
     ) -> AppResult<CommandSpec> {
+        let controlplane_image = self.resolved_controlplane_image()?;
         let command_environment = command.environment().clone();
         let mut command = if command.working_directory().is_some() {
             command
@@ -261,14 +262,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 self.config.controlplane_dir().as_os_str(),
             )
             .env("CF_DATAPLANE_DIR", self.config.dataplane_dir().as_os_str())
-            .env(
-                "CF_CONTROLPLANE_IMAGE",
-                self.config.controlplane_image().resolved().to_owned(),
-            )
-            .env(
-                "IMAGE_LOCAL",
-                self.config.controlplane_image().resolved().to_owned(),
-            )
+            .env("CF_CONTROLPLANE_IMAGE", controlplane_image.clone())
+            .env("IMAGE_LOCAL", controlplane_image)
             .env(
                 "FAST_TIME_IMAGE",
                 self.config.fast_time_expected_image().value.clone(),
@@ -439,8 +434,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             BuildMode::from_str(setting).map_err(|error| AppFailure::from(anyhow!(error)))?;
         let controlplane_checkout_revision =
             Some(self.git_required(self.config.controlplane_dir(), ["rev-parse", "HEAD"])?);
+        let controlplane_image = self.resolved_controlplane_image()?;
         let (controlplane_image_present, controlplane_image_revision) =
-            self.image_state(self.config.controlplane_image().resolved())?;
+            self.image_state(&controlplane_image)?;
         let dataplane_source = (!self.config.dataplane_ref().value.is_empty()).then(|| {
             self.config
                 .dataplane_ref()
@@ -521,9 +517,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 
     fn pull_images(&self, mode: StackMode, build: bool, report_progress: bool) -> AppResult<()> {
         if !build && self.config.controlplane_image().is_prebuilt() {
+            let controlplane_image = self.resolved_controlplane_image()?;
             self.pull_if_changed(
                 "cf-controlplane",
-                self.config.controlplane_image().resolved(),
+                &controlplane_image,
                 None,
                 report_progress,
             )?;
@@ -623,6 +620,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     }
 
     fn integration_freshness(&self) -> AppResult<StackFreshness> {
+        let controlplane_image = self.resolved_controlplane_image()?;
         let project = required_text(
             &self.config.integration_project().value,
             "CF_INTEGRATION_PROJECT",
@@ -660,7 +658,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             controlplane_image_prebuilt: self.config.controlplane_image().is_prebuilt(),
             dataplane_source_enabled,
             expected_controlplane_image: required_text(
-                self.config.controlplane_image().resolved(),
+                &controlplane_image,
                 "CF_CONTROLPLANE_IMAGE",
             )?
             .to_owned(),
@@ -676,6 +674,21 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .to_owned(),
         };
         Ok(snapshot.evaluate())
+    }
+
+    fn resolved_controlplane_image(&self) -> AppResult<OsString> {
+        let setting = self.config.controlplane_image();
+        if !setting.tracks_main_revision() {
+            return Ok(setting.resolved().to_owned());
+        }
+
+        let revision = self.git_required(
+            self.config.controlplane_dir(),
+            ["rev-parse", "refs/remotes/origin/main"],
+        )?;
+        let mut image = OsString::from("ghcr.io/ibm/mcp-context-forge:");
+        image.push(revision);
+        Ok(image)
     }
 
     fn service_snapshot(&self, project: &str, service: &str) -> AppResult<ServiceSnapshot> {

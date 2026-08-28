@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 #[test]
 fn protocol_constants_match_the_streamable_http_contract() {
-    assert_eq!(PROTOCOL_VERSION, "2025-11-25");
+    assert_eq!(PROTOCOL_VERSION, "2026-07-28");
     assert_eq!(STATELESS_PROTOCOL_VERSION, "2026-07-28");
     assert_eq!(ACCEPT, "application/json, text/event-stream");
 }
@@ -95,7 +95,7 @@ fn deterministic_initialize_has_exact_client_payload() {
             "id": "init-1",
             "method": "initialize",
             "params": {
-                "protocolVersion": "2025-11-25",
+                "protocolVersion": "2026-07-28",
                 "capabilities": {},
                 "clientInfo": {
                     "name": "cf-integration",

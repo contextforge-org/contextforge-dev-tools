@@ -229,6 +229,7 @@ fn missing_checkout_is_cloned_before_fetch_and_checkout() {
         &[
             OsStr::new("clone"),
             OsStr::new("-q"),
+            OsStr::new("--no-progress"),
             OsStr::new("upstream"),
             directory.as_os_str(),
         ],
@@ -262,6 +263,7 @@ fn missing_checkout_is_cloned_before_fetch_and_checkout() {
             directory.as_os_str(),
             OsStr::new("fetch"),
             OsStr::new("-q"),
+            OsStr::new("--no-progress"),
             OsStr::new("--prune"),
             OsStr::new("--prune-tags"),
             OsStr::new("--tags"),

@@ -89,6 +89,7 @@ impl CheckoutPlan {
         let mut fetch_arguments = vec![
             OsString::from("fetch"),
             OsString::from("-q"),
+            OsString::from("--no-progress"),
             OsString::from("--prune"),
         ];
         if generated {
@@ -331,6 +332,7 @@ fn clone_command(request: &CheckoutRequest, directory: &Path) -> CommandSpec {
     CommandSpec::new("git").args([
         OsString::from("clone"),
         OsString::from("-q"),
+        OsString::from("--no-progress"),
         request.repository.clone(),
         directory.as_os_str().to_owned(),
     ])

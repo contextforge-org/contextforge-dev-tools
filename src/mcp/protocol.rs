@@ -4,8 +4,8 @@ use serde_json::{Map, Value, json};
 #[cfg(test)]
 use uuid::Uuid;
 
-/// Legacy session-oriented MCP protocol version used by the control-plane lane.
-pub(crate) const PROTOCOL_VERSION: &str = "2025-11-25";
+/// Latest MCP protocol version used when a workflow does not select one explicitly.
+pub(crate) const PROTOCOL_VERSION: &str = "2026-07-28";
 /// Stateless MCP protocol version used by the modern dataplane lane.
 pub(crate) const STATELESS_PROTOCOL_VERSION: &str = "2026-07-28";
 /// Accepted MCP streamable-HTTP response media types.

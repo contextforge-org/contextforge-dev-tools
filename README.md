@@ -115,7 +115,7 @@ all cleanup failures.
 Probe, load, and Inspector use physical lanes:
 
 ```bash
-cf-integration probe --lane dataplane --protocol-version 2025-11-25
+cf-integration probe --lane dataplane --protocol-version 2026-07-28
 cf-integration load --lane dataplane --smoke
 cf-integration debug inspect --lane dataplane --method tools/list
 ```
@@ -209,13 +209,12 @@ CF_INTEGRATION_DIR=.integration
 CF_MCP_STACK_MODE=dataplane
 
 CF_CONTROLPLANE_REPO=https://github.com/IBM/mcp-context-forge.git
-CF_CONTROLPLANE_REF=v1.0.7
-CF_CONTROLPLANE_IMAGE=ghcr.io/ibm/mcp-context-forge:latest
-CF_CONTROLPLANE_VERSION=latest
+CF_CONTROLPLANE_REF=main
+CF_CONTROLPLANE_VERSION=main
 
 CF_DATAPLANE_REPO=https://github.com/contextforge-org/contextforge-data-plane.git
 CF_DATAPLANE_REF=
-CF_DATAPLANE_IMAGE=ghcr.io/contextforge-org/contextforge-data-plane@sha256:f227d4ea4922cda2c6ee3c529f6a224b54ca906379ac62b9700b0b1e1ef90740
+CF_DATAPLANE_IMAGE=ghcr.io/contextforge-org/contextforge-data-plane:latest
 CF_DATAPLANE_PLATFORM=auto
 
 CF_COMPOSE_BUILD=auto
@@ -223,7 +222,7 @@ CF_FAST_TIME_EXPECTED_IMAGE=ghcr.io/ibm/cfex-mcp-fast-time-server:latest
 CF_FAST_TIME_SERVER_ID=9779b6698cbd4b4995ee04a4fab38737
 
 MCP_CLI_BASE_URL=http://127.0.0.1:8080
-MCP_PROTOCOL_VERSION=2025-11-25
+MCP_PROTOCOL_VERSION=2026-07-28
 MCP_SERVER_ID=9779b6698cbd4b4995ee04a4fab38737
 
 PLATFORM_ADMIN_EMAIL=admin@example.com
@@ -233,9 +232,12 @@ MCPGATEWAY_BEARER_TOKEN=<optional-pre-minted-token>
 
 `CF_COMPOSE_BUILD=auto` pulls or reuses prebuilt images and builds only an
 explicit source data plane when required. `true` always builds; `false` never
-builds. The default published dataplane is pinned by digest to the version
-validated with the default control-plane release; set `CF_DATAPLANE_IMAGE` or
-`CF_DATAPLANE_VERSION` explicitly to test another release.
+builds. Published mode tracks both repositories' main-branch images. The
+dataplane uses its floating `:latest` tag. The control plane uses the
+commit-tagged image for the freshly fetched `origin/main` revision because
+upstream reserves `:latest` for releases. Stack startup pulls changes;
+incompatible main images make the workflow fail instead of selecting an older
+pair.
 
 Compose requires `JWT_SECRET_KEY` and `AUTH_ENCRYPTION_SECRET`. If either is
 unset, a runtime-backed action generates stable values under

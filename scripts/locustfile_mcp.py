@@ -23,7 +23,7 @@ from urllib.parse import quote
 
 from locust import HttpUser, between, events, task
 
-PROTOCOL_VERSION = os.environ.get("MCP_PROTOCOL_VERSION", "2025-11-25")
+PROTOCOL_VERSION = os.environ.get("MCP_PROTOCOL_VERSION", "2026-07-28")
 STATELESS = PROTOCOL_VERSION >= "2026-07-28"
 ACCEPT = "application/json, text/event-stream"
 _REQUEST_TIMEOUT_ERROR = (
