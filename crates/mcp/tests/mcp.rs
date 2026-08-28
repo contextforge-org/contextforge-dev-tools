@@ -1,6 +1,7 @@
 use cf_integration_mcp::mcp::{
-    ACCEPT, PROTOCOL_VERSION, initialize, initialize_with_id, initialize_with_id_and_version,
-    jsonrpc, jsonrpc_with_id, parse_mcp_body, tool_call_args,
+    ACCEPT, PROTOCOL_VERSION, STATELESS_PROTOCOL_VERSION, initialize, initialize_with_id,
+    initialize_with_id_and_version, is_stateless_protocol, jsonrpc, jsonrpc_with_id,
+    parse_mcp_body, routing_name, stateless_jsonrpc_with_id, tool_call_args,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -8,7 +9,44 @@ use uuid::Uuid;
 #[test]
 fn protocol_constants_match_the_streamable_http_contract() {
     assert_eq!(PROTOCOL_VERSION, "2025-11-25");
+    assert_eq!(STATELESS_PROTOCOL_VERSION, "2026-07-28");
     assert_eq!(ACCEPT, "application/json, text/event-stream");
+}
+
+#[test]
+fn stateless_requests_carry_complete_metadata_and_preserve_existing_params() {
+    let request = stateless_jsonrpc_with_id(
+        "tools/call",
+        Some(json!({
+            "name": "echo",
+            "arguments": {"message": "hello"},
+            "_meta": {"extension.example/trace": "trace-1"}
+        })),
+        json!(9),
+        STATELESS_PROTOCOL_VERSION,
+    );
+
+    assert_eq!(request["method"], "tools/call");
+    assert_eq!(request["params"]["name"], "echo");
+    assert_eq!(
+        request["params"]["_meta"],
+        json!({
+            "extension.example/trace": "trace-1",
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {
+                "name": "cf-integration",
+                "version": "1.0"
+            },
+            "io.modelcontextprotocol/clientCapabilities": {}
+        })
+    );
+    assert_eq!(
+        routing_name("tools/call", request.get("params")),
+        Some("echo")
+    );
+    assert!(is_stateless_protocol("2026-07-28"));
+    assert!(is_stateless_protocol("2027-01-01"));
+    assert!(!is_stateless_protocol("2025-11-25"));
 }
 
 #[test]

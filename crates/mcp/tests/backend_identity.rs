@@ -85,7 +85,8 @@ fn dataplane_nginx_replaces_upstream_markers_at_every_public_backend_boundary() 
 
     assert!(nginx.contains("proxy_hide_header X-CF-Integration-Backend;"));
     assert!(nginx.contains("add_header X-CF-Integration-Backend dataplane always;"));
-    assert!(nginx.contains("add_header X-CF-Integration-Backend controlplane-fallback always;"));
+    assert!(!nginx.contains("controlplane_mcp_fallback"));
+    assert!(!nginx.contains("proxy_intercept_errors on;"));
     assert!(nginx.contains("add_header X-CF-Integration-Backend controlplane always;"));
 
     let primary = nginx

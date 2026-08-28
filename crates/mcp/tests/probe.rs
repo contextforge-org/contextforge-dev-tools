@@ -179,6 +179,24 @@ fn call_success() -> ProbeResponse {
     )
 }
 
+fn discover_success() -> ProbeResponse {
+    response(
+        200,
+        None,
+        json!({
+            "jsonrpc": "2.0",
+            "id": INITIALIZE_ID,
+            "result": {
+                "supportedVersions": ["2026-07-28"],
+                "capabilities": {"tools": {}},
+                "resultType": "complete",
+                "cacheScope": "private",
+                "ttlMs": 0
+            }
+        }),
+    )
+}
+
 #[tokio::test]
 async fn happy_path_uses_public_route_auth_session_and_deterministic_ids() {
     let transport = FakeTransport::new([
@@ -267,6 +285,40 @@ async fn forbidden_unauthenticated_response_is_accepted_as_auth_rejection() {
 
     let output = String::from_utf8(output).expect("probe output should be UTF-8");
     assert!(output.contains("auth_negative=PASS status=403"));
+}
+
+#[tokio::test]
+async fn stateless_happy_path_uses_discovery_request_metadata_and_no_session() {
+    let transport = FakeTransport::new([
+        ProbeResponse::new(401, None, None),
+        discover_success(),
+        tools_success(json!([{"name": "fast_time_echo"}])),
+        call_success(),
+    ]);
+    let mut configured = config();
+    configured.protocol_version = "2026-07-28".to_owned();
+    let mut output = Vec::new();
+
+    run_probe(&transport, &configured, &mut output)
+        .await
+        .expect("stateless probe flow should succeed");
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 4);
+    assert_eq!(requests[0].payload["method"], "server/discover");
+    assert_eq!(requests[1].payload["method"], "server/discover");
+    assert_eq!(requests[2].payload["method"], "tools/list");
+    assert_eq!(requests[3].payload["method"], "tools/call");
+    assert_eq!(requests[0].bearer_token, None);
+    assert!(requests.iter().all(|request| request.session_id.is_none()
+        && request.protocol_version.as_deref() == Some("2026-07-28")
+        && request.payload["params"]["_meta"]["io.modelcontextprotocol/protocolVersion"]
+            == "2026-07-28"));
+    assert_eq!(requests[3].payload["params"]["name"], "fast_time_echo");
+    let output = String::from_utf8(output).expect("probe output should be UTF-8");
+    assert!(output.contains("server_discover=PASS status=200 lifecycle=stateless"));
+    assert!(!output.contains("initialize=PASS"));
+    assert!(!output.contains("initialized=PASS"));
 }
 
 #[tokio::test]

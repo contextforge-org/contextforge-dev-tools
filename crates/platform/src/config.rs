@@ -90,7 +90,6 @@ pub struct AppConfig {
     pub(crate) controlplane_project: SourcedValue,
     pub(crate) jwt_secret_key: SourcedValue,
     pub(crate) auth_encryption_secret: SourcedValue,
-    pub(crate) jwt_subject: SourcedValue,
     controlplane_image: ImageSetting,
     dataplane_image: ImageSetting,
     pub(crate) dataplane_platform: SourcedValue,
@@ -99,6 +98,7 @@ pub struct AppConfig {
     pub(crate) fast_time_expected_image: SourcedValue,
     pub(crate) base_url: SourcedValue,
     pub(crate) platform_admin_email: SourcedValue,
+    pub(crate) platform_admin_password: SourcedValue,
     pub(crate) key_file_password: SourcedValue,
     pub(crate) locust_users: SourcedValue,
     pub(crate) locust_spawn_rate: SourcedValue,
@@ -212,7 +212,7 @@ impl AppConfig {
                 &environment,
                 "CF_DATAPLANE_DIR",
                 Path::new(&integration_dir.value)
-                    .join("contextforge-gateway-rs")
+                    .join("contextforge-data-plane")
                     .into_os_string(),
             ),
         );
@@ -224,14 +224,12 @@ impl AppConfig {
         let controlplane_ref = shell_value(
             &environment,
             "CF_CONTROLPLANE_REF",
-            OsString::from("v1.0.6"),
+            OsString::from("v1.0.7"),
         );
         let dataplane_repo = shell_value(
             &environment,
             "CF_DATAPLANE_REPO",
-            OsString::from(
-                "https://github.com/contextforge-gateway-rs/contextforge-gateway-rs.git",
-            ),
+            OsString::from("https://github.com/contextforge-org/contextforge-data-plane.git"),
         );
         let dataplane_ref = shell_value(&environment, "CF_DATAPLANE_REF", OsString::new());
         let integration_project =
@@ -268,11 +266,6 @@ impl AppConfig {
                     .auth_encryption_secret,
             ),
         };
-        let jwt_subject = shell_value(
-            &environment,
-            "MCP_JWT_SUBJECT",
-            OsString::from("admin@example.com"),
-        );
         let controlplane_image = controlplane_image(&environment);
         let dataplane_image = dataplane_image(&environment, &dataplane_ref);
         let dataplane_platform = shell_value(
@@ -291,9 +284,16 @@ impl AppConfig {
             .cloned()
             .unwrap_or_else(|| default_value("ghcr.io/ibm/cfex-mcp-fast-time-server:latest"));
         let base_url = base_url(&environment);
-        let platform_admin_email = first_nonempty(&environment, "PLATFORM_ADMIN_EMAIL")
-            .cloned()
-            .unwrap_or_else(|| jwt_subject.clone());
+        let platform_admin_email = shell_value(
+            &environment,
+            "PLATFORM_ADMIN_EMAIL",
+            OsString::from("admin@example.com"),
+        );
+        let platform_admin_password = shell_value(
+            &environment,
+            "PLATFORM_ADMIN_PASSWORD",
+            OsString::from("changeme"),
+        );
         let key_file_password = shell_value(&environment, "KEY_FILE_PASSWORD", OsString::new());
         let locust_users = present_value(&environment, "LOCUST_USERS", "100");
         let locust_spawn_rate = present_value(&environment, "LOCUST_SPAWN_RATE", "10");
@@ -314,7 +314,6 @@ impl AppConfig {
                 controlplane_project,
                 jwt_secret_key,
                 auth_encryption_secret,
-                jwt_subject,
                 controlplane_image,
                 dataplane_image,
                 dataplane_platform,
@@ -323,6 +322,7 @@ impl AppConfig {
                 fast_time_expected_image,
                 base_url,
                 platform_admin_email,
+                platform_admin_password,
                 key_file_password,
                 locust_users,
                 locust_spawn_rate,
@@ -405,12 +405,6 @@ impl AppConfig {
         &self.auth_encryption_secret
     }
 
-    /// Returns the JWT subject setting.
-    #[must_use]
-    pub fn jwt_subject(&self) -> &SourcedValue {
-        &self.jwt_subject
-    }
-
     /// Returns the resolved control-plane image setting.
     #[must_use]
     pub fn controlplane_image(&self) -> &ImageSetting {
@@ -457,6 +451,12 @@ impl AppConfig {
     #[must_use]
     pub fn platform_admin_email(&self) -> &SourcedValue {
         &self.platform_admin_email
+    }
+
+    /// Returns the bootstrap platform administrator password setting.
+    #[must_use]
+    pub fn platform_admin_password(&self) -> &SourcedValue {
+        &self.platform_admin_password
     }
 
     /// Returns the private-key password setting.
@@ -564,13 +564,17 @@ fn dataplane_image(environment: &LoadedEnvironment, dataplane_ref: &SourcedValue
         shell_value(
             environment,
             "CF_DATAPLANE_LOCAL_IMAGE",
-            OsString::from("contextforge-gateway-rs/contextforge-gateway-rs:local"),
+            OsString::from("contextforge-org/contextforge-data-plane:local"),
         )
         .value
     } else {
-        let version = shell_value(environment, "CF_DATAPLANE_VERSION", OsString::from("0.1.0"));
+        let version = shell_value(
+            environment,
+            "CF_DATAPLANE_VERSION",
+            OsString::from("latest"),
+        );
         prefixed_value(
-            "ghcr.io/contextforge-gateway-rs/contextforge-gateway-rs:",
+            "ghcr.io/contextforge-org/contextforge-data-plane:",
             &version.value,
         )
     };
@@ -923,19 +927,19 @@ mod tests {
         );
         assert_sourced(
             &config.controlplane_ref,
-            OsStr::new("v1.0.6"),
+            OsStr::new("v1.0.7"),
             ValueOrigin::Default,
         );
         assert_sourced(
             &config.dataplane_dir,
             root.path()
-                .join(".integration/contextforge-gateway-rs")
+                .join(".integration/contextforge-data-plane")
                 .as_os_str(),
             ValueOrigin::Default,
         );
         assert_sourced(
             &config.dataplane_repo,
-            OsStr::new("https://github.com/contextforge-gateway-rs/contextforge-gateway-rs.git"),
+            OsStr::new("https://github.com/contextforge-org/contextforge-data-plane.git"),
             ValueOrigin::Default,
         );
         assert_sourced(&config.dataplane_ref, OsStr::new(""), ValueOrigin::Default);
@@ -953,11 +957,6 @@ mod tests {
         assert_eq!(config.jwt_secret_key.value.len(), 64);
         assert_eq!(config.auth_encryption_secret.origin, ValueOrigin::Default);
         assert_eq!(config.auth_encryption_secret.value.len(), 64);
-        assert_sourced(
-            &config.jwt_subject,
-            OsStr::new("admin@example.com"),
-            ValueOrigin::Default,
-        );
         assert_eq!(
             config.controlplane_image.resolved,
             OsStr::new("ghcr.io/ibm/mcp-context-forge:latest")
@@ -966,7 +965,7 @@ mod tests {
         assert!(config.controlplane_image.prebuilt);
         assert_eq!(
             config.dataplane_image.resolved,
-            OsStr::new("ghcr.io/contextforge-gateway-rs/contextforge-gateway-rs:0.1.0")
+            OsStr::new("ghcr.io/contextforge-org/contextforge-data-plane:latest")
         );
         assert!(!config.dataplane_image.explicitly_set);
         assert_sourced(
@@ -997,6 +996,11 @@ mod tests {
         assert_sourced(
             &config.platform_admin_email,
             OsStr::new("admin@example.com"),
+            ValueOrigin::Default,
+        );
+        assert_sourced(
+            &config.platform_admin_password,
+            OsStr::new("changeme"),
             ValueOrigin::Default,
         );
         assert_sourced(
@@ -1049,7 +1053,7 @@ mod tests {
         );
         assert_sourced(
             &config.controlplane_ref,
-            OsStr::new("v1.0.6"),
+            OsStr::new("v1.0.7"),
             ValueOrigin::Default,
         );
         assert_sourced(
@@ -1163,7 +1167,7 @@ mod tests {
 
         assert_eq!(
             source_config.dataplane_image.resolved,
-            OsStr::new("contextforge-gateway-rs/contextforge-gateway-rs:local")
+            OsStr::new("contextforge-org/contextforge-data-plane:local")
         );
         assert_eq!(
             local_config.dataplane_image.resolved,
@@ -1171,7 +1175,7 @@ mod tests {
         );
         assert_eq!(
             published_config.dataplane_image.resolved,
-            OsStr::new("ghcr.io/contextforge-gateway-rs/contextforge-gateway-rs:2.0.0")
+            OsStr::new("ghcr.io/contextforge-org/contextforge-data-plane:2.0.0")
         );
         assert_eq!(
             explicit_config.dataplane_image.resolved,
@@ -1218,14 +1222,15 @@ mod tests {
             ("MCP_CLI_BASE_URL", "https://example.test"),
             ("NGINX_PORT", "9191"),
         ]);
-        let port_and_subject = environment(&[
+        let port_and_admin = environment(&[
             ("MCP_CLI_BASE_URL", ""),
             ("NGINX_PORT", "9191"),
-            ("MCP_JWT_SUBJECT", "operator@example.test"),
+            ("PLATFORM_ADMIN_EMAIL", "operator@example.test"),
+            ("PLATFORM_ADMIN_PASSWORD", "integration-password"),
         ]);
 
         let direct_config = load_app_config(root.path(), &direct).config;
-        let fallback_config = load_app_config(root.path(), &port_and_subject).config;
+        let fallback_config = load_app_config(root.path(), &port_and_admin).config;
 
         assert_sourced(
             &direct_config.base_url,
@@ -1240,6 +1245,11 @@ mod tests {
         assert_sourced(
             &fallback_config.platform_admin_email,
             OsStr::new("operator@example.test"),
+            ValueOrigin::Process,
+        );
+        assert_sourced(
+            &fallback_config.platform_admin_password,
+            OsStr::new("integration-password"),
             ValueOrigin::Process,
         );
     }

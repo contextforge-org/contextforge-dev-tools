@@ -10,7 +10,7 @@ use cf_integration_mcp::mcp::PROTOCOL_VERSION;
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
 const RUN_TIME_ERROR: &str =
-    "must be one or more positive integer+unit groups using ms, s, m, h, or d";
+    "must be a positive Locust duration using h, m, and s at most once in that order";
 const PROTOCOL_VERSION_ERROR: &str = "must use the MCP YYYY-MM-DD version format";
 
 fn parse_positive_usize(value: &str) -> Result<usize, String> {
@@ -38,6 +38,7 @@ fn parse_positive_f64(value: &str) -> Result<f64, String> {
 fn parse_run_time(value: &str) -> Result<String, String> {
     let bytes = value.as_bytes();
     let mut position = 0;
+    let mut previous_unit = None;
 
     if bytes.is_empty() {
         return Err(String::from(RUN_TIME_ERROR));
@@ -59,13 +60,17 @@ fn parse_run_time(value: &str) -> Result<String, String> {
             return Err(String::from(RUN_TIME_ERROR));
         }
 
-        if bytes[position..].starts_with(b"ms") {
-            position += 2;
-        } else if matches!(bytes.get(position), Some(b's' | b'm' | b'h' | b'd')) {
-            position += 1;
-        } else {
+        let unit = match bytes.get(position) {
+            Some(b'h') => 0,
+            Some(b'm') => 1,
+            Some(b's') => 2,
+            _ => return Err(String::from(RUN_TIME_ERROR)),
+        };
+        if previous_unit.is_some_and(|previous| unit <= previous) {
             return Err(String::from(RUN_TIME_ERROR));
         }
+        previous_unit = Some(unit);
+        position += 1;
     }
 
     Ok(value.to_owned())
@@ -86,7 +91,7 @@ pub enum Command {
     /// Manage Compose stacks.
     Stack(StackArgs),
     /// Probe one public MCP route.
-    Probe(WorkflowTargetArgs),
+    Probe(RoutedWorkflowTargetArgs),
     /// Run an MCP load test.
     Load(LoadArgs),
     /// Run upstream live gateway tests.
@@ -152,14 +157,26 @@ pub struct TopologyArgs {
     pub topology: Option<CliTopology>,
 }
 
-/// Shared target selection for MCP workflows.
+/// Target selection for routed MCP workflows.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct RoutedWorkflowTargetArgs {
+    /// Execution lane; defaults to CF_MCP_STACK_MODE, then dataplane.
+    #[arg(long, value_enum, visible_alias = "topology")]
+    pub lane: Option<CliTopology>,
+
+    /// MCP version; defaults to MCP_PROTOCOL_VERSION, then 2025-11-25.
+    #[arg(long)]
+    pub protocol_version: Option<ProtocolVersion>,
+}
+
+/// Target selection for MCP workflows that support a direct fixture lane.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct WorkflowTargetArgs {
     /// Execution lane; defaults to CF_MCP_STACK_MODE, then dataplane.
     #[arg(long, value_enum, visible_alias = "topology")]
     pub lane: Option<CliLane>,
 
-    /// MCP protocol version; defaults to MCP_PROTOCOL_VERSION, then 2025-11-25.
+    /// MCP version; defaults to MCP_PROTOCOL_VERSION, then 2025-11-25.
     #[arg(long)]
     pub protocol_version: Option<ProtocolVersion>,
 }
@@ -208,13 +225,9 @@ pub enum TopologySelection {
 /// Load-test options.
 #[derive(Debug, Clone, PartialEq, Args)]
 pub struct LoadArgs {
-    /// Shared lane and protocol-version selection.
+    /// Routed lane and protocol-version selection.
     #[command(flatten)]
-    pub target: WorkflowTargetArgs,
-
-    /// Load-test engine.
-    #[arg(long, value_enum, default_value = "locust")]
-    pub engine: CliLoadEngine,
+    pub target: RoutedWorkflowTargetArgs,
 
     /// Use smoke-test settings.
     #[arg(long)]
@@ -228,27 +241,9 @@ pub struct LoadArgs {
     #[arg(long, value_parser = parse_positive_f64)]
     pub spawn_rate: Option<f64>,
 
-    /// Duration using positive ms, s, m, h, or d groups, such as 1h30m.
+    /// Locust duration using positive h, m, and s groups, such as 1h30m.
     #[arg(long, value_parser = parse_run_time)]
     pub run_time: Option<String>,
-}
-
-/// Load-test implementation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum CliLoadEngine {
-    /// Python Locust adapter.
-    Locust,
-    /// Native Rust Goose runner.
-    Goose,
-}
-
-impl From<CliLoadEngine> for cf_integration_load::LoadEngine {
-    fn from(engine: CliLoadEngine) -> Self {
-        match engine {
-            CliLoadEngine::Locust => Self::Locust,
-            CliLoadEngine::Goose => Self::Goose,
-        }
-    }
 }
 
 /// Upstream live-test options.
@@ -269,10 +264,10 @@ pub enum CliLane {
     /// Run directly against the workflow's reference fixture.
     #[value(alias = "fixture")]
     FixtureDirect,
-    /// Run against the Python control-plane stack.
-    Controlplane,
-    /// Run through nginx and the Rust dataplane.
-    Dataplane,
+    /// Run the routed endpoint through the Python built-in data plane.
+    BuiltInDataPlane,
+    /// Run the routed endpoint through the external Rust data plane.
+    ExternalDataPlane,
 }
 
 /// Upstream live-test group.
@@ -284,7 +279,7 @@ pub enum LiveGroup {
     Rbac,
     /// Protocol-specific gateway tests.
     Protocol,
-    /// Every upstream live gateway test.
+    /// Run the MCP, RBAC, and protocol groups.
     All,
 }
 
@@ -377,8 +372,8 @@ impl From<CliLane> for cf_integration_compliance::conformance::ConformanceTarget
     fn from(lane: CliLane) -> Self {
         match lane {
             CliLane::FixtureDirect => Self::Fixture,
-            CliLane::Controlplane => Self::Controlplane,
-            CliLane::Dataplane => Self::Dataplane,
+            CliLane::BuiltInDataPlane => Self::BuiltInDataPlane,
+            CliLane::ExternalDataPlane => Self::ExternalDataPlane,
         }
     }
 }
@@ -431,16 +426,16 @@ pub struct DebugArgs {
 pub enum DebugCommand {
     /// Debug a live endpoint with the official MCP Inspector.
     Inspect(InspectArgs),
-    /// Print a gateway-compatible JWT.
+    /// Request and print a token from a running control plane.
     Token(TokenArgs),
 }
 
 /// Official Inspector options.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct InspectArgs {
-    /// Shared lane and protocol-version selection.
+    /// Routed lane and protocol-version selection.
     #[command(flatten)]
-    pub target: WorkflowTargetArgs,
+    pub target: RoutedWorkflowTargetArgs,
 
     /// Inspector method such as tools/list.
     #[arg(long, default_value = "tools/list")]
@@ -466,8 +461,8 @@ pub struct TokenArgs {
 /// Token privilege level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum TokenKind {
-    /// Minimum scopes needed by public MCP tests.
+    /// Catalog token with the minimum scopes needed by public MCP tests.
     Scoped,
-    /// Platform-admin token for fixture setup.
+    /// Authenticated platform-admin session token.
     Admin,
 }

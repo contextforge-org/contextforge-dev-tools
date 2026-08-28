@@ -5,20 +5,17 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+authors.workspace = true
+description = "Locust load orchestration for the ContextForge integration harness"
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 cf-integration-platform.workspace = true
 cf-integration-mcp.workspace = true
 anyhow.workspace = true
-goose.workspace = true
-reqwest.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-tokio.workspace = true
-url.workspace = true
 
 [dev-dependencies]
-axum.workspace = true
 tempfile.workspace = true
 
 [lints]

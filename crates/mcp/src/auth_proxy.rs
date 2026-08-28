@@ -8,7 +8,7 @@ use axum::Router;
 use axum::body::{Body, Bytes, to_bytes};
 use axum::extract::{Request, State};
 use axum::http::header::{
-    AUTHORIZATION, CONNECTION, CONTENT_LENGTH, HOST, HeaderName, HeaderValue,
+    AUTHORIZATION, CONNECTION, CONTENT_LENGTH, HOST, HeaderName, HeaderValue, ORIGIN,
 };
 use axum::http::{HeaderMap, Method, Response, StatusCode};
 use reqwest::Client;
@@ -94,6 +94,21 @@ impl AuthProxy {
         Self::start_with_protocol_version(upstream, bearer_token, None).await
     }
 
+    /// Starts a proxy for a routed endpoint backed by the built-in data plane.
+    ///
+    /// Unlike [`Self::start`], this does not require the Rust data-plane
+    /// response marker merely because the endpoint uses `/servers/{id}/mcp`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`Self::start`].
+    pub async fn start_builtin_data_plane(
+        upstream: Url,
+        bearer_token: impl AsRef<str>,
+    ) -> Result<Self, AuthProxyError> {
+        Self::start_configured(upstream, bearer_token, None, false).await
+    }
+
     /// Starts a proxy that also rewrites MCP initialize requests to one version.
     ///
     /// # Errors
@@ -103,6 +118,22 @@ impl AuthProxy {
         upstream: Url,
         bearer_token: impl AsRef<str>,
         protocol_version: Option<&str>,
+    ) -> Result<Self, AuthProxyError> {
+        let require_dataplane_backend = is_dataplane_endpoint(&upstream);
+        Self::start_configured(
+            upstream,
+            bearer_token,
+            protocol_version,
+            require_dataplane_backend,
+        )
+        .await
+    }
+
+    async fn start_configured(
+        upstream: Url,
+        bearer_token: impl AsRef<str>,
+        protocol_version: Option<&str>,
+        require_dataplane_backend: bool,
     ) -> Result<Self, AuthProxyError> {
         validate_upstream(&upstream)?;
         let mut authorization = HeaderValue::from_str(&format!("Bearer {}", bearer_token.as_ref()))
@@ -125,7 +156,7 @@ impl AuthProxy {
             .map_err(|_| AuthProxyError::EndpointConfiguration)?;
 
         let state = Arc::new(ProxyState {
-            require_dataplane_backend: is_dataplane_endpoint(&upstream),
+            require_dataplane_backend,
             upstream,
             authorization,
             proxy_path,
@@ -225,6 +256,7 @@ async fn forward(State(state): State<Arc<ProxyState>>, request: Request) -> Resp
         // mutated Host values remain untouched for the rebinding scenario.
         headers.remove(HOST);
     }
+    rewrite_loopback_origin(&mut headers, &state.loopback_authority, &state.upstream);
     headers.insert(AUTHORIZATION, state.authorization.clone());
 
     let upstream_response = match state
@@ -254,6 +286,18 @@ async fn forward(State(state): State<Arc<ProxyState>>, request: Request) -> Resp
     *response.status_mut() = status;
     *response.headers_mut() = headers;
     response
+}
+
+fn rewrite_loopback_origin(headers: &mut HeaderMap, loopback_authority: &str, upstream: &Url) {
+    let Some(origin) = headers.get(ORIGIN).and_then(|value| value.to_str().ok()) else {
+        return;
+    };
+    if origin != format!("http://{loopback_authority}") {
+        return;
+    }
+    if let Ok(value) = HeaderValue::from_str(&upstream.origin().ascii_serialization()) {
+        headers.insert(ORIGIN, value);
+    }
 }
 
 fn rewrite_initialize_protocol_version(body: Bytes, protocol_version: &str) -> Bytes {

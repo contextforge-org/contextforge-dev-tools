@@ -5,6 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+authors.workspace = true
+description = "Integration and conformance harness for ContextForge control-plane and data-plane services"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["contextforge", "mcp", "integration-testing", "conformance"]
+categories = ["command-line-utilities", "development-tools::testing"]
 default-run = "cf-integration"
 
 [workspace]
@@ -16,18 +23,20 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.97"
 license = "Apache-2.0"
-publish = false
+publish = true
+authors = ["ContextForge Authors"]
+repository = "https://github.com/contextforge-org/contextforge-dev-tools"
+homepage = "https://github.com/contextforge-org/contextforge-dev-tools"
 
 [workspace.dependencies]
-cf-integration-platform = { path = "crates/platform" }
-cf-integration-mcp = { path = "crates/mcp" }
-cf-integration-compliance = { path = "crates/compliance" }
-cf-integration-load = { path = "crates/load" }
+cf-integration-platform = { version = "0.1.0", path = "crates/platform" }
+cf-integration-mcp = { version = "0.1.0", path = "crates/mcp" }
+cf-integration-compliance = { version = "0.1.0", path = "crates/compliance" }
+cf-integration-load = { version = "0.1.0", path = "crates/load" }
 anyhow = "1"
 async-trait = "0.1.89"
 axum = "0.8.9"
 clap = { version = "4.5.60", features = ["derive"] }
-goose = { git = "https://github.com/tag1consulting/goose", rev = "614f75149cab5a963a8bc26d7b62639dedfa7a2b" }
 jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
 serde = { version = "1", features = ["derive"] }
@@ -59,6 +68,12 @@ uuid.workspace = true
 axum.workspace = true
 tempfile.workspace = true
 tokio-stream.workspace = true
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+disabled-strategies = ["quick-install", "compile"]
 
 [lints]
 workspace = true

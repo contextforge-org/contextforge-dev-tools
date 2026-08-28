@@ -2,7 +2,7 @@
 #
 # Usage from this repo:
 #   export CF_INTEGRATION_ROOT="$PWD"
-#   export CF_DATAPLANE_IMAGE="ghcr.io/contextforge-gateway-rs/contextforge-gateway-rs:0.1.0"
+#   export CF_DATAPLANE_IMAGE="ghcr.io/contextforge-org/contextforge-data-plane:latest"
 #   export CF_DATAPLANE_PLATFORM="linux/amd64"
 #   # Or let `cf-integration stack up --topology dataplane` resolve `auto`.
 #   docker compose \
@@ -22,13 +22,6 @@ services:
           - cf-controlplane
     environment:
       DATAPLANE_PUBLISHER: "true"
-      # Fresh databases bootstrap the admin with password_change_required,
-      # which 303-redirects every /admin/* route to an HTML page and breaks
-      # admin-API-driven test fixtures (e.g. the runtime-mode suite). The
-      # control-plane-only commands already disable enforcement; match them.
-      PASSWORD_CHANGE_ENFORCEMENT_ENABLED: ${PASSWORD_CHANGE_ENFORCEMENT_ENABLED:-false}
-      ADMIN_REQUIRE_PASSWORD_CHANGE_ON_BOOTSTRAP: ${ADMIN_REQUIRE_PASSWORD_CHANGE_ON_BOOTSTRAP:-false}
-      REQUIRE_PASSWORD_CHANGE_FOR_DEFAULT_PASSWORD: ${REQUIRE_PASSWORD_CHANGE_FOR_DEFAULT_PASSWORD:-false}
       # Short snapshot interval so runtime-created users/servers reach the
       # dataplane quickly in functional runs; raise for load benchmarks.
       # Requires a control-plane image with configurable publisher interval;
@@ -48,29 +41,32 @@ services:
     expose:
       - "4445"
     environment:
-      CONTEXTFORGE_GATEWAY_RS_ADDRESS: 0.0.0.0:4445
-      CONTEXTFORGE_GATEWAY_RS_REDIS_HOSTNAME: redis
-      CONTEXTFORGE_GATEWAY_RS_REDIS_PORT: "6379"
-      CONTEXTFORGE_GATEWAY_RS_REDIS_CONNECTION_MODE: plain-text
-      CONTEXTFORGE_GATEWAY_RS_TOKEN_SECRET: ${JWT_SECRET_KEY:-my-test-key-but-now-longer-than-32-bytes}
-      CONTEXTFORGE_GATEWAY_RS_UPSTREAM_CONNECTION_MODE: plain-text-or-tls
+      CONTEXTFORGE_DATA_PLANE_ADDRESS: 0.0.0.0:4445
+      CONTEXTFORGE_DATA_PLANE_REDIS_HOSTNAME: redis
+      CONTEXTFORGE_DATA_PLANE_REDIS_PORT: "6379"
+      CONTEXTFORGE_DATA_PLANE_REDIS_CONNECTION_MODE: plain-text
+      CONTEXTFORGE_DATA_PLANE_TOKEN_SECRET: ${JWT_SECRET_KEY:-my-test-key-but-now-longer-than-32-bytes}
+      # The published image currently includes its non-production `with_tools`
+      # bootstrap routes, whose clap model requires an RSA signing-key path.
+      # This harness never exposes or calls those routes and uses control-plane
+      # catalog tokens, so satisfy the unused path without adding a test key.
+      CONTEXTFORGE_DATA_PLANE_TOKEN_VERIFICATION_PRIVATE_KEY: /dev/null
+      CONTEXTFORGE_DATA_PLANE_UPSTREAM_CONNECTION_MODE: plain-text-or-tls
+      # These two MCP transport settings intentionally retain the historical
+      # prefix in the current dataplane configuration contract.
+      CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS: ${CF_DATAPLANE_MCP_ALLOWED_HOSTS:-127.0.0.1:${NGINX_PORT:-8080},localhost:${NGINX_PORT:-8080},nginx}
+      CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_ORIGINS: ${CF_DATAPLANE_MCP_ALLOWED_ORIGINS:-http://127.0.0.1:${NGINX_PORT:-8080},http://localhost:${NGINX_PORT:-8080}}
       # Disable the per-subject config cache for functional runs: its sliding
       # TTL freezes stale configs under steady traffic (retry loops renew it
       # forever), hiding servers created after first contact. Set to 60 to
       # restore the image default for load benchmarks.
-      CONTEXTFORGE_GATEWAY_RS_USER_CONFIG_CACHE_EXPIRY_SECONDS: ${CF_DATAPLANE_USER_CONFIG_CACHE_EXPIRY_SECONDS:-0}
+      CONTEXTFORGE_DATA_PLANE_USER_CONFIG_CACHE_EXPIRY_SECONDS: ${CF_DATAPLANE_USER_CONFIG_CACHE_EXPIRY_SECONDS:-0}
       RUST_LOG: ${CF_DATAPLANE_LOG:-info}
     depends_on:
       redis:
         condition: service_started
     deploy:
       replicas: 1
-
-  # SSE registration runs stock: the dataplane will not implement SSE
-  # upstreams (deprecated; removed in the 2026-07-28 MCP protocol update),
-  # but the publisher exports streamable-HTTP backends only, so SSE-backed
-  # virtual servers are absent from dataplane config and nginx replays their
-  # /servers/{id}/mcp requests on the control plane, which serves them fully.
 
   nginx:
     volumes:

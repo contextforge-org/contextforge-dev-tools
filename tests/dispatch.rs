@@ -6,7 +6,7 @@ use cf_integration::app::{
 };
 use cf_integration::cli::{Cli, LiveGroup, ProtocolVersion, TokenKind, TopologySelection};
 use cf_integration_compliance::conformance::{ConformanceServerEra, ConformanceTarget};
-use cf_integration_load::{LoadEngine, LoadRequest};
+use cf_integration_load::LoadRequest;
 use cf_integration_platform::StackMode;
 use cf_integration_platform::config::Environment;
 use clap::Parser;
@@ -99,7 +99,7 @@ fn stack_actions_resolve_freshness_and_volume_cleanup() {
 }
 
 #[test]
-fn load_preserves_both_engines_and_explicit_settings() {
+fn load_preserves_explicit_locust_settings() {
     assert_eq!(
         action(
             &[
@@ -109,8 +109,6 @@ fn load_preserves_both_engines_and_explicit_settings() {
                 "controlplane",
                 "--protocol-version",
                 "2025-06-18",
-                "--engine",
-                "locust",
                 "--smoke",
                 "--users",
                 "2",
@@ -127,7 +125,6 @@ fn load_preserves_both_engines_and_explicit_settings() {
                 .parse::<ProtocolVersion>()
                 .expect("valid protocol version"),
             request: LoadRequest {
-                engine: LoadEngine::Locust,
                 smoke: true,
                 users: Some(2),
                 spawn_rate: Some(0.5),
@@ -148,7 +145,7 @@ fn live_resolves_lane_group_and_protocol_version() {
             ],
         ),
         Action::Live {
-            lane: LiveLane::Controlplane,
+            lane: LiveLane::BuiltInDataPlane,
             group: LiveGroup::Mcp,
             protocol_version: "2025-06-18"
                 .parse::<ProtocolVersion>()
@@ -207,38 +204,14 @@ fn live_fixture_lane_rejects_non_protocol_groups() {
 }
 
 #[test]
-fn fixture_lane_is_rejected_by_workflows_without_a_direct_fixture() {
-    for arguments in [
-        vec!["cf-integration", "probe", "--lane", "fixture-direct"],
-        vec!["cf-integration", "load", "--lane", "fixture-direct"],
-        vec![
-            "cf-integration",
-            "debug",
-            "inspect",
-            "--lane",
-            "fixture-direct",
-        ],
-    ] {
-        let cli = Cli::try_parse_from(arguments).expect("shared lane syntax should parse");
-        let error = resolve_action(cli, &Environment::new())
-            .expect_err("fixture lane should require a direct-fixture workflow");
-        assert!(
-            error
-                .to_string()
-                .contains("only supported by live and conformance run")
-        );
-    }
-}
-
-#[test]
 fn conformance_defaults_to_all_three_ordered_lanes() {
     assert_eq!(
         action(&["cf-integration", "conformance", "run"], &[]),
         Action::Conformance(ConformanceAction::Run {
             lanes: vec![
                 ConformanceTarget::Fixture,
-                ConformanceTarget::Controlplane,
-                ConformanceTarget::Dataplane,
+                ConformanceTarget::BuiltInDataPlane,
+                ConformanceTarget::ExternalDataPlane,
             ],
             spec_version: "2026-07-28".to_owned(),
             server_era: ConformanceServerEra::Dual,
@@ -256,11 +229,11 @@ fn conformance_lanes_are_deduplicated_and_normalized() {
                 "conformance",
                 "run",
                 "--lane",
-                "dataplane",
+                "external-data-plane",
                 "--lane",
                 "fixture-direct",
                 "--lane",
-                "dataplane",
+                "external-data-plane",
                 "--protocol-version",
                 "2025-06-18",
                 "--server-era",
@@ -271,7 +244,10 @@ fn conformance_lanes_are_deduplicated_and_normalized() {
             &[],
         ),
         Action::Conformance(ConformanceAction::Run {
-            lanes: vec![ConformanceTarget::Fixture, ConformanceTarget::Dataplane],
+            lanes: vec![
+                ConformanceTarget::Fixture,
+                ConformanceTarget::ExternalDataPlane,
+            ],
             spec_version: "2025-06-18".to_owned(),
             server_era: ConformanceServerEra::Modern,
             results_dir: Some(PathBuf::from("results")),

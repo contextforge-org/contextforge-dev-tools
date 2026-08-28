@@ -218,6 +218,7 @@ fn cleanup_status_logs_and_config_use_typed_compose_commands() {
                 OsString::from("cf-mcp-inspector"),
                 OsString::from("cf-keycloak"),
                 OsString::from("cf-conformance-server"),
+                OsString::from("cf-conformance-proxy"),
                 OsString::from("custom-service"),
             ]
         )),
@@ -244,6 +245,7 @@ fn cleanup_status_logs_and_config_use_typed_compose_commands() {
             "mcp_inspector",
             "keycloak",
             "mcp_conformance_server",
+            "mcp_conformance_proxy",
             "custom-service",
         ]
     ));

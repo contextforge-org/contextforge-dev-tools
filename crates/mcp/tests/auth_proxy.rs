@@ -141,6 +141,7 @@ async fn injects_auth_and_preserves_mcp_request_and_response_contract() {
         .header("mcp-session-id", "client-session")
         .header("mcp-protocol-version", "2025-11-25")
         .header("x-end-to-end", "preserve-me")
+        .header("origin", proxy.url().origin().ascii_serialization())
         .header(CONNECTION, "x-remove-me")
         .header("x-remove-me", "must-not-be-forwarded")
         .body(r#"{"jsonrpc":"2.0","id":1}"#)
@@ -213,6 +214,13 @@ async fn injects_auth_and_preserves_mcp_request_and_response_contract() {
     assert_eq!(
         request.headers.get("x-end-to-end"),
         Some(&HeaderValue::from_static("preserve-me"))
+    );
+    assert_eq!(
+        request
+            .headers
+            .get("origin")
+            .and_then(|value| value.to_str().ok()),
+        Some(upstream.url.origin().ascii_serialization().as_str())
     );
     assert!(request.headers.get("x-remove-me").is_none());
     assert_eq!(request.body, r#"{"jsonrpc":"2.0","id":1}"#);
@@ -581,4 +589,34 @@ async fn dataplane_proxy_requires_one_exact_backend_marker_before_forwarding() {
         proxy.shutdown().await.expect("proxy should shut down");
         upstream.shutdown().await;
     }
+}
+
+#[tokio::test]
+async fn builtin_data_plane_proxy_allows_a_routed_controlplane_response() {
+    let upstream = TestServer::start(
+        Router::new()
+            .route("/servers/test/mcp", any(backend_marker_handler))
+            .with_state(BackendMarkerResponse {
+                markers: vec!["controlplane"],
+            }),
+        "servers/test/mcp",
+    )
+    .await;
+    let proxy = AuthProxy::start_builtin_data_plane(upstream.url.clone(), INJECTED_TOKEN)
+        .await
+        .expect("built-in data-plane proxy should start");
+
+    let response = client()
+        .get(proxy.url().clone())
+        .send()
+        .await
+        .expect("routed built-in response should be forwarded");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.text().await.expect("body should read"),
+        "private-upstream-body"
+    );
+
+    proxy.shutdown().await.expect("proxy should shut down");
+    upstream.shutdown().await;
 }

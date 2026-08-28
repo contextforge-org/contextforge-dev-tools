@@ -72,8 +72,8 @@ fn readme_documents_the_official_conformance_fixture_contract() {
     for fact in [
         "official TypeScript fixture",
         "Fast Time remains",
-        "runs fixture-direct, controlplane, and dataplane lanes",
-        "794dcab99ed1ef2b89607be9999574140ea5c96e",
+        "runs fixture-direct, built-in-data-plane, and external-data-plane lanes",
+        "c321dd32035556e6769d3724a8ee97d87c3faaac",
         "defaults to MCP `2026-07-28`",
         "loopback `MCP_CLI_BASE_URL`",
         "passes an empty expected-failure file",
@@ -128,6 +128,46 @@ fn dataplane_compose_files_are_in_override_order() {
 }
 
 #[test]
+fn conformance_runtime_matches_the_python_builtin_image_contract() {
+    let root = workspace_root();
+    let compose =
+        fs::read_to_string(root.join("docker/docker-compose.cf-conformance-runtime.yaml"))
+            .expect("read conformance runtime overlay");
+    let compose: serde_yaml::Value =
+        serde_yaml::from_str(&compose).expect("parse conformance runtime overlay");
+
+    let gateway = &compose["services"]["gateway"];
+    assert_eq!(gateway["environment"]["GUNICORN_WORKERS"], "1");
+    assert_eq!(gateway["environment"]["RATE_LIMITING_ENABLED"], "false");
+    assert_eq!(gateway["environment"]["RUST_MCP_MODE"], "off");
+    for service in ["gateway", "migration"] {
+        assert_eq!(
+            compose["services"][service]["build"]["args"]["ENABLE_RUST"],
+            "false"
+        );
+        assert_eq!(
+            compose["services"][service]["build"]["args"]["ENABLE_RUST_MCP_RMCP"],
+            "false"
+        );
+    }
+
+    let project = ComposeProject::controlplane(
+        Path::new("/repo"),
+        Path::new("/checkout"),
+        OsString::from("cf"),
+        false,
+    )
+    .with_conformance_overlay(Path::new("/repo"))
+    .with_conformance_runtime(Path::new("/repo"));
+    assert_eq!(
+        project.files().last(),
+        Some(&PathBuf::from(
+            "/repo/docker/docker-compose.cf-conformance-runtime.yaml"
+        ))
+    );
+}
+
+#[test]
 fn shared_metadata_overlay_clears_obsolete_fast_time_arguments() {
     let compose = fs::read_to_string(
         workspace_root().join("docker/docker-compose.cf-controlplane-build-labels.yaml"),
@@ -140,6 +180,21 @@ fn shared_metadata_overlay_clears_obsolete_fast_time_arguments() {
         overlay["services"]["fast_time_server"]["command"],
         serde_yaml::Value::Sequence(Vec::new())
     );
+    let gateway_environment = overlay["services"]["gateway"]["environment"]
+        .as_mapping()
+        .expect("shared gateway environment must be a mapping");
+    for key in [
+        "PLATFORM_ADMIN_EMAIL",
+        "PLATFORM_ADMIN_PASSWORD",
+        "PASSWORD_CHANGE_ENFORCEMENT_ENABLED",
+        "ADMIN_REQUIRE_PASSWORD_CHANGE_ON_BOOTSTRAP",
+        "REQUIRE_PASSWORD_CHANGE_FOR_DEFAULT_PASSWORD",
+    ] {
+        assert!(
+            gateway_environment.contains_key(serde_yaml::Value::String(key.to_owned())),
+            "shared gateway environment must define {key}"
+        );
+    }
 }
 
 #[test]
@@ -195,6 +250,77 @@ fn compose_overlays_assign_short_container_display_names() {
         conformance["services"]["mcp_conformance_server"]["labels"]["name"].as_str(),
         Some("cf-conformance-server")
     );
+    assert_eq!(
+        conformance["services"]["mcp_conformance_proxy"]["labels"]["name"].as_str(),
+        Some("cf-conformance-proxy")
+    );
+}
+
+#[test]
+fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
+    let root = workspace_root();
+    let compose = fs::read_to_string(root.join("docker/docker-compose.cf-dataplane.yaml"))
+        .expect("read dataplane Compose overlay");
+    let compose: serde_yaml::Value =
+        serde_yaml::from_str(&compose).expect("parse dataplane Compose overlay");
+    let environment = compose["services"]["dataplane"]["environment"]
+        .as_mapping()
+        .expect("dataplane environment must be a mapping");
+
+    for key in [
+        "CONTEXTFORGE_DATA_PLANE_ADDRESS",
+        "CONTEXTFORGE_DATA_PLANE_REDIS_HOSTNAME",
+        "CONTEXTFORGE_DATA_PLANE_REDIS_PORT",
+        "CONTEXTFORGE_DATA_PLANE_REDIS_CONNECTION_MODE",
+        "CONTEXTFORGE_DATA_PLANE_TOKEN_SECRET",
+        "CONTEXTFORGE_DATA_PLANE_TOKEN_VERIFICATION_PRIVATE_KEY",
+        "CONTEXTFORGE_DATA_PLANE_UPSTREAM_CONNECTION_MODE",
+        "CONTEXTFORGE_DATA_PLANE_USER_CONFIG_CACHE_EXPIRY_SECONDS",
+        "CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS",
+        "CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_ORIGINS",
+    ] {
+        assert!(
+            environment.contains_key(serde_yaml::Value::String(key.to_owned())),
+            "dataplane environment must define {key}"
+        );
+    }
+    assert_eq!(
+        environment[serde_yaml::Value::String(
+            "CONTEXTFORGE_DATA_PLANE_TOKEN_VERIFICATION_PRIVATE_KEY".to_owned()
+        )]
+        .as_str(),
+        Some("/dev/null"),
+        "the unused local-bootstrap signing key must not add a real private key to the harness"
+    );
+    assert!(
+        environment
+            [serde_yaml::Value::String("CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS".to_owned())]
+        .as_str()
+        .expect("MCP Host allowlist must be text")
+        .contains(",nginx}"),
+        "the default MCP Host allowlist must accept containerized Locust through nginx"
+    );
+    for obsolete in [
+        "CONTEXTFORGE_GATEWAY_RS_ADDRESS",
+        "CONTEXTFORGE_GATEWAY_RS_REDIS_HOSTNAME",
+        "CONTEXTFORGE_GATEWAY_RS_TOKEN_SECRET",
+        "CONTEXTFORGE_GATEWAY_RS_UPSTREAM_CONNECTION_MODE",
+        "CONTEXTFORGE_GATEWAY_RS_USER_CONFIG_CACHE_EXPIRY_SECONDS",
+    ] {
+        assert!(
+            !environment.contains_key(serde_yaml::Value::String(obsolete.to_owned())),
+            "obsolete dataplane environment key must be absent: {obsolete}"
+        );
+    }
+
+    let build = fs::read_to_string(root.join("docker/docker-compose.cf-dataplane-build.yaml"))
+        .expect("read dataplane build overlay");
+    let build: serde_yaml::Value =
+        serde_yaml::from_str(&build).expect("parse dataplane build overlay");
+    assert_eq!(
+        build["services"]["dataplane"]["build"]["dockerfile"].as_str(),
+        Some("docker/Dockerfile")
+    );
 }
 
 #[test]
@@ -231,19 +357,22 @@ fn conformance_fixture_is_an_explicit_overlay_and_profile() {
             .any(|file| file.ends_with("docker-compose.cf-conformance.yaml"))
     );
 
-    let conformance = default_project
+    let overlay = default_project
         .clone()
         .with_profiles(["testing"])
-        .with_conformance_fixture(Path::new("/repo"));
-    assert_eq!(conformance.profiles(), ["testing", "conformance"]);
+        .with_conformance_overlay(Path::new("/repo"));
+    assert_eq!(overlay.profiles(), ["testing"]);
     assert_eq!(
-        &conformance.files()[..default_project.files().len()],
+        &overlay.files()[..default_project.files().len()],
         default_project.files()
     );
     assert_eq!(
-        conformance.files().last().map(PathBuf::as_path),
+        overlay.files().last().map(PathBuf::as_path),
         Some(Path::new("/repo/docker/docker-compose.cf-conformance.yaml"))
     );
+
+    let conformance = overlay.with_conformance_fixture(Path::new("/repo"));
+    assert_eq!(conformance.profiles(), ["testing", "conformance"]);
     let deduplicated = conformance.with_conformance_fixture(Path::new("/repo"));
     assert_eq!(deduplicated.profiles(), ["testing", "conformance"]);
     assert_eq!(
@@ -269,7 +398,7 @@ fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
     assert!(dockerfile.contains("FROM node:22-bookworm-slim"));
     assert!(
         dockerfile
-            .contains("ARG MCP_CONFORMANCE_REVISION=794dcab99ed1ef2b89607be9999574140ea5c96e")
+            .contains("ARG MCP_CONFORMANCE_REVISION=c321dd32035556e6769d3724a8ee97d87c3faaac")
     );
     assert!(dockerfile.contains(
         "git clone https://github.com/modelcontextprotocol/conformance.git mcp-conformance"
@@ -317,7 +446,7 @@ services:
       GATEWAY_TOOL_NAME_SEPARATOR: "_"
   mcp_conformance_server:
     profiles: ["conformance"]
-    image: cf-integration/mcp-conformance-server:0.2.0-alpha.9
+    image: cf-integration/mcp-conformance-server:0.2.0-alpha.11
     labels:
       name: cf-conformance-server
     build:
@@ -328,7 +457,7 @@ services:
       PORT: "3000"
       MCP_CONFORMANCE_SERVER_ERA: ${CF_CONFORMANCE_SERVER_ERA:-dual}
     ports:
-      - "127.0.0.1::3000"
+      - "127.0.0.1:${CF_CONFORMANCE_PORT:-0}:3000"
     networks:
       - mcpnet
     healthcheck:
@@ -341,10 +470,28 @@ services:
       timeout: 2s
       retries: 30
       start_period: 2s
+  mcp_conformance_proxy:
+    profiles: ["conformance"]
+    image: nginx:1.30.4-alpine3.24
+    labels:
+      name: cf-conformance-proxy
+    restart: "no"
+    volumes:
+      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/docker/nginx.cf-conformance-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - mcpnet
+    depends_on:
+      mcp_conformance_server:
+        condition: service_healthy
 "#,
     )
     .expect("parse expected conformance Compose contract");
     assert_eq!(actual_compose, expected_compose);
+
+    let proxy = fs::read_to_string(root.join("docker/nginx.cf-conformance-proxy.conf"))
+        .expect("read conformance proxy config");
+    assert!(proxy.contains("proxy_pass http://mcp_conformance_server:3000;"));
+    assert!(proxy.contains("proxy_set_header Host localhost:3000;"));
 }
 
 #[test]

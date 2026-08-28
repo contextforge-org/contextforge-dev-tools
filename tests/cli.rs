@@ -1,9 +1,11 @@
 use std::ffi::OsString;
+use std::process::Command as ProcessCommand;
 
 use cf_integration::cli::{
-    Cli, CliConformanceServerEra, CliLane, CliLoadEngine, CliTopology, Command, ConformanceArgs,
-    ConformanceCommand, DebugArgs, DebugCommand, LiveGroup, LoadArgs, ProtocolVersion, StackArgs,
-    StackCommand, TokenKind, TopologySelection, WorkflowTargetArgs,
+    Cli, CliConformanceServerEra, CliLane, CliTopology, Command, ConformanceArgs,
+    ConformanceCommand, DebugArgs, DebugCommand, LiveGroup, LoadArgs, ProtocolVersion,
+    RoutedWorkflowTargetArgs, StackArgs, StackCommand, TokenKind, TopologySelection,
+    WorkflowTargetArgs,
 };
 use clap::{CommandFactory, Parser, error::ErrorKind};
 
@@ -51,6 +53,43 @@ fn command_tree_contains_only_distinct_public_workflows() {
     );
     assert_eq!(subcommands(&["conformance"]), ["run", "report"]);
     assert_eq!(subcommands(&["debug"]), ["inspect", "token"]);
+}
+
+#[test]
+fn every_public_command_renders_help_from_the_binary() {
+    let paths: &[&[&str]] = &[
+        &[],
+        &["stack"],
+        &["stack", "up"],
+        &["stack", "down"],
+        &["stack", "status"],
+        &["stack", "logs"],
+        &["stack", "config"],
+        &["probe"],
+        &["load"],
+        &["live"],
+        &["conformance"],
+        &["conformance", "run"],
+        &["conformance", "report"],
+        &["debug"],
+        &["debug", "inspect"],
+        &["debug", "token"],
+    ];
+
+    for path in paths {
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_cf-integration"))
+            .args(*path)
+            .arg("--help")
+            .output()
+            .expect("help command should start");
+        assert!(
+            output.status.success(),
+            "help failed for {path:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).expect("help should be UTF-8");
+        assert!(stdout.contains("Usage:"), "missing usage for {path:?}");
+    }
 }
 
 #[test]
@@ -125,43 +164,37 @@ fn stack_logs_preserve_service_arguments() {
 }
 
 #[test]
-fn load_keeps_locust_and_goose_with_validated_settings() {
-    for (engine, expected) in [
-        ("locust", CliLoadEngine::Locust),
-        ("goose", CliLoadEngine::Goose),
-    ] {
-        let Command::Load(LoadArgs {
-            target,
-            engine: actual,
-            users,
-            spawn_rate,
-            run_time,
-            ..
-        }) = parse(&[
-            "cf-integration",
-            "load",
-            "--engine",
-            engine,
-            "--users",
-            "2",
-            "--spawn-rate",
-            "0.5",
-            "--run-time",
-            "1m30s",
-        ])
-        .command
-        else {
-            panic!("expected load")
-        };
-        assert_eq!(actual, expected);
-        assert_eq!(target.lane, None);
-        assert_eq!(target.protocol_version, None);
-        assert_eq!(users, Some(2));
-        assert_eq!(spawn_rate, Some(0.5));
-        assert_eq!(run_time.as_deref(), Some("1m30s"));
-    }
+fn load_keeps_validated_locust_settings() {
+    let Command::Load(LoadArgs {
+        target,
+        users,
+        spawn_rate,
+        run_time,
+        ..
+    }) = parse(&[
+        "cf-integration",
+        "load",
+        "--users",
+        "2",
+        "--spawn-rate",
+        "0.5",
+        "--run-time",
+        "1m30s",
+    ])
+    .command
+    else {
+        panic!("expected load")
+    };
+    assert_eq!(target.lane, None);
+    assert_eq!(target.protocol_version, None);
+    assert_eq!(users, Some(2));
+    assert_eq!(spawn_rate, Some(0.5));
+    assert_eq!(run_time.as_deref(), Some("1m30s"));
+
     rejected(&["cf-integration", "load", "--users", "0"]);
+    rejected(&["cf-integration", "load", "--run-time", "1ms"]);
     rejected(&["cf-integration", "load", "--run-time", "zero"]);
+    rejected(&["cf-integration", "load", "--engine", "locust"]);
 }
 
 #[test]
@@ -183,7 +216,7 @@ fn live_defaults_to_all_and_accepts_the_main_harness_groups() {
             "cf-integration",
             "live",
             "--topology",
-            "dataplane",
+            "external-data-plane",
             "--group",
             name,
         ])
@@ -191,7 +224,7 @@ fn live_defaults_to_all_and_accepts_the_main_harness_groups() {
         else {
             panic!("expected live workflow")
         };
-        assert_eq!(args.target.lane, Some(CliLane::Dataplane));
+        assert_eq!(args.target.lane, Some(CliLane::ExternalDataPlane));
         assert_eq!(args.group, expected);
     }
 }
@@ -235,8 +268,20 @@ fn live_accepts_fixture_lane_and_explicit_protocol_version() {
 
 #[test]
 fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
-    fn assert_target(target: &WorkflowTargetArgs) {
-        assert_eq!(target.lane, Some(CliLane::Controlplane));
+    fn assert_routed_target(target: &RoutedWorkflowTargetArgs) {
+        assert_eq!(target.lane, Some(CliTopology::Controlplane));
+        assert_eq!(
+            target.protocol_version,
+            Some(
+                "2025-06-18"
+                    .parse::<ProtocolVersion>()
+                    .expect("valid protocol version")
+            )
+        );
+    }
+
+    fn assert_fixture_target(target: &WorkflowTargetArgs) {
+        assert_eq!(target.lane, Some(CliLane::BuiltInDataPlane));
         assert_eq!(
             target.protocol_version,
             Some(
@@ -258,7 +303,7 @@ fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
     else {
         panic!("expected probe workflow")
     };
-    assert_target(&probe);
+    assert_routed_target(&probe);
 
     let Command::Load(load) = parse(
         &["cf-integration", "load"]
@@ -270,19 +315,21 @@ fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
     else {
         panic!("expected load workflow")
     };
-    assert_target(&load.target);
+    assert_routed_target(&load.target);
 
-    let Command::Live(live) = parse(
-        &["cf-integration", "live"]
-            .into_iter()
-            .chain(common)
-            .collect::<Vec<_>>(),
-    )
+    let Command::Live(live) = parse(&[
+        "cf-integration",
+        "live",
+        "--lane",
+        "built-in-data-plane",
+        "--protocol-version",
+        "2025-06-18",
+    ])
     .command
     else {
         panic!("expected live workflow")
     };
-    assert_target(&live.target);
+    assert_fixture_target(&live.target);
 
     let Command::Debug(DebugArgs {
         command: DebugCommand::Inspect(inspect),
@@ -296,7 +343,25 @@ fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
     else {
         panic!("expected inspect workflow")
     };
-    assert_target(&inspect.target);
+    assert_routed_target(&inspect.target);
+}
+
+#[test]
+fn routed_workflows_reject_the_fixture_lane_during_parsing() {
+    for arguments in [
+        vec!["cf-integration", "probe", "--lane", "fixture-direct"],
+        vec!["cf-integration", "load", "--lane", "fixture-direct"],
+        vec![
+            "cf-integration",
+            "debug",
+            "inspect",
+            "--lane",
+            "fixture-direct",
+        ],
+    ] {
+        let error = Cli::try_parse_from(arguments).expect_err("routed lane should be rejected");
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+    }
 }
 
 #[test]
@@ -329,7 +394,7 @@ fn conformance_accepts_repeatable_exact_lanes_and_supported_revisions() {
         "--lane",
         "fixture-direct",
         "--lane",
-        "dataplane",
+        "external-data-plane",
         "--protocol-version",
         "2025-11-25",
         "--server-era",
@@ -339,7 +404,10 @@ fn conformance_accepts_repeatable_exact_lanes_and_supported_revisions() {
     else {
         panic!("expected conformance run")
     };
-    assert_eq!(args.lane, [CliLane::FixtureDirect, CliLane::Dataplane]);
+    assert_eq!(
+        args.lane,
+        [CliLane::FixtureDirect, CliLane::ExternalDataPlane]
+    );
     assert_eq!(
         args.protocol_version,
         "2025-11-25"

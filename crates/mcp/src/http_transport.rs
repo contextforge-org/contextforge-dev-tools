@@ -9,7 +9,7 @@ use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderValue};
 use url::Url;
 
 use crate::backend_identity::{BackendIdentity, is_dataplane_endpoint};
-use crate::mcp::{ACCEPT as MCP_ACCEPT, parse_mcp_body};
+use crate::mcp::{ACCEPT as MCP_ACCEPT, is_stateless_protocol, parse_mcp_body, routing_name};
 use crate::probe::{ProbeRequest, ProbeResponse, ProbeTransport};
 
 const REDACTED: &str = "<redacted>";
@@ -64,6 +64,20 @@ impl ProbeTransport for ReqwestProbeTransport {
         if let Some(protocol_version) = request.protocol_version.as_deref() {
             let protocol_version = safe_header(protocol_version, "MCP-Protocol-Version")?;
             builder = builder.header("MCP-Protocol-Version", protocol_version);
+        }
+        if request
+            .protocol_version
+            .as_deref()
+            .is_some_and(is_stateless_protocol)
+            && let Some(method) = request
+                .payload
+                .get("method")
+                .and_then(serde_json::Value::as_str)
+        {
+            builder = builder.header("MCP-Method", safe_header(method, "MCP-Method")?);
+            if let Some(name) = routing_name(method, request.payload.get("params")) {
+                builder = builder.header("MCP-Name", safe_header(name, "MCP-Name")?);
+            }
         }
         if let Some(token) = request.bearer_token.as_deref() {
             let mut authorization = safe_header(&format!("Bearer {token}"), "Authorization")?;

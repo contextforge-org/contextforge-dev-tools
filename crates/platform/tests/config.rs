@@ -355,7 +355,7 @@ fn explicit_empty_process_images_use_fallbacks_but_remain_explicit() {
     assert!(loaded.config.controlplane_image().is_prebuilt());
     assert_eq!(
         loaded.config.dataplane_image().resolved(),
-        OsStr::new("contextforge-gateway-rs/contextforge-gateway-rs:local")
+        OsStr::new("contextforge-org/contextforge-data-plane:local")
     );
     assert!(loaded.config.dataplane_image().is_explicitly_set());
 }
