@@ -34,13 +34,30 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         topology: StackMode,
         server_era: ConformanceServerEra,
     ) -> AppResult<()> {
+        self.build_conformance_service(topology, server_era).await?;
+        self.start_conformance_containers(topology, server_era)
+            .await
+    }
+
+    pub(super) async fn build_conformance_service(
+        &self,
+        topology: StackMode,
+        server_era: ConformanceServerEra,
+    ) -> AppResult<()> {
         let project = self.conformance_compose_project(topology);
         let build = project.command(["build", OFFICIAL_CONFORMANCE_SERVICE]);
         let build = self
             .compose_environment(build, topology, true)?
             .env(CONFORMANCE_SERVER_ERA_ENV, server_era.label());
-        self.runner.run_async(&build).await?;
+        Ok(self.runner.run_async(&build).await?)
+    }
 
+    pub(super) async fn start_conformance_containers(
+        &self,
+        topology: StackMode,
+        server_era: ConformanceServerEra,
+    ) -> AppResult<()> {
+        let project = self.conformance_compose_project(topology);
         let up = project.command([
             "up",
             "-d",

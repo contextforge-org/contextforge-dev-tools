@@ -135,7 +135,7 @@ fn dataplane_up_always_removes_orphans_and_optionally_builds() {
     assert!(ends_with(&without_build, &["up", "-d", "--remove-orphans"]));
     assert!(ends_with(
         &with_build,
-        &["up", "-d", "--remove-orphans", "--build"]
+        &["up", "-d", "--remove-orphans", "--build", "--quiet-build"]
     ));
 }
 
@@ -164,7 +164,14 @@ fn controlplane_up_does_not_activate_locust_profile_when_ui_is_disabled() {
     ));
     assert!(ends_with(
         &enabled,
-        &["up", "-d", "--build", "--scale", "locust_worker=3"]
+        &[
+            "up",
+            "-d",
+            "--build",
+            "--quiet-build",
+            "--scale",
+            "locust_worker=3"
+        ]
     ));
 }
 

@@ -68,17 +68,23 @@ pub async fn run() -> ExitCode {
     } else {
         ConfigRequirements::READ_ONLY
     };
-    let activity = Activity::start(action.description());
+    let activity = action
+        .uses_global_activity()
+        .then(|| Activity::start(action.description()));
     let config = match AppConfig::load(bootstrap, requirements) {
         Ok(config) => config,
         Err(error) => {
-            activity.finish(false);
+            if let Some(activity) = activity {
+                activity.finish(false);
+            }
             return report_failure(AppFailure::from(error));
         }
     };
     let runtime = RuntimeDispatcher::new(config, SystemProcessRunner);
     let result = runtime.execute(action).await;
-    activity.finish(result.is_ok());
+    if let Some(activity) = activity {
+        activity.finish(result.is_ok());
+    }
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

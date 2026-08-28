@@ -57,6 +57,12 @@ impl Action {
         }
     }
 
+    /// Returns whether the dispatcher should own one command-wide activity line.
+    #[must_use]
+    pub(crate) const fn uses_global_activity(&self) -> bool {
+        !matches!(self, Self::Stack(StackAction::Up { .. }))
+    }
+
     /// Returns whether this operation needs Compose overlays or runtime scripts.
     #[must_use]
     pub(crate) const fn requires_runtime_assets(&self) -> bool {

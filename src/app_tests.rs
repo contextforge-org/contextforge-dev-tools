@@ -52,6 +52,13 @@ fn every_subcommand_has_a_stable_progress_description() {
 }
 
 #[test]
+fn stack_up_owns_its_detailed_progress_while_other_commands_use_global_progress() {
+    assert!(!action(&["cf-integration", "stack", "up"], &[]).uses_global_activity());
+    assert!(action(&["cf-integration", "stack", "down"], &[]).uses_global_activity());
+    assert!(action(&["cf-integration", "probe"], &[]).uses_global_activity());
+}
+
+#[test]
 fn topology_precedence_is_cli_then_environment_then_dataplane() {
     assert_eq!(
         action(&["cf-integration", "probe"], &[]),

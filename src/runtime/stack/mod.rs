@@ -8,31 +8,34 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn execute_stack(&self, action: StackAction) -> AppResult<()> {
         match action {
             StackAction::Up { topology, fresh } => {
-                let log_path = self.config.integration_dir().join("logs/stack-up.log");
-                prepare_stack_up_log(&log_path)?;
-                let runner = LoggingProcessRunner::new(&self.runner, &log_path);
-                let runtime = RuntimeContext::new(self.config.clone(), runner);
-                let result = async {
-                    runtime.stack_up_for_conformance(topology, fresh).await?;
-                    runtime
-                        .start_conformance_service(topology, DEFAULT_CONFORMANCE_SERVER_ERA)
-                        .await?;
-                    runtime.conformance_fixture_endpoint(topology)
+                self.stack_up_for_conformance(topology, fresh).await?;
+
+                let build_log = self
+                    .config
+                    .integration_dir()
+                    .join("logs/conformance-build.log");
+                prepare_conformance_build_log(&build_log)?;
+                let quiet_runner = LoggingProcessRunner::new(&self.runner, &build_log);
+                let quiet_runtime = RuntimeContext::new(self.config.clone(), quiet_runner);
+                let build_progress = Activity::spinner("Building conformance image");
+                let build_result = quiet_runtime
+                    .build_conformance_service(topology, DEFAULT_CONFORMANCE_SERVER_ERA)
+                    .await;
+                build_progress.finish(build_result.is_ok());
+                if let Err(error) = build_result {
+                    eprintln!(
+                        "{} {}",
+                        OutputStyle::stderr().failure("Build output:"),
+                        build_log.display()
+                    );
+                    return Err(error);
                 }
-                .await;
-                match result {
-                    Ok(conformance_endpoint) => {
-                        self.print_stack_endpoints(topology, &conformance_endpoint)
-                    }
-                    Err(error) => {
-                        eprintln!(
-                            "{} {}",
-                            OutputStyle::stderr().failure("Stack setup output:"),
-                            log_path.display()
-                        );
-                        Err(error)
-                    }
-                }
+
+                self.start_conformance_containers(topology, DEFAULT_CONFORMANCE_SERVER_ERA)
+                    .await?;
+                let conformance_endpoint = self.conformance_fixture_endpoint(topology)?;
+                Activity::completed("Integration stack ready");
+                self.print_stack_endpoints(topology, &conformance_endpoint)
             }
             StackAction::Down { topology, volumes } => self.cleanup(
                 topology,
@@ -924,15 +927,15 @@ fn format_stack_endpoint_summary(
     )
 }
 
-fn prepare_stack_up_log(path: &Path) -> AppResult<()> {
+fn prepare_conformance_build_log(path: &Path) -> AppResult<()> {
     let parent = path
         .parent()
-        .ok_or_else(|| AppFailure::from(anyhow!("stack setup log has no parent")))?;
+        .ok_or_else(|| AppFailure::from(anyhow!("conformance build log has no parent")))?;
     fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create stack log directory {parent:?}"))
+        .with_context(|| format!("failed to create conformance build log directory {parent:?}"))
         .map_err(AppFailure::from)?;
     fs::write(path, [])
-        .with_context(|| format!("failed to clear stack setup log {path:?}"))
+        .with_context(|| format!("failed to clear conformance build log {path:?}"))
         .map_err(AppFailure::from)
 }
 
@@ -997,14 +1000,14 @@ mod tests {
     }
 
     #[test]
-    fn stack_up_log_is_cleared_before_quiet_execution() {
+    fn conformance_build_log_is_cleared_before_quiet_execution() {
         let directory = tempfile::tempdir().expect("temporary directory should be created");
-        let path = directory.path().join("logs/stack-up.log");
+        let path = directory.path().join("logs/conformance-build.log");
         fs::create_dir_all(path.parent().expect("log should have a parent"))
             .expect("log directory should be created");
         fs::write(&path, "stale output").expect("stale log should be written");
 
-        prepare_stack_up_log(&path).expect("stack setup log should be prepared");
+        prepare_conformance_build_log(&path).expect("conformance build log should be prepared");
 
         assert_eq!(
             fs::read(path).expect("stack setup log should be readable"),

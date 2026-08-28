@@ -4,6 +4,8 @@ use std::ffi::OsStr;
 use std::io::IsTerminal as _;
 use std::time::Duration;
 
+use indicatif::{ProgressBar, ProgressStyle};
+
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_CYAN: &str = "\x1b[36m";
 const ANSI_BOLD_CYAN: &str = "\x1b[1;36m";
@@ -48,10 +50,10 @@ impl TestStatus {
 }
 
 /// One command or quiet phase whose lifecycle is shown on standard error.
-#[derive(Debug)]
 pub(crate) struct Activity {
     description: String,
     finished: bool,
+    spinner: Option<ProgressBar>,
 }
 
 impl Activity {
@@ -60,6 +62,7 @@ impl Activity {
         let activity = Self {
             description: description.into(),
             finished: false,
+            spinner: None,
         };
         eprintln!(
             "{}",
@@ -72,8 +75,50 @@ impl Activity {
         activity
     }
 
+    /// Starts a continuously animated loading line on terminals.
+    pub(crate) fn spinner(description: impl Into<String>) -> Self {
+        let description = description.into();
+        if !std::io::stderr().is_terminal() {
+            return Self::start(description);
+        }
+
+        let spinner = ProgressBar::new_spinner();
+        let template = if OutputStyle::stderr().color {
+            "{spinner:.cyan} {msg}"
+        } else {
+            "{spinner} {msg}"
+        };
+        let style = ProgressStyle::with_template(template)
+            .expect("activity spinner template must be valid")
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ ");
+        spinner.set_style(style);
+        spinner.set_message(description.clone());
+        spinner.enable_steady_tick(Duration::from_millis(80));
+
+        Self {
+            description,
+            finished: false,
+            spinner: Some(spinner),
+        }
+    }
+
+    /// Prints a completed phase that did not need a loading line.
+    pub(crate) fn completed(description: impl AsRef<str>) {
+        eprintln!(
+            "{}",
+            render_activity_line(
+                ActivityState::Succeeded,
+                description.as_ref(),
+                OutputStyle::stderr(),
+            )
+        );
+    }
+
     /// Prints the same description with a green check or red cross.
     pub(crate) fn finish(mut self, succeeded: bool) {
+        if let Some(spinner) = &self.spinner {
+            spinner.finish_and_clear();
+        }
         let state = if succeeded {
             ActivityState::Succeeded
         } else {
@@ -90,6 +135,9 @@ impl Activity {
 impl Drop for Activity {
     fn drop(&mut self) {
         if !self.finished {
+            if let Some(spinner) = &self.spinner {
+                spinner.finish_and_clear();
+            }
             eprintln!(
                 "{}",
                 render_activity_line(
