@@ -8,15 +8,31 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn execute_stack(&self, action: StackAction) -> AppResult<()> {
         match action {
             StackAction::Up { topology, fresh } => {
-                self.stack_up_for_conformance(topology, fresh).await?;
-                eprintln!(
-                    "{}",
-                    OutputStyle::stderr().info("Starting the pinned MCP conformance server.")
-                );
-                self.start_conformance_service(topology, DEFAULT_CONFORMANCE_SERVER_ERA)
-                    .await?;
-                let conformance_endpoint = self.conformance_fixture_endpoint(topology)?;
-                self.print_stack_endpoints(topology, &conformance_endpoint)
+                let log_path = self.config.integration_dir().join("logs/stack-up.log");
+                prepare_stack_up_log(&log_path)?;
+                let runner = LoggingProcessRunner::new(&self.runner, &log_path);
+                let runtime = RuntimeContext::new(self.config.clone(), runner);
+                let result = async {
+                    runtime.stack_up_for_conformance(topology, fresh).await?;
+                    runtime
+                        .start_conformance_service(topology, DEFAULT_CONFORMANCE_SERVER_ERA)
+                        .await?;
+                    runtime.conformance_fixture_endpoint(topology)
+                }
+                .await;
+                match result {
+                    Ok(conformance_endpoint) => {
+                        self.print_stack_endpoints(topology, &conformance_endpoint)
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "{} {}",
+                            OutputStyle::stderr().failure("Stack setup output:"),
+                            log_path.display()
+                        );
+                        Err(error)
+                    }
+                }
             }
             StackAction::Down { topology, volumes } => self.cleanup(
                 topology,
@@ -904,8 +920,20 @@ fn format_stack_endpoint_summary(
     conformance_endpoint: &url::Url,
 ) -> String {
     format!(
-        "Stack endpoints:\n  Gateway/API: {public_origin}\n  Public MCP: {public_mcp_endpoint}\n  Conformance MCP (direct): {conformance_endpoint}"
+        "Gateway/API: {public_origin}\nPublic MCP: {public_mcp_endpoint}\nConformance MCP (direct): {conformance_endpoint}"
     )
+}
+
+fn prepare_stack_up_log(path: &Path) -> AppResult<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppFailure::from(anyhow!("stack setup log has no parent")))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create stack log directory {parent:?}"))
+        .map_err(AppFailure::from)?;
+    fs::write(path, [])
+        .with_context(|| format!("failed to clear stack setup log {path:?}"))
+        .map_err(AppFailure::from)
 }
 
 fn with_default_conformance_server_era(command: CommandSpec) -> CommandSpec {
@@ -964,7 +992,23 @@ mod tests {
 
         assert_eq!(
             summary,
-            "Stack endpoints:\n  Gateway/API: http://127.0.0.1:8080\n  Public MCP: http://127.0.0.1:8080/servers/server-id/mcp\n  Conformance MCP (direct): http://127.0.0.1:49152/mcp"
+            "Gateway/API: http://127.0.0.1:8080\nPublic MCP: http://127.0.0.1:8080/servers/server-id/mcp\nConformance MCP (direct): http://127.0.0.1:49152/mcp"
+        );
+    }
+
+    #[test]
+    fn stack_up_log_is_cleared_before_quiet_execution() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let path = directory.path().join("logs/stack-up.log");
+        fs::create_dir_all(path.parent().expect("log should have a parent"))
+            .expect("log directory should be created");
+        fs::write(&path, "stale output").expect("stale log should be written");
+
+        prepare_stack_up_log(&path).expect("stack setup log should be prepared");
+
+        assert_eq!(
+            fs::read(path).expect("stack setup log should be readable"),
+            b""
         );
     }
 }
