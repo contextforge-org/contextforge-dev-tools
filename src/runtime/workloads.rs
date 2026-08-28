@@ -18,7 +18,39 @@ end
 return 0
 "#;
 
-impl<R: ProcessRunner> RuntimeExecutor<R> {
+struct ManagedSessionScope<'a, R> {
+    runtime: &'a RuntimeContext<R>,
+    topology: StackMode,
+    token: Option<ManagedBearerToken>,
+}
+
+impl<'a, R: ProcessRunner> ManagedSessionScope<'a, R> {
+    fn new(runtime: &'a RuntimeContext<R>, topology: StackMode) -> Self {
+        Self {
+            runtime,
+            topology,
+            token: None,
+        }
+    }
+
+    async fn finish(self, primary: AppResult<()>) -> AppResult<()> {
+        let mut cleanup_failures = Vec::new();
+        if let Some(token) = self.token.as_ref()
+            && let Err(error) = self.runtime.revoke_managed_token(token).await
+        {
+            cleanup_failures.push(error);
+        }
+        if let Err(error) = self
+            .runtime
+            .cleanup(topology_selection(self.topology), CleanupKind::Down)
+        {
+            cleanup_failures.push(error);
+        }
+        finish_with_cleanup_failures(primary.err(), cleanup_failures)
+    }
+}
+
+impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn run_probe(
         &self,
         topology: StackMode,
@@ -92,6 +124,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         F: FnOnce() -> Fut,
         Fut: Future<Output = AppResult<()>>,
     {
+        let scope = ManagedSessionScope::new(self, topology);
         let primary = match self.stack_up(topology, false).await {
             Ok(()) => match self.prepare_test_target(topology, server_id).await {
                 Ok(()) => operation().await,
@@ -99,10 +132,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             },
             Err(error) => Err(error),
         };
-        finish_with_cleanup(
-            primary.err(),
-            self.cleanup(topology_selection(topology), CleanupKind::Down),
-        )
+        scope.finish(primary).await
     }
 
     pub(super) async fn with_managed_authenticated_target<F, Fut>(
@@ -115,12 +145,22 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         F: FnOnce(String) -> Fut,
         Fut: Future<Output = AppResult<()>>,
     {
-        self.with_managed_test_target(topology, server_id, || async {
-            let token = self.managed_bearer_token(topology, server_id).await?;
-            let primary = operation(token.value.clone()).await;
-            finish_with_cleanup(primary.err(), self.revoke_managed_token(&token).await)
-        })
-        .await
+        let mut scope = ManagedSessionScope::new(self, topology);
+        let primary = match self.stack_up(topology, false).await {
+            Ok(()) => match self.prepare_test_target(topology, server_id).await {
+                Ok(()) => match self.managed_bearer_token(topology, server_id).await {
+                    Ok(token) => {
+                        let value = token.value.clone();
+                        scope.token = Some(token);
+                        operation(value).await
+                    }
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
+        scope.finish(primary).await
     }
 
     pub(super) async fn prepare_test_target(
@@ -155,7 +195,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             &self.config.integration_project().value,
             "CF_INTEGRATION_PROJECT",
         )?;
-        let redis = self.container_id(project, "redis", false).ok_or_else(|| {
+        let redis = self.container_id(project, "redis", false)?.ok_or_else(|| {
             AppFailure::from(anyhow!(
                 "cannot wait for publisher snapshot: the dataplane Redis container is not running"
             ))
@@ -179,7 +219,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                 "0",
                 server_id,
             ]);
-            if self.capture_optional(&command).as_deref() == Some("1") {
+            if self.capture_text(&command)?.as_str() == "1" {
                 return Ok(());
             }
             let now = tokio::time::Instant::now();

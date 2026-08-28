@@ -289,25 +289,25 @@ fn classifications_cover_all_three_lane_failure_combinations() {
             Compliant,
             NonCompliant,
             Compliant,
-            ComparisonClassification::ControlplaneOnlyFailure,
+            ComparisonClassification::BuiltInDataPlaneOnlyFailure,
         ),
         (
             Compliant,
             Compliant,
             NonCompliant,
-            ComparisonClassification::DataplaneOnlyFailure,
+            ComparisonClassification::ExternalDataPlaneOnlyFailure,
         ),
         (
             NonCompliant,
             NonCompliant,
             Compliant,
-            ComparisonClassification::FixtureAndControlplaneFailure,
+            ComparisonClassification::FixtureAndBuiltInDataPlaneFailure,
         ),
         (
             NonCompliant,
             Compliant,
             NonCompliant,
-            ComparisonClassification::FixtureAndDataplaneFailure,
+            ComparisonClassification::FixtureAndExternalDataPlaneFailure,
         ),
         (
             Compliant,
@@ -350,8 +350,8 @@ fn comparison_counts_raw_failures_without_expected_failure_suppression() {
         compared[0].classification,
         ComparisonClassification::GatewaysOnlyFailure
     );
-    assert_eq!(compared[0].controlplane_failed_checks, 2);
-    assert_eq!(compared[0].dataplane_failed_checks, 1);
+    assert_eq!(compared[0].built_in_data_plane_failed_checks, 2);
+    assert_eq!(compared[0].external_data_plane_failed_checks, 1);
 }
 
 #[test]
@@ -371,14 +371,14 @@ fn comparison_uses_trust_independently_for_each_lane() {
         &controlplane,
         &dataplane,
         ComparisonFixtureTrust {
-            controlplane: true,
+            built_in_data_plane: true,
             ..ComparisonFixtureTrust::default()
         },
     );
 
     assert_eq!(
         compared[0].classification,
-        ComparisonClassification::ControlplaneOnlyFailure
+        ComparisonClassification::BuiltInDataPlaneOnlyFailure
     );
 }
 
@@ -388,10 +388,10 @@ fn report_renders_raw_counts_and_no_expected_failure_column() {
         scenario: "server|stateless".to_owned(),
         fixture: ScenarioOutcome::Compliant,
         fixture_failed_checks: 0,
-        controlplane: ScenarioOutcome::NonCompliant,
-        controlplane_failed_checks: 27,
-        dataplane: ScenarioOutcome::NonCompliant,
-        dataplane_failed_checks: 28,
+        built_in_data_plane: ScenarioOutcome::NonCompliant,
+        built_in_data_plane_failed_checks: 27,
+        external_data_plane: ScenarioOutcome::NonCompliant,
+        external_data_plane_failed_checks: 28,
         classification: ComparisonClassification::GatewaysOnlyFailure,
         spec_references: vec![SpecReference {
             id: "MCP|Transport".to_owned(),

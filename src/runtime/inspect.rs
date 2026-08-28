@@ -17,7 +17,7 @@ pub(super) const NPM_ENV_ALLOWLIST: &[&str] = &[
     "NODE_EXTRA_CA_CERTS",
 ];
 
-impl<R: ProcessRunner> RuntimeExecutor<R> {
+impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn inspect(
         &self,
         mode: StackMode,

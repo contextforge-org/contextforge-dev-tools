@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl<R: ProcessRunner> RuntimeExecutor<R> {
+impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn execute_stack(&self, action: StackAction) -> AppResult<()> {
         match action {
             StackAction::Up { topology, fresh } => {
@@ -298,15 +298,21 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         let needs_docker_cpus = ["GATEWAY_CPU_LIMIT", "GUNICORN_WORKERS"]
             .into_iter()
             .any(|key| self.config.environment().get(OsStr::new(key)).is_none());
-        let docker_cpus = needs_docker_cpus.then(|| {
-            self.capture_optional(&CommandSpec::new("docker").args([
+        let docker_cpus = if needs_docker_cpus {
+            let value = self.capture_text(&CommandSpec::new("docker").args([
                 "info",
                 "--format",
                 "{{.NCPU}}",
-            ]))
-            .filter(|value| value.parse::<usize>().is_ok_and(|value| value > 0))
-            .unwrap_or_else(|| "4".to_owned())
-        });
+            ]))?;
+            if !value.parse::<usize>().is_ok_and(|value| value > 0) {
+                return Err(AppFailure::from(anyhow!(
+                    "Docker returned an invalid CPU count"
+                )));
+            }
+            Some(value)
+        } else {
+            None
+        };
         for key in ["GATEWAY_CPU_LIMIT", "GUNICORN_WORKERS"] {
             if self.config.environment().get(OsStr::new(key)).is_none() {
                 command = command.env(key, docker_cpus.as_deref().unwrap_or("4"));
@@ -314,10 +320,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         }
         for (key, argument) in [("HOST_UID", "-u"), ("HOST_GID", "-g")] {
             if self.config.environment().get(OsStr::new(key)).is_none() {
-                let value = self
-                    .capture_optional(&CommandSpec::new("id").arg(argument))
-                    .filter(|value| value.parse::<u32>().is_ok())
-                    .unwrap_or_else(|| "1000".to_owned());
+                let value = self.host_identity(argument)?;
                 command = command.env(key, value);
             }
         }
@@ -353,37 +356,33 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
     ) -> AppResult<CommandSpec> {
         let controlplane_revision =
             self.git_required(self.config.controlplane_dir(), ["rev-parse", "HEAD"])?;
-        let controlplane_ref = self
-            .git_optional(
-                self.config.controlplane_dir(),
-                ["symbolic-ref", "--quiet", "--short", "HEAD"],
-            )
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| {
-                self.config
-                    .controlplane_ref()
-                    .value
-                    .to_string_lossy()
-                    .into_owned()
-            });
+        let controlplane_branch =
+            self.git_required(self.config.controlplane_dir(), ["branch", "--show-current"])?;
+        let controlplane_ref = if controlplane_branch.is_empty() {
+            self.config
+                .controlplane_ref()
+                .value
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            controlplane_branch
+        };
         command = command
             .env("CF_CONTROLPLANE_CHECKOUT_REVISION", controlplane_revision)
             .env("CF_CONTROLPLANE_CHECKOUT_REF", controlplane_ref);
         if mode == StackMode::Dataplane && !self.config.dataplane_ref().value.is_empty() {
             let revision = self.git_required(self.config.dataplane_dir(), ["rev-parse", "HEAD"])?;
-            let reference = self
-                .git_optional(
-                    self.config.dataplane_dir(),
-                    ["symbolic-ref", "--quiet", "--short", "HEAD"],
-                )
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| {
-                    self.config
-                        .dataplane_ref()
-                        .value
-                        .to_string_lossy()
-                        .into_owned()
-                });
+            let branch =
+                self.git_required(self.config.dataplane_dir(), ["branch", "--show-current"])?;
+            let reference = if branch.is_empty() {
+                self.config
+                    .dataplane_ref()
+                    .value
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                branch
+            };
             command = command
                 .env("CF_DATAPLANE_CHECKOUT_REVISION", revision)
                 .env("CF_DATAPLANE_CHECKOUT_REF", reference);
@@ -425,7 +424,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         let controlplane_checkout_revision =
             Some(self.git_required(self.config.controlplane_dir(), ["rev-parse", "HEAD"])?);
         let (controlplane_image_present, controlplane_image_revision) =
-            self.image_state(self.config.controlplane_image().resolved());
+            self.image_state(self.config.controlplane_image().resolved())?;
         let dataplane_source = (!self.config.dataplane_ref().value.is_empty()).then(|| {
             self.config
                 .dataplane_ref()
@@ -439,7 +438,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             None
         };
         let (dataplane_image_present, dataplane_image_revision) =
-            self.image_state(self.config.dataplane_image().resolved());
+            self.image_state(self.config.dataplane_image().resolved())?;
         let decision = resolve_build(
             mode_setting,
             &BuildInputs {
@@ -465,18 +464,25 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         Ok(decision.build)
     }
 
-    fn image_state(&self, image: &OsStr) -> (bool, Option<String>) {
-        let command = CommandSpec::new("docker").args([
+    fn image_state(&self, image: &OsStr) -> AppResult<(bool, Option<String>)> {
+        let image_ids = self.capture_text(&CommandSpec::new("docker").args([
+            OsString::from("image"),
+            OsString::from("ls"),
+            OsString::from("--quiet"),
+            OsString::from("--no-trunc"),
+            image.to_owned(),
+        ]))?;
+        if image_ids.is_empty() {
+            return Ok((false, None));
+        }
+        let revision = self.capture_text(&CommandSpec::new("docker").args([
             OsString::from("image"),
             OsString::from("inspect"),
             image.to_owned(),
             OsString::from("--format"),
             OsString::from("{{ index .Config.Labels \"org.opencontainers.image.revision\" }}"),
-        ]);
-        match self.capture_optional(&command) {
-            Some(revision) => (true, (!revision.is_empty()).then_some(revision)),
-            None => (false, None),
-        }
+        ]))?;
+        Ok((true, (!revision.is_empty()).then_some(revision)))
     }
 
     fn pull_images(&self, mode: StackMode, build: bool, report_progress: bool) -> AppResult<()> {
@@ -515,31 +521,41 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             OsString::from("--format"),
             OsString::from("{{.Manifest.Digest}}"),
         ]);
-        let remote_digest = self
-            .capture_optional(&inspect)
-            .filter(|value| !value.is_empty());
-        let local_exists = self
-            .capture_optional(&CommandSpec::new("docker").args([
-                OsString::from("image"),
-                OsString::from("inspect"),
-                image.to_owned(),
-                OsString::from("--format"),
-                OsString::from("{{.Id}}"),
-            ]))
-            .is_some();
+        let local_ids = self.capture_text(&CommandSpec::new("docker").args([
+            OsString::from("image"),
+            OsString::from("ls"),
+            OsString::from("--quiet"),
+            OsString::from("--no-trunc"),
+            image.to_owned(),
+        ]))?;
+        let local_exists = !local_ids.is_empty();
+        let remote_digest = match self.capture_text(&inspect) {
+            Ok(digest) => (!digest.is_empty()).then_some(digest),
+            Err(error) if local_exists => {
+                if report_progress {
+                    eprintln!(
+                        "{}",
+                        OutputStyle::stderr().warning(&format!(
+                            "{label} remote digest check failed; using the local image: {error}"
+                        ))
+                    );
+                }
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         if let Some(digest) = remote_digest {
-            let repo_digests = self.capture_optional(&CommandSpec::new("docker").args([
+            let repo_digests = self.capture_text(&CommandSpec::new("docker").args([
                 OsString::from("image"),
                 OsString::from("inspect"),
                 image.to_owned(),
                 OsString::from("--format"),
                 OsString::from("{{range .RepoDigests}}{{println .}}{{end}}"),
-            ]));
-            if repo_digests.as_deref().is_some_and(|values| {
-                values
-                    .lines()
-                    .any(|value| value.ends_with(&format!("@{digest}")))
-            }) {
+            ]))?;
+            if repo_digests
+                .lines()
+                .any(|value| value.ends_with(&format!("@{digest}")))
+            {
                 if report_progress {
                     println!(
                         "{}",
@@ -590,20 +606,23 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             "migration",
             "register_fast_time",
         ] {
-            services.insert(service.to_owned(), self.service_snapshot(project, service));
+            services.insert(service.to_owned(), self.service_snapshot(project, service)?);
         }
         for service in ["fast_test_server", "register_fast_test"] {
-            if self.container_id(project, service, true).is_some() {
-                services.insert(service.to_owned(), self.service_snapshot(project, service));
+            if self.container_id(project, service, true)?.is_some() {
+                services.insert(service.to_owned(), self.service_snapshot(project, service)?);
             }
         }
         let snapshot = FreshnessSnapshot {
             services,
-            controlplane_checkout_revision: self
-                .git_optional(self.config.controlplane_dir(), ["rev-parse", "HEAD"]),
-            dataplane_checkout_revision: optional_source_revision(dataplane_source_enabled, || {
-                self.git_optional(self.config.dataplane_dir(), ["rev-parse", "HEAD"])
-            }),
+            controlplane_checkout_revision: Some(
+                self.git_required(self.config.controlplane_dir(), ["rev-parse", "HEAD"])?,
+            ),
+            dataplane_checkout_revision: if dataplane_source_enabled {
+                Some(self.git_required(self.config.dataplane_dir(), ["rev-parse", "HEAD"])?)
+            } else {
+                None
+            },
             controlplane_image_prebuilt: self.config.controlplane_image().is_prebuilt(),
             dataplane_source_enabled,
             expected_controlplane_image: required_text(
@@ -625,43 +644,58 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         Ok(snapshot.evaluate())
     }
 
-    fn service_snapshot(&self, project: &str, service: &str) -> ServiceSnapshot {
-        let running_id = self.container_id(project, service, false);
-        let all_id = self.container_id(project, service, true);
+    fn service_snapshot(&self, project: &str, service: &str) -> AppResult<ServiceSnapshot> {
+        let running_id = self.container_id(project, service, false)?;
+        let all_id = self.container_id(project, service, true)?;
         let configured_image = running_id
             .as_deref()
-            .and_then(|id| self.docker_inspect(id, "{{.Config.Image}}"));
+            .map(|id| self.docker_inspect(id, "{{.Config.Image}}"))
+            .transpose()?;
         let running_image = running_id
             .as_deref()
-            .and_then(|id| self.docker_inspect(id, "{{.Image}}"));
-        let expected_image_id = configured_image.as_deref().and_then(|image| {
-            self.capture_optional(
-                &CommandSpec::new("docker")
-                    .args(["image", "inspect", image, "--format", "{{.Id}}"]),
-            )
-        });
-        let completed_successfully = all_id.as_deref().is_some_and(|id| {
-            self.docker_inspect(id, "{{.State.Status}}").as_deref() == Some("exited")
-                && self.docker_inspect(id, "{{.State.ExitCode}}").as_deref() == Some("0")
-        });
-        let image_revision = running_id.as_deref().and_then(|id| {
-            self.docker_inspect(
-                id,
-                "{{ index .Config.Labels \"org.opencontainers.image.revision\" }}",
-            )
-            .filter(|value| !value.is_empty())
-        });
-        ServiceSnapshot {
+            .map(|id| self.docker_inspect(id, "{{.Image}}"))
+            .transpose()?;
+        let expected_image_id = configured_image
+            .as_deref()
+            .map(|image| {
+                self.capture_text(
+                    &CommandSpec::new("docker")
+                        .args(["image", "inspect", image, "--format", "{{.Id}}"]),
+                )
+            })
+            .transpose()?;
+        let completed_successfully = if let Some(id) = all_id.as_deref() {
+            self.docker_inspect(id, "{{.State.Status}}")? == "exited"
+                && self.docker_inspect(id, "{{.State.ExitCode}}")? == "0"
+        } else {
+            false
+        };
+        let image_revision = running_id
+            .as_deref()
+            .map(|id| {
+                self.docker_inspect(
+                    id,
+                    "{{ index .Config.Labels \"org.opencontainers.image.revision\" }}",
+                )
+            })
+            .transpose()?
+            .filter(|value| !value.is_empty());
+        Ok(ServiceSnapshot {
             running: running_id.is_some(),
             completed_successfully,
             configured_image,
             running_image_matches_configured: running_image.is_some()
                 && running_image == expected_image_id,
             image_revision,
-        }
+        })
     }
 
-    pub(super) fn container_id(&self, project: &str, service: &str, all: bool) -> Option<String> {
+    pub(super) fn container_id(
+        &self,
+        project: &str,
+        service: &str,
+        all: bool,
+    ) -> AppResult<Option<String>> {
         let mut arguments = vec![OsString::from("ps")];
         arguments.push(OsString::from(if all { "-aq" } else { "-q" }));
         arguments.extend([
@@ -670,13 +704,16 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             OsString::from("--filter"),
             OsString::from(format!("label=com.docker.compose.service={service}")),
         ]);
-        self.capture_optional(&CommandSpec::new("docker").args(arguments))
-            .and_then(|value| value.lines().next().map(str::to_owned))
-            .filter(|value| !value.is_empty())
+        let output = self.capture_text(&CommandSpec::new("docker").args(arguments))?;
+        Ok(output
+            .lines()
+            .next()
+            .map(str::to_owned)
+            .filter(|value| !value.is_empty()))
     }
 
-    fn docker_inspect(&self, id: &str, format: &str) -> Option<String> {
-        self.capture_optional(&CommandSpec::new("docker").args(["inspect", id, "--format", format]))
+    fn docker_inspect(&self, id: &str, format: &str) -> AppResult<String> {
+        self.capture_text(&CommandSpec::new("docker").args(["inspect", id, "--format", format]))
     }
 
     pub(super) fn ensure_other_stack_stopped(&self, mode: StackMode) -> AppResult<()> {
@@ -696,7 +733,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                 "dataplane integration",
             ),
         };
-        if self.project_has_running_containers(other) {
+        if self.project_has_running_containers(other)? {
             return Err(AppFailure::from(anyhow!(
                 "the {label} stack is running on the same host ports; run `cf-integration stack down --topology all` first"
             )));
@@ -704,18 +741,19 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         Ok(())
     }
 
-    fn project_has_running_containers(&self, project: &str) -> bool {
-        self.capture_optional(&CommandSpec::new("docker").args([
-            "ps",
-            "-q",
-            "--filter",
-            &format!("label=com.docker.compose.project={project}"),
-        ]))
-        .is_some_and(|value| !value.is_empty())
+    fn project_has_running_containers(&self, project: &str) -> AppResult<bool> {
+        Ok(!self
+            .capture_text(&CommandSpec::new("docker").args([
+                "ps",
+                "-q",
+                "--filter",
+                &format!("label=com.docker.compose.project={project}"),
+            ]))?
+            .is_empty())
     }
 
     pub(super) fn cleanup(&self, selection: TopologySelection, kind: CleanupKind) -> AppResult<()> {
-        let mut last_failure = None;
+        let mut cleanup_failures = Vec::new();
         for mode in selected_topologies(selection) {
             if self
                 .config
@@ -731,10 +769,10 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                 match self.compose_environment(command.command().clone(), mode, false) {
                     Ok(command) => {
                         if let Err(error) = self.runner.run(&command) {
-                            last_failure = Some(error.into());
+                            cleanup_failures.push(error.into());
                         }
                     }
-                    Err(error) => last_failure = Some(error),
+                    Err(error) => cleanup_failures.push(error),
                 }
             }
             let project = match mode {
@@ -745,13 +783,10 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                 .and_then(|project| self.remove_project_by_label(project, kind))
             {
                 Ok(()) => {}
-                Err(error) => last_failure = Some(error),
+                Err(error) => cleanup_failures.push(error),
             }
         }
-        match last_failure {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        finish_with_cleanup_failures(None, cleanup_failures)
     }
 
     fn remove_project_by_label(&self, project: &str, kind: CleanupKind) -> AppResult<()> {
@@ -796,14 +831,17 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         if self.config.dataplane_ref().value.is_empty() {
             return Ok(OsString::from("linux/amd64"));
         }
-        Ok(self
-            .capture_optional(&CommandSpec::new("docker").args([
-                "version",
-                "--format",
-                "{{.Server.Os}}/{{.Server.Arch}}",
-            ]))
-            .filter(|value| !value.is_empty())
-            .map_or_else(|| OsString::from("linux/amd64"), OsString::from))
+        let platform = self.capture_text(&CommandSpec::new("docker").args([
+            "version",
+            "--format",
+            "{{.Server.Os}}/{{.Server.Arch}}",
+        ]))?;
+        if platform.is_empty() {
+            return Err(AppFailure::from(anyhow!(
+                "Docker returned an empty server platform"
+            )));
+        }
+        Ok(OsString::from(platform))
     }
 
     pub(super) fn git_required<const N: usize>(
@@ -820,22 +858,28 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             .map_err(AppFailure::from)
     }
 
-    fn git_optional<const N: usize>(
-        &self,
-        directory: &Path,
-        arguments: [&str; N],
-    ) -> Option<String> {
-        let mut command = CommandSpec::new("git").arg("-C").arg(directory.as_os_str());
-        command = command.args(arguments);
-        self.capture_optional(&command)
+    pub(super) fn capture_text(&self, command: &CommandSpec) -> AppResult<String> {
+        let output = self.runner.capture_stdout(command)?;
+        String::from_utf8(output)
+            .context("child process returned non-UTF-8 standard output")
+            .map(|value| value.trim().to_owned())
+            .map_err(AppFailure::from)
     }
 
-    pub(super) fn capture_optional(&self, command: &CommandSpec) -> Option<String> {
-        self.runner
-            .capture_stdout(command)
-            .ok()
-            .and_then(|output| String::from_utf8(output).ok())
-            .map(|value| value.trim().to_owned())
+    #[cfg(unix)]
+    fn host_identity(&self, argument: &str) -> AppResult<String> {
+        let value = self.capture_text(&CommandSpec::new("id").arg(argument))?;
+        if value.parse::<u32>().is_err() {
+            return Err(AppFailure::from(anyhow!(
+                "id {argument} returned an invalid host identity"
+            )));
+        }
+        Ok(value)
+    }
+
+    #[cfg(not(unix))]
+    fn host_identity(&self, _argument: &str) -> AppResult<String> {
+        Ok("1000".to_owned())
     }
 
     pub(super) fn environment_text(&self, key: &str) -> Option<&str> {
@@ -849,13 +893,6 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         self.environment_text(key)
             .map_or(default, |value| matches!(value, "true" | "1"))
     }
-}
-
-fn optional_source_revision(
-    source_enabled: bool,
-    revision: impl FnOnce() -> Option<String>,
-) -> Option<String> {
-    source_enabled.then(revision).flatten()
 }
 
 fn format_stack_endpoint_summary(
@@ -885,14 +922,5 @@ mod tests {
             summary,
             "Stack endpoints:\n  Gateway/API: http://127.0.0.1:8080\n  Public MCP: http://127.0.0.1:8080/servers/server-id/mcp\n  Conformance MCP (direct): http://127.0.0.1:49152/mcp"
         );
-    }
-
-    #[test]
-    fn published_image_mode_does_not_query_a_dataplane_checkout() {
-        let revision = optional_source_revision(false, || {
-            panic!("published image mode must not query a dataplane checkout")
-        });
-
-        assert_eq!(revision, None);
     }
 }

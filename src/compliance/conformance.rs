@@ -87,32 +87,35 @@ impl fmt::Display for ConformanceServerEra {
 
 /// Endpoint topology exercised by one official server-conformance run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ConformanceTarget {
+pub enum SemanticLane {
     /// Official oracle connected directly to the pinned TypeScript fixture.
-    Fixture,
+    FixtureDirect,
     /// Official oracle routed through the Python built-in data plane.
     BuiltInDataPlane,
     /// Official oracle routed through the external Rust data plane.
     ExternalDataPlane,
 }
 
-impl ConformanceTarget {
+impl SemanticLane {
     /// Stable metadata and report label.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Fixture => "fixture direct",
+            Self::FixtureDirect => "fixture direct",
             Self::BuiltInDataPlane => "built-in data-plane route",
             Self::ExternalDataPlane => "external data-plane route",
         }
     }
 }
 
-impl fmt::Display for ConformanceTarget {
+impl fmt::Display for SemanticLane {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.label())
     }
 }
+
+/// Semantic lane used by official conformance workflows.
+pub type ConformanceTarget = SemanticLane;
 
 /// Whether provenance identifies the exact pinned official TypeScript fixture.
 #[must_use]
@@ -699,13 +702,13 @@ pub enum ComparisonClassification {
     /// Only the direct fixture run fails.
     FixtureOnlyFailure,
     /// Only the built-in data-plane route fails.
-    ControlplaneOnlyFailure,
+    BuiltInDataPlaneOnlyFailure,
     /// Only the external data-plane route fails.
-    DataplaneOnlyFailure,
+    ExternalDataPlaneOnlyFailure,
     /// The direct fixture and built-in data-plane route fail.
-    FixtureAndControlplaneFailure,
+    FixtureAndBuiltInDataPlaneFailure,
     /// The direct fixture and external data-plane route fail.
-    FixtureAndDataplaneFailure,
+    FixtureAndExternalDataPlaneFailure,
     /// Both gateway paths fail while the direct fixture passes.
     GatewaysOnlyFailure,
     /// Direct and both routed paths fail.
@@ -722,10 +725,10 @@ impl ComparisonClassification {
     const ALL: [Self; 11] = [
         Self::AllCompliant,
         Self::FixtureOnlyFailure,
-        Self::ControlplaneOnlyFailure,
-        Self::DataplaneOnlyFailure,
-        Self::FixtureAndControlplaneFailure,
-        Self::FixtureAndDataplaneFailure,
+        Self::BuiltInDataPlaneOnlyFailure,
+        Self::ExternalDataPlaneOnlyFailure,
+        Self::FixtureAndBuiltInDataPlaneFailure,
+        Self::FixtureAndExternalDataPlaneFailure,
         Self::GatewaysOnlyFailure,
         Self::SharedFailure,
         Self::FixtureFailure,
@@ -739,10 +742,10 @@ impl ComparisonClassification {
         match self {
             Self::AllCompliant => "all compliant",
             Self::FixtureOnlyFailure => "fixture-only failure",
-            Self::ControlplaneOnlyFailure => "built-in data-plane only failure",
-            Self::DataplaneOnlyFailure => "external data-plane only failure",
-            Self::FixtureAndControlplaneFailure => "fixture + built-in data-plane failure",
-            Self::FixtureAndDataplaneFailure => "fixture + external data-plane failure",
+            Self::BuiltInDataPlaneOnlyFailure => "built-in data-plane only failure",
+            Self::ExternalDataPlaneOnlyFailure => "external data-plane only failure",
+            Self::FixtureAndBuiltInDataPlaneFailure => "fixture + built-in data-plane failure",
+            Self::FixtureAndExternalDataPlaneFailure => "fixture + external data-plane failure",
             Self::GatewaysOnlyFailure => "both gateways only failure",
             Self::SharedFailure => "shared failure",
             Self::FixtureFailure => "fixture failure",
@@ -756,38 +759,41 @@ impl ComparisonClassification {
 #[must_use]
 pub fn classify_outcomes(
     fixture: ScenarioOutcome,
-    controlplane: ScenarioOutcome,
-    dataplane: ScenarioOutcome,
+    built_in_data_plane: ScenarioOutcome,
+    external_data_plane: ScenarioOutcome,
 ) -> ComparisonClassification {
     use ScenarioOutcome::{Ambiguous, FixtureFailure, Missing, NonCompliant, NotApplicable};
 
     if matches!(fixture, FixtureFailure)
-        || matches!(controlplane, FixtureFailure)
-        || matches!(dataplane, FixtureFailure)
+        || matches!(built_in_data_plane, FixtureFailure)
+        || matches!(external_data_plane, FixtureFailure)
     {
         return ComparisonClassification::FixtureFailure;
     }
     if matches!(fixture, Ambiguous | Missing)
-        || matches!(controlplane, Ambiguous | Missing)
-        || matches!(dataplane, Ambiguous | Missing)
+        || matches!(built_in_data_plane, Ambiguous | Missing)
+        || matches!(external_data_plane, Ambiguous | Missing)
     {
         return ComparisonClassification::Ambiguous;
     }
-    if fixture == NotApplicable && controlplane == NotApplicable && dataplane == NotApplicable {
+    if fixture == NotApplicable
+        && built_in_data_plane == NotApplicable
+        && external_data_plane == NotApplicable
+    {
         return ComparisonClassification::NotApplicable;
     }
 
     match (
         fixture == NonCompliant,
-        controlplane == NonCompliant,
-        dataplane == NonCompliant,
+        built_in_data_plane == NonCompliant,
+        external_data_plane == NonCompliant,
     ) {
         (false, false, false) => ComparisonClassification::AllCompliant,
         (true, false, false) => ComparisonClassification::FixtureOnlyFailure,
-        (false, true, false) => ComparisonClassification::ControlplaneOnlyFailure,
-        (false, false, true) => ComparisonClassification::DataplaneOnlyFailure,
-        (true, true, false) => ComparisonClassification::FixtureAndControlplaneFailure,
-        (true, false, true) => ComparisonClassification::FixtureAndDataplaneFailure,
+        (false, true, false) => ComparisonClassification::BuiltInDataPlaneOnlyFailure,
+        (false, false, true) => ComparisonClassification::ExternalDataPlaneOnlyFailure,
+        (true, true, false) => ComparisonClassification::FixtureAndBuiltInDataPlaneFailure,
+        (true, false, true) => ComparisonClassification::FixtureAndExternalDataPlaneFailure,
         (false, true, true) => ComparisonClassification::GatewaysOnlyFailure,
         (true, true, true) => ComparisonClassification::SharedFailure,
     }
@@ -802,14 +808,14 @@ pub struct ScenarioComparison {
     pub fixture: ScenarioOutcome,
     /// Raw failed checks in the direct fixture result.
     pub fixture_failed_checks: usize,
-    /// Control-plane result.
-    pub controlplane: ScenarioOutcome,
-    /// Raw failed checks in the control-plane result.
-    pub controlplane_failed_checks: usize,
-    /// Dataplane result.
-    pub dataplane: ScenarioOutcome,
-    /// Raw failed checks in the dataplane result.
-    pub dataplane_failed_checks: usize,
+    /// Built-in data-plane result.
+    pub built_in_data_plane: ScenarioOutcome,
+    /// Raw failed checks in the built-in data-plane result.
+    pub built_in_data_plane_failed_checks: usize,
+    /// External data-plane result.
+    pub external_data_plane: ScenarioOutcome,
+    /// Raw failed checks in the external data-plane result.
+    pub external_data_plane_failed_checks: usize,
     /// Reduced report classification.
     pub classification: ComparisonClassification,
     /// Raw official references from both result sets.
@@ -821,10 +827,10 @@ pub struct ScenarioComparison {
 pub struct ComparisonFixtureTrust {
     /// Direct fixture provenance is the exact pinned source revision.
     pub fixture: bool,
-    /// Control-plane fixture provenance is the exact pinned source revision.
-    pub controlplane: bool,
-    /// Dataplane fixture provenance is the exact pinned source revision.
-    pub dataplane: bool,
+    /// Built-in data-plane fixture provenance is the exact pinned source revision.
+    pub built_in_data_plane: bool,
+    /// External data-plane fixture provenance is the exact pinned source revision.
+    pub external_data_plane: bool,
 }
 
 /// Compares results while independently attributing trusted fixture failures.
@@ -834,38 +840,38 @@ pub struct ComparisonFixtureTrust {
 #[must_use]
 pub fn compare_result_sets_with_fixture_trust(
     fixture: &ConformanceResults,
-    controlplane: &ConformanceResults,
-    dataplane: &ConformanceResults,
+    built_in_data_plane: &ConformanceResults,
+    external_data_plane: &ConformanceResults,
     trust: ComparisonFixtureTrust,
 ) -> Vec<ScenarioComparison> {
     let mut scenarios: BTreeSet<_> = fixture.scenarios.keys().cloned().collect();
-    scenarios.extend(controlplane.scenarios.keys().cloned());
-    scenarios.extend(dataplane.scenarios.keys().cloned());
+    scenarios.extend(built_in_data_plane.scenarios.keys().cloned());
+    scenarios.extend(external_data_plane.scenarios.keys().cloned());
 
     scenarios
         .into_iter()
         .map(|scenario| {
             let fixture_result = fixture.scenarios.get(&scenario);
-            let controlplane_result = controlplane.scenarios.get(&scenario);
-            let dataplane_result = dataplane.scenarios.get(&scenario);
+            let built_in_result = built_in_data_plane.scenarios.get(&scenario);
+            let external_result = external_data_plane.scenarios.get(&scenario);
             let fixture_outcome = fixture_result
                 .map(|result| result.outcome_with_trusted_fixture(trust.fixture))
                 .unwrap_or(ScenarioOutcome::Missing);
-            let controlplane_outcome = controlplane_result
-                .map(|result| result.outcome_with_trusted_fixture(trust.controlplane))
+            let built_in_outcome = built_in_result
+                .map(|result| result.outcome_with_trusted_fixture(trust.built_in_data_plane))
                 .unwrap_or(ScenarioOutcome::Missing);
-            let dataplane_outcome = dataplane_result
-                .map(|result| result.outcome_with_trusted_fixture(trust.dataplane))
+            let external_outcome = external_result
+                .map(|result| result.outcome_with_trusted_fixture(trust.external_data_plane))
                 .unwrap_or(ScenarioOutcome::Missing);
 
             let mut spec_references = Vec::new();
             if let Some(result) = fixture_result {
                 append_references(&mut spec_references, result);
             }
-            if let Some(result) = controlplane_result {
+            if let Some(result) = built_in_result {
                 append_references(&mut spec_references, result);
             }
-            if let Some(result) = dataplane_result {
+            if let Some(result) = external_result {
                 append_references(&mut spec_references, result);
             }
             sort_and_deduplicate_references(&mut spec_references);
@@ -874,14 +880,14 @@ pub fn compare_result_sets_with_fixture_trust(
                 scenario,
                 fixture: fixture_outcome,
                 fixture_failed_checks: failed_check_count(fixture_result),
-                controlplane: controlplane_outcome,
-                controlplane_failed_checks: failed_check_count(controlplane_result),
-                dataplane: dataplane_outcome,
-                dataplane_failed_checks: failed_check_count(dataplane_result),
+                built_in_data_plane: built_in_outcome,
+                built_in_data_plane_failed_checks: failed_check_count(built_in_result),
+                external_data_plane: external_outcome,
+                external_data_plane_failed_checks: failed_check_count(external_result),
                 classification: classify_outcomes(
                     fixture_outcome,
-                    controlplane_outcome,
-                    dataplane_outcome,
+                    built_in_outcome,
+                    external_outcome,
                 ),
                 spec_references,
             }
@@ -973,13 +979,13 @@ pub fn render_comparison_markdown(report: &ComparisonReport) -> String {
         ),
         (
             "Built-in data-plane route",
-            |scenario: &ScenarioComparison| scenario.controlplane,
-            |scenario: &ScenarioComparison| scenario.controlplane_failed_checks,
+            |scenario: &ScenarioComparison| scenario.built_in_data_plane,
+            |scenario: &ScenarioComparison| scenario.built_in_data_plane_failed_checks,
         ),
         (
             "External data-plane route",
-            |scenario: &ScenarioComparison| scenario.dataplane,
-            |scenario: &ScenarioComparison| scenario.dataplane_failed_checks,
+            |scenario: &ScenarioComparison| scenario.external_data_plane,
+            |scenario: &ScenarioComparison| scenario.external_data_plane_failed_checks,
         ),
     ];
     for (label, outcome, failed_checks) in target_outcomes {
@@ -1049,8 +1055,8 @@ pub fn render_comparison_markdown(report: &ComparisonReport) -> String {
             "| {} | {} | {} | {} | {} | {} |\n",
             markdown_cell(&scenario.scenario),
             scenario.fixture.label(),
-            scenario.controlplane.label(),
-            scenario.dataplane.label(),
+            scenario.built_in_data_plane.label(),
+            scenario.external_data_plane.label(),
             scenario.classification.label(),
             references
         ));

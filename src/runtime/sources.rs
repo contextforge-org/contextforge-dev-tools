@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl<R: ProcessRunner> RuntimeExecutor<R> {
+impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) fn require_mode_sources(&self, mode: StackMode) -> AppResult<()> {
         let controlplane_compose = self.config.controlplane_dir().join("docker-compose.yml");
         if !controlplane_compose.is_file() {

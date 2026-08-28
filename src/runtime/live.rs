@@ -9,15 +9,15 @@ const LIVE_ALL_TARGETS: [&str; 3] = [
     "test-protocol-compliance-gateway",
 ];
 
-impl<R: ProcessRunner> RuntimeExecutor<R> {
+impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn run_live(
         &self,
-        lane: LiveLane,
+        lane: ConformanceTarget,
         group: LiveGroup,
         protocol_version: &ProtocolVersion,
     ) -> AppResult<()> {
         match lane {
-            LiveLane::Fixture => {
+            ConformanceTarget::FixtureDirect => {
                 if group != LiveGroup::Protocol {
                     return Err(AppFailure::from(anyhow!(
                         "fixture-direct live lane requires the protocol group"
@@ -30,11 +30,11 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                     protocol_version,
                 )
             }
-            LiveLane::BuiltInDataPlane => {
+            ConformanceTarget::BuiltInDataPlane => {
                 self.run_routed_live(StackMode::Controlplane, group, protocol_version)
                     .await
             }
-            LiveLane::ExternalDataPlane => {
+            ConformanceTarget::ExternalDataPlane => {
                 self.run_routed_live(StackMode::Dataplane, group, protocol_version)
                     .await
             }

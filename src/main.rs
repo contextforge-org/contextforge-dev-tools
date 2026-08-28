@@ -8,7 +8,7 @@ use cf_integration::platform::config::{
     AppConfig, ConfigBootstrap, ConfigRequirements, Environment,
 };
 use cf_integration::platform::process::SystemProcessRunner;
-use cf_integration::runtime::RuntimeExecutor;
+use cf_integration::runtime::RuntimeDispatcher;
 use clap::Parser;
 
 #[tokio::main]
@@ -58,7 +58,7 @@ async fn main() -> ExitCode {
         Ok(config) => config,
         Err(error) => return report_failure(AppFailure::from(error)),
     };
-    let mut runtime = RuntimeExecutor::new(config, SystemProcessRunner);
+    let runtime = RuntimeDispatcher::new(config, SystemProcessRunner);
     let result = runtime.execute(action).await;
     match result {
         Ok(()) => ExitCode::SUCCESS,

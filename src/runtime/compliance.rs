@@ -62,7 +62,7 @@ impl Drop for ConformanceProgress {
     }
 }
 
-impl<R: ProcessRunner> RuntimeExecutor<R> {
+impl<R: ProcessRunner> RuntimeContext<R> {
     fn require_loopback_fixture_base_url(&self) -> AppResult<()> {
         let base_url = self.base_url()?;
         let url = url::Url::parse(base_url)
@@ -156,7 +156,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                     .with_context(|| format!("failed to clear conformance log {setup_log:?}"))
                     .map_err(AppFailure::from)?;
                 let quiet_runner = LoggingProcessRunner::new(&self.runner, &setup_log);
-                let executor = RuntimeExecutor::new(self.config.clone(), quiet_runner);
+                let executor = RuntimeContext::new(self.config.clone(), quiet_runner);
                 let result = executor
                     .run_conformance(&lanes, &spec_version, server_era, results_dir.as_deref())
                     .await;
@@ -216,7 +216,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         paths.clear_conformance()?;
 
         let topologies = conformance_topologies(lanes);
-        let run_direct = lanes.contains(&ConformanceTarget::Fixture);
+        let run_direct = lanes.contains(&ConformanceTarget::FixtureDirect);
         let mut direct_complete = false;
         let mut failures = Vec::new();
         let mut interrupted = false;
@@ -557,7 +557,7 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
     ) -> AppResult<()> {
         self.run_official_conformance_target(
             &ConformanceTargetRun {
-                target: ConformanceTarget::Fixture,
+                target: ConformanceTarget::FixtureDirect,
                 endpoint: run.endpoint,
                 spec_version: run.spec_version,
                 server_era: run.server_era,
@@ -892,12 +892,12 @@ mod tests {
     #[test]
     fn lane_selection_uses_only_required_stack_topologies() {
         assert_eq!(
-            conformance_topologies(&[ConformanceTarget::Fixture]),
+            conformance_topologies(&[ConformanceTarget::FixtureDirect]),
             [StackMode::Controlplane]
         );
         assert_eq!(
             conformance_topologies(&[
-                ConformanceTarget::Fixture,
+                ConformanceTarget::FixtureDirect,
                 ConformanceTarget::ExternalDataPlane,
             ]),
             [StackMode::Dataplane]
@@ -964,7 +964,7 @@ mod tests {
     fn conformance_lane_header_names_the_lane_oracle_and_specification() {
         assert_eq!(
             render_conformance_lane_header(
-                ConformanceTarget::Fixture,
+                ConformanceTarget::FixtureDirect,
                 40,
                 "2026-07-28",
                 ConformanceServerEra::Legacy,

@@ -366,7 +366,7 @@ pub struct ConformanceRunArgs {
 impl From<CliLane> for crate::compliance::conformance::ConformanceTarget {
     fn from(lane: CliLane) -> Self {
         match lane {
-            CliLane::FixtureDirect => Self::Fixture,
+            CliLane::FixtureDirect => Self::FixtureDirect,
             CliLane::BuiltInDataPlane => Self::BuiltInDataPlane,
             CliLane::ExternalDataPlane => Self::ExternalDataPlane,
         }

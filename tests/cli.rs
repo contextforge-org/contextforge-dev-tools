@@ -263,6 +263,26 @@ fn live_accepts_fixture_lane_and_explicit_protocol_version() {
 }
 
 #[test]
+fn probe_rejects_removed_topology_alias() {
+    rejected(&["cf-integration", "probe", "--topology", "dataplane"]);
+}
+
+#[test]
+fn load_rejects_removed_topology_alias() {
+    rejected(&["cf-integration", "load", "--topology", "dataplane"]);
+}
+
+#[test]
+fn live_rejects_removed_topology_alias() {
+    rejected(&[
+        "cf-integration",
+        "live",
+        "--topology",
+        "external-data-plane",
+    ]);
+}
+
+#[test]
 fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
     fn assert_routed_target(target: &RoutedWorkflowTargetArgs) {
         assert_eq!(target.lane, Some(CliTopology::Controlplane));

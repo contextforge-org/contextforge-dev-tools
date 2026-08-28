@@ -4,7 +4,7 @@ use super::*;
 
 const CONFORMANCE_COMPLETION_MARKER: &[u8] = b"complete\n";
 
-impl<R: ProcessRunner> RuntimeExecutor<R> {
+impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) fn regenerate_conformance_report(
         &self,
         results_dir: Option<&Path>,
@@ -30,12 +30,12 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
         paths: &CompliancePaths,
         expected_run: Option<(&str, ConformanceServerEra, &str)>,
     ) -> AppResult<PathBuf> {
-        let fixture = self.load_conformance_artifact(paths, ConformanceTarget::Fixture)?;
-        let controlplane =
+        let fixture = self.load_conformance_artifact(paths, ConformanceTarget::FixtureDirect)?;
+        let built_in =
             self.load_conformance_artifact(paths, ConformanceTarget::BuiltInDataPlane)?;
-        let dataplane =
+        let external =
             self.load_conformance_artifact(paths, ConformanceTarget::ExternalDataPlane)?;
-        if fixture.is_none() && controlplane.is_none() && dataplane.is_none() {
+        if fixture.is_none() && built_in.is_none() && external.is_none() {
             return Err(AppFailure::from(anyhow!(
                 "no official conformance artifacts found beneath {}",
                 paths.conformance_root.display()
@@ -44,8 +44,8 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
 
         let metadata = compatible_metadata(
             fixture.as_ref().map(|artifact| &artifact.metadata),
-            controlplane.as_ref().map(|artifact| &artifact.metadata),
-            dataplane.as_ref().map(|artifact| &artifact.metadata),
+            built_in.as_ref().map(|artifact| &artifact.metadata),
+            external.as_ref().map(|artifact| &artifact.metadata),
             expected_run,
         )?;
         let empty_results = ConformanceResults::default();
@@ -53,10 +53,10 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             fixture
                 .as_ref()
                 .map_or(&empty_results, |artifact| &artifact.results),
-            controlplane
+            built_in
                 .as_ref()
                 .map_or(&empty_results, |artifact| &artifact.results),
-            dataplane
+            external
                 .as_ref()
                 .map_or(&empty_results, |artifact| &artifact.results),
             ComparisonFixtureTrust {
@@ -65,13 +65,13 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                         .as_ref()
                         .and_then(|artifact| artifact.metadata.fixture.as_ref()),
                 ),
-                controlplane: is_trusted_official_fixture(
-                    controlplane
+                built_in_data_plane: is_trusted_official_fixture(
+                    built_in
                         .as_ref()
                         .and_then(|artifact| artifact.metadata.fixture.as_ref()),
                 ),
-                dataplane: is_trusted_official_fixture(
-                    dataplane
+                external_data_plane: is_trusted_official_fixture(
+                    external
                         .as_ref()
                         .and_then(|artifact| artifact.metadata.fixture.as_ref()),
                 ),
@@ -163,7 +163,7 @@ impl CompliancePaths {
 
     pub(super) fn clear_conformance(&self) -> AppResult<()> {
         for target in [
-            ConformanceTarget::Fixture,
+            ConformanceTarget::FixtureDirect,
             ConformanceTarget::BuiltInDataPlane,
             ConformanceTarget::ExternalDataPlane,
         ] {
@@ -275,16 +275,16 @@ fn read_run_metadata(path: &Path) -> AppResult<ConformanceRunMetadata> {
 
 fn compatible_metadata<'a>(
     fixture: Option<&'a ConformanceRunMetadata>,
-    controlplane: Option<&'a ConformanceRunMetadata>,
-    dataplane: Option<&'a ConformanceRunMetadata>,
+    built_in: Option<&'a ConformanceRunMetadata>,
+    external: Option<&'a ConformanceRunMetadata>,
     expected_run: Option<(&str, ConformanceServerEra, &str)>,
 ) -> AppResult<&'a ConformanceRunMetadata> {
-    let metadata = fixture.or(controlplane).or(dataplane).ok_or_else(|| {
+    let metadata = fixture.or(built_in).or(external).ok_or_else(|| {
         AppFailure::from(anyhow!(
             "no conformance metadata is available for reporting"
         ))
     })?;
-    for candidate in [fixture, controlplane, dataplane].into_iter().flatten() {
+    for candidate in [fixture, built_in, external].into_iter().flatten() {
         if candidate.fixture != metadata.fixture {
             return Err(AppFailure::from(anyhow!(
                 "direct fixture, built-in data-plane, and external data-plane conformance fixture provenance mismatch"
@@ -321,7 +321,7 @@ pub(super) const fn conformance_target(topology: StackMode) -> ConformanceTarget
 
 const fn conformance_target_slug(target: ConformanceTarget) -> &'static str {
     match target {
-        ConformanceTarget::Fixture => "fixture-direct",
+        ConformanceTarget::FixtureDirect => "fixture-direct",
         ConformanceTarget::BuiltInDataPlane => "built-in-data-plane",
         ConformanceTarget::ExternalDataPlane => "external-data-plane",
     }
@@ -366,7 +366,9 @@ mod tests {
         let paths = CompliancePaths::new(Path::new("artifacts"), PathBuf::from("reports"));
 
         assert_eq!(
-            paths.conformance_lane(ConformanceTarget::Fixture).root,
+            paths
+                .conformance_lane(ConformanceTarget::FixtureDirect)
+                .root,
             PathBuf::from("artifacts/conformance/fixture-direct")
         );
         assert_eq!(
@@ -388,7 +390,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary artifact root");
         let paths = CompliancePaths::new(directory.path(), PathBuf::from("reports"));
         for target in [
-            ConformanceTarget::Fixture,
+            ConformanceTarget::FixtureDirect,
             ConformanceTarget::BuiltInDataPlane,
             ConformanceTarget::ExternalDataPlane,
         ] {
@@ -401,7 +403,7 @@ mod tests {
             .expect("all old lanes should be removed");
 
         for target in [
-            ConformanceTarget::Fixture,
+            ConformanceTarget::FixtureDirect,
             ConformanceTarget::BuiltInDataPlane,
             ConformanceTarget::ExternalDataPlane,
         ] {
@@ -411,7 +413,7 @@ mod tests {
 
     #[test]
     fn partial_lane_metadata_is_reportable_when_provenance_matches() {
-        let fixture = metadata(ConformanceTarget::Fixture);
+        let fixture = metadata(ConformanceTarget::FixtureDirect);
         let dataplane = metadata(ConformanceTarget::ExternalDataPlane);
 
         let selected = compatible_metadata(
@@ -427,7 +429,7 @@ mod tests {
 
     #[test]
     fn mismatched_fixture_provenance_prevents_cross_lane_comparison() {
-        let fixture = metadata(ConformanceTarget::Fixture);
+        let fixture = metadata(ConformanceTarget::FixtureDirect);
         let mut dataplane = metadata(ConformanceTarget::ExternalDataPlane);
         dataplane
             .fixture
@@ -445,7 +447,7 @@ mod tests {
 
     #[test]
     fn mismatched_server_eras_prevent_cross_lane_comparison() {
-        let fixture = metadata(ConformanceTarget::Fixture);
+        let fixture = metadata(ConformanceTarget::FixtureDirect);
         let mut dataplane = metadata(ConformanceTarget::ExternalDataPlane);
         dataplane.server_era = ConformanceServerEra::Legacy;
 

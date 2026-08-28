@@ -5,7 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use crate::compliance::conformance::{ConformanceServerEra, ConformanceTarget};
+use crate::compliance::conformance::{ConformanceServerEra, SemanticLane};
 use crate::load::LoadRequest;
 use crate::platform::StackMode;
 use crate::platform::config::Environment;
@@ -28,7 +28,7 @@ pub enum Action {
     },
     Load(ResolvedLoadArgs),
     Live {
-        lane: LiveLane,
+        lane: SemanticLane,
         group: LiveGroup,
         protocol_version: ProtocolVersion,
     },
@@ -75,19 +75,11 @@ pub struct ResolvedLoadArgs {
     pub request: LoadRequest,
 }
 
-/// One upstream live-test execution path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LiveLane {
-    Fixture,
-    BuiltInDataPlane,
-    ExternalDataPlane,
-}
-
 /// Fully resolved official conformance operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConformanceAction {
     Run {
-        lanes: Vec<ConformanceTarget>,
+        lanes: Vec<SemanticLane>,
         spec_version: String,
         server_era: ConformanceServerEra,
         results_dir: Option<PathBuf>,
@@ -152,7 +144,7 @@ pub fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
         }
         Command::Live(args) => {
             let lane = resolve_live_lane(args.target.lane, environment)?;
-            if lane == LiveLane::Fixture && args.group != LiveGroup::Protocol {
+            if lane == SemanticLane::FixtureDirect && args.group != LiveGroup::Protocol {
                 bail!("--lane fixture-direct requires --group protocol");
             }
             Ok(Action::Live {
@@ -204,14 +196,14 @@ pub fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
     }
 }
 
-fn resolve_live_lane(lane: Option<CliLane>, environment: &Environment) -> Result<LiveLane> {
+fn resolve_live_lane(lane: Option<CliLane>, environment: &Environment) -> Result<SemanticLane> {
     Ok(match lane {
-        Some(CliLane::FixtureDirect) => LiveLane::Fixture,
-        Some(CliLane::BuiltInDataPlane) => LiveLane::BuiltInDataPlane,
-        Some(CliLane::ExternalDataPlane) => LiveLane::ExternalDataPlane,
+        Some(CliLane::FixtureDirect) => SemanticLane::FixtureDirect,
+        Some(CliLane::BuiltInDataPlane) => SemanticLane::BuiltInDataPlane,
+        Some(CliLane::ExternalDataPlane) => SemanticLane::ExternalDataPlane,
         None => match resolve_topology(None, environment)? {
-            StackMode::Controlplane => LiveLane::BuiltInDataPlane,
-            StackMode::Dataplane => LiveLane::ExternalDataPlane,
+            StackMode::Controlplane => SemanticLane::BuiltInDataPlane,
+            StackMode::Dataplane => SemanticLane::ExternalDataPlane,
         },
     })
 }
@@ -262,12 +254,12 @@ fn resolve_stack(command: StackCommand, environment: &Environment) -> Result<Sta
     }
 }
 
-fn resolve_lanes(lanes: impl IntoIterator<Item = ConformanceTarget>) -> Vec<ConformanceTarget> {
+fn resolve_lanes(lanes: impl IntoIterator<Item = SemanticLane>) -> Vec<SemanticLane> {
     let selected = lanes.into_iter().collect::<BTreeSet<_>>();
     let all = [
-        ConformanceTarget::Fixture,
-        ConformanceTarget::BuiltInDataPlane,
-        ConformanceTarget::ExternalDataPlane,
+        SemanticLane::FixtureDirect,
+        SemanticLane::BuiltInDataPlane,
+        SemanticLane::ExternalDataPlane,
     ];
     if selected.is_empty() {
         all.into_iter().collect()

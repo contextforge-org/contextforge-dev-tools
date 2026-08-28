@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use cf_integration::app::{
-    Action, ConformanceAction, DebugAction, LiveLane, ResolvedLoadArgs, StackAction, resolve_action,
+    Action, ConformanceAction, DebugAction, ResolvedLoadArgs, StackAction, resolve_action,
 };
 use cf_integration::cli::{Cli, LiveGroup, ProtocolVersion, TokenKind, TopologySelection};
 use cf_integration::compliance::conformance::{ConformanceServerEra, ConformanceTarget};
@@ -145,7 +145,7 @@ fn live_resolves_lane_group_and_protocol_version() {
             ],
         ),
         Action::Live {
-            lane: LiveLane::BuiltInDataPlane,
+            lane: ConformanceTarget::BuiltInDataPlane,
             group: LiveGroup::Mcp,
             protocol_version: "2025-06-18"
                 .parse::<ProtocolVersion>()
@@ -174,7 +174,7 @@ fn live_fixture_lane_bypasses_topology_and_cli_version_wins() {
             ],
         ),
         Action::Live {
-            lane: LiveLane::Fixture,
+            lane: ConformanceTarget::FixtureDirect,
             group: LiveGroup::Protocol,
             protocol_version: "2025-03-26"
                 .parse::<ProtocolVersion>()
@@ -209,7 +209,7 @@ fn conformance_defaults_to_all_three_ordered_lanes() {
         action(&["cf-integration", "conformance", "run"], &[]),
         Action::Conformance(ConformanceAction::Run {
             lanes: vec![
-                ConformanceTarget::Fixture,
+                ConformanceTarget::FixtureDirect,
                 ConformanceTarget::BuiltInDataPlane,
                 ConformanceTarget::ExternalDataPlane,
             ],
@@ -245,7 +245,7 @@ fn conformance_lanes_are_deduplicated_and_normalized() {
         ),
         Action::Conformance(ConformanceAction::Run {
             lanes: vec![
-                ConformanceTarget::Fixture,
+                ConformanceTarget::FixtureDirect,
                 ConformanceTarget::ExternalDataPlane,
             ],
             spec_version: "2025-06-18".to_owned(),
