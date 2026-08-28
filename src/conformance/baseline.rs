@@ -37,6 +37,8 @@ pub(crate) struct ScoredFinding {
     pub(crate) scenario: String,
     /// Stable official check identifier.
     pub(crate) check: String,
+    /// Official check name, which disambiguates reused specification identifiers.
+    pub(crate) name: String,
     /// Scored status.
     pub(crate) status: ScoredStatus,
 }
@@ -303,7 +305,7 @@ pub(crate) fn bless_baselines_transactionally(
     Ok(())
 }
 
-/// Rejects unknown statuses and duplicate check identities in official output.
+/// Rejects unknown statuses in official output and returns its scored findings.
 pub(crate) fn validate_scored_results(results: &ConformanceResults) -> Result<()> {
     scored_findings(results).map(|_| ())
 }
@@ -311,14 +313,8 @@ pub(crate) fn validate_scored_results(results: &ConformanceResults) -> Result<()
 fn scored_findings(results: &ConformanceResults) -> Result<BTreeSet<ScoredFinding>> {
     let mut findings = BTreeSet::new();
     for (scenario, result) in &results.scenarios {
-        let mut check_ids = BTreeSet::new();
         for check in &result.checks {
-            if !check_ids.insert(check.id.as_str()) {
-                bail!(
-                    "duplicate official check {:?} in scenario {scenario:?}",
-                    check.id
-                );
-            }
+            let name = check.name.as_deref().unwrap_or_default();
             let status = match &check.status {
                 CheckStatus::Failure => Some(ScoredStatus::Failure),
                 CheckStatus::Warning => Some(ScoredStatus::Warning),
@@ -334,6 +330,7 @@ fn scored_findings(results: &ConformanceResults) -> Result<BTreeSet<ScoredFindin
                 findings.insert(ScoredFinding {
                     scenario: scenario.clone(),
                     check: check.id.clone(),
+                    name: name.to_owned(),
                     status,
                 });
             }
@@ -521,11 +518,13 @@ mod tests {
         let shared = ScoredFinding {
             scenario: "tools-list".to_owned(),
             check: "shared".to_owned(),
+            name: String::new(),
             status: ScoredStatus::Failure,
         };
         let routed = ScoredFinding {
             scenario: "tools-list".to_owned(),
             check: "routed".to_owned(),
+            name: String::new(),
             status: ScoredStatus::Warning,
         };
         write_document(
@@ -584,6 +583,7 @@ mod tests {
         let expected = ScoredFinding {
             scenario: "ping".to_owned(),
             check: "old".to_owned(),
+            name: String::new(),
             status: ScoredStatus::Warning,
         };
         write_document(
@@ -615,6 +615,40 @@ mod tests {
     }
 
     #[test]
+    fn reused_specification_ids_are_disambiguated_by_check_name() {
+        let mut first = check("shared-spec-id", CheckStatus::Failure);
+        first.name = Some("FirstAssertion".to_owned());
+        let mut second = check("shared-spec-id", CheckStatus::Failure);
+        second.name = Some("SecondAssertion".to_owned());
+
+        let findings = scored_findings(&results("header-validation", vec![first, second]))
+            .expect("distinct named checks should be scoreable")
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        assert_eq!(findings.len(), 2);
+        assert_eq!(findings[0].name, "FirstAssertion");
+        assert_eq!(findings[1].name, "SecondAssertion");
+    }
+
+    #[test]
+    fn repeated_official_checks_collapse_to_one_scored_finding() {
+        let mut repeated = check("shared-spec-id", CheckStatus::Failure);
+        repeated.name = Some("RepeatedAssertion".to_owned());
+
+        let findings = scored_findings(&results(
+            "header-validation",
+            vec![repeated.clone(), repeated],
+        ))
+        .expect("repeated official checks should be scoreable")
+        .into_iter()
+        .collect::<Vec<_>>();
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].name, "RepeatedAssertion");
+    }
+
+    #[test]
     fn malformed_unsorted_and_unknown_status_baselines_fail_closed() {
         let directory = tempfile::tempdir().expect("temporary baseline root");
         let path = baseline_path(
@@ -626,14 +660,14 @@ mod tests {
         fs::create_dir_all(path.parent().expect("baseline parent")).expect("baseline directory");
         fs::write(
             &path,
-            "findings:\n  - scenario: ping\n    check: z\n    status: WARNING\n  - scenario: ping\n    check: a\n    status: FAILURE\n",
+            "findings:\n  - scenario: ping\n    check: z\n    name: z\n    status: WARNING\n  - scenario: ping\n    check: a\n    name: a\n    status: FAILURE\n",
         )
         .expect("malformed ordering should be written");
         assert!(read_baseline(&path).is_err());
 
         fs::write(
             &path,
-            "findings:\n  - scenario: ping\n    check: a\n    status: SURPRISE\n",
+            "findings:\n  - scenario: ping\n    check: a\n    name: a\n    status: SURPRISE\n",
         )
         .expect("unknown status should be written");
         assert!(read_baseline(&path).is_err());

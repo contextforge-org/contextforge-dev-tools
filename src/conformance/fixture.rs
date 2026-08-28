@@ -455,12 +455,12 @@ impl ConformanceFixtureClient {
 
     async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let response = self.request(Method::GET, path, None).await?;
-        self.parse_json(path, response).await
+        self.parse_json("GET", path, response).await
     }
 
     async fn post_json<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T> {
         let response = self.request(Method::POST, path, Some(body)).await?;
-        self.parse_json(path, response).await
+        self.parse_json("POST", path, response).await
     }
 
     async fn post_success(&self, path: &str, body: Option<&Value>) -> Result<()> {
@@ -476,13 +476,14 @@ impl ConformanceFixtureClient {
 
     async fn parse_json<T: DeserializeOwned>(
         &self,
+        method: &str,
         path: &str,
         response: reqwest::Response,
     ) -> Result<T> {
         let status = response.status();
         if !status.is_success() {
             return Err(anyhow!(redact(
-                &format!("request to {path} returned status {}", status.as_u16()),
+                &format!("{method} {path} returned HTTP {}", status.as_u16()),
                 &self.admin_token
             )));
         }
@@ -493,7 +494,7 @@ impl ConformanceFixtureClient {
                     self.request_timeout
                 )
             } else {
-                format!("request to {path} returned invalid JSON")
+                format!("{method} {path} returned invalid JSON")
             };
             anyhow!(redact(&message, &self.admin_token))
         })

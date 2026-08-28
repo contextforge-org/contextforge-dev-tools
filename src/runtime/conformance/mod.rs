@@ -139,13 +139,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                         .run_conformance(&lanes, &client_version, server_era, &paths)
                         .await
                     {
-                        failures.push(format!("{}: {error}", paths.identity()));
+                        failures.push(format!(
+                            "{}: {error}\n  Setup log: {}",
+                            paths.identity(),
+                            setup_log.display()
+                        ));
+                        continue;
                     }
-                    println!(
-                        "{} {}",
-                        OutputStyle::stdout().info("  Setup output"),
-                        setup_log.display()
-                    );
 
                     let evaluated = executor
                         .load_selected_conformance_results(&paths, &lanes)
@@ -218,7 +218,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     Ok(())
                 } else {
                     Err(AppFailure::from(anyhow!(
-                        "conformance matrix completed with failures:\n- {}",
+                        "conformance failed:\n- {}",
                         failures.join("\n- ")
                     )))
                 }
@@ -274,7 +274,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         tokio::pin!(interrupt);
         let (cancellation_sender, cancellation_receiver) = tokio::sync::watch::channel(false);
 
-        let cleanup_progress = Activity::start("clear prior integration stacks");
+        let cleanup_progress = Activity::spinner("Clear prior integration stacks");
         let cleanup_result = self.cleanup(TopologySelection::All, CleanupKind::Reset);
         cleanup_progress.finish(cleanup_result.is_ok());
         cleanup_result?;
@@ -282,7 +282,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         for topology in topologies {
             let target = conformance_target(topology);
             let run_routed = lanes.contains(&target);
-            let stack_progress = Activity::start(format!("prepare {}", topology.topology_label()));
+            let stack_progress =
+                Activity::spinner(format!("Prepare {}", topology.topology_label()));
             let mut topology_failure = self.stack_up_for_conformance(topology, true).await.err();
             stack_progress.finish(topology_failure.is_none());
             let mut fixture_state = None;
@@ -292,8 +293,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             let mut managed_token = None;
 
             if topology_failure.is_none() {
-                let fixture_progress = Activity::start(format!(
-                    "start the official fixture for {}",
+                let fixture_progress = Activity::spinner(format!(
+                    "Start the official fixture for {}",
                     topology.topology_label()
                 ));
                 let (start_result, start_interrupted) = finish_phase_after_interrupt(
@@ -353,12 +354,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                 direct_complete = true;
                                 if let Err(error) = result {
                                     let failure = format!("fixture direct: {error}");
-                                    eprintln!(
-                                        "{}",
-                                        OutputStyle::stderr().failure(
-                                            &format!("Conformance failure: {failure}")
-                                        )
-                                    );
                                     failures.push(failure);
                                 }
                             }
@@ -386,8 +381,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                         .map_err(AppFailure::from)
                 }) {
                     Ok(client) => {
-                        let provision_progress = Activity::start(format!(
-                            "register the official fixture for {}",
+                        let provision_progress = Activity::spinner(format!(
+                            "Register the official fixture for {}",
                             topology.topology_label()
                         ));
                         let (provision_result, provision_interrupted) =
@@ -405,11 +400,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                     topology_failure = Some(interrupted_conformance_failure());
                                 } else if topology == StackMode::Dataplane
                                     && let Err(error) = {
-                                        let publisher_progress = Activity::start(
-                                            "wait for the external dataplane configuration",
+                                        let publisher_progress = Activity::spinner(
+                                            "Wait for the external dataplane configuration",
                                         );
                                         let result = self
-                                            .wait_for_publisher_snapshot_quiet(&fixture.server_id)
+                                            .wait_for_publisher_snapshot(&fixture.server_id)
                                             .await;
                                         publisher_progress.finish(result.is_ok());
                                         result
@@ -513,10 +508,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .err();
             if let Some(error) = topology_failure {
                 let failure = format!("{} topology: {error}", topology.topology_label());
-                eprintln!(
-                    "{}",
-                    OutputStyle::stderr().failure(&format!("Conformance failure: {failure}"))
-                );
                 failures.push(failure);
             }
             if interrupted {
@@ -525,7 +516,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             }
         }
 
-        if !interrupted
+        if failures.is_empty()
+            && !interrupted
             && [
                 SemanticLane::FixtureDirect,
                 SemanticLane::BuiltInDataPlane,
@@ -545,10 +537,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 ),
                 Err(error) => {
                     let failure = format!("comparison report: {error}");
-                    eprintln!(
-                        "{}",
-                        OutputStyle::stderr().failure(&format!("Conformance failure: {failure}"))
-                    );
                     failures.push(failure);
                 }
             }
@@ -557,10 +545,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         if failures.is_empty() {
             Ok(())
         } else {
-            Err(AppFailure::from(anyhow!(
-                "conformance run completed with failures:\n- {}",
-                failures.join("\n- ")
-            )))
+            Err(AppFailure::from(anyhow!(failures.join("; "))))
         }
     }
 
@@ -679,21 +664,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             )
             .cwd(self.config.root()),
         );
-        let style = OutputStyle::stdout();
-        println!(
-            "{}",
-            render_conformance_lane_header(
-                run.target,
-                expected_scenarios.len(),
-                run.spec_version,
-                run.server_era,
-                style,
-            )
-        );
-        let runner_progress = Activity::start(format!(
-            "run {} scenarios for {}",
-            expected_scenarios.len(),
-            run.target
+        let runner_progress = Activity::spinner(format!(
+            "Run {} ({} scenarios)",
+            run.target,
+            expected_scenarios.len()
         ));
         let process_result = self
             .runner
@@ -704,7 +678,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             )
             .await
             .map_err(AppFailure::from);
-        runner_progress.finish(process_result.is_ok());
+        runner_progress.finish(conformance_process_completed(&process_result));
 
         let results = load_server_results(&lane_paths.official_results).map_err(AppFailure::from);
         if !conformance_process_completed(&process_result) {
@@ -719,16 +693,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             run.spec_version,
             &lane_paths.completion,
         )?;
-        println!(
-            "{} {}",
-            style.info("   Artifacts"),
-            lane_paths.root.display()
-        );
-        println!(
-            "{} {}",
-            style.info(" Full output"),
-            lane_paths.runner_log.display()
-        );
         Ok(())
     }
 }
@@ -757,22 +721,6 @@ fn conformance_matrix(
                 .map(|server_era| (client_version.clone(), *server_era))
         })
         .collect()
-}
-
-fn render_conformance_lane_header(
-    target: SemanticLane,
-    scenario_count: usize,
-    spec_version: &str,
-    server_era: ConformanceServerEra,
-    style: OutputStyle,
-) -> String {
-    let divider = style.info("────────────");
-    let lane = style.heading(&format!(" MCP conformance lane: {target}"));
-    let server_protocols = server_era.protocol_versions_label();
-    format!(
-        "{divider}\n{lane}\n    Client protocol version: {spec_version}\n    Server protocol versions ({server_era}): {server_protocols}\n    Starting {scenario_count} scenarios with {}",
-        crate::conformance::results::OFFICIAL_CONFORMANCE_PACKAGE
-    )
 }
 
 fn render_conformance_baseline_results(
@@ -1007,6 +955,7 @@ mod tests {
         crate::conformance::baseline::ScoredFinding {
             scenario: scenario.to_owned(),
             check: "check".to_owned(),
+            name: String::new(),
             status: crate::conformance::baseline::ScoredStatus::Failure,
         }
     }
@@ -1088,20 +1037,6 @@ mod tests {
     }
 
     #[test]
-    fn conformance_lane_header_names_the_lane_oracle_and_specification() {
-        assert_eq!(
-            render_conformance_lane_header(
-                SemanticLane::FixtureDirect,
-                40,
-                "2026-07-28",
-                ConformanceServerEra::Legacy,
-                OutputStyle::plain(),
-            ),
-            "────────────\n MCP conformance lane: fixture direct\n    Client protocol version: 2026-07-28\n    Server protocol versions (legacy): 2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25\n    Starting 40 scenarios with @modelcontextprotocol/conformance@0.2.0-alpha.11"
-        );
-    }
-
-    #[test]
     fn conformance_matrix_is_the_ordered_cartesian_product() {
         assert_eq!(
             conformance_matrix(
@@ -1145,13 +1080,6 @@ mod tests {
 
     #[test]
     fn colored_conformance_output_distinguishes_expected_and_unexpected_results() {
-        let header = render_conformance_lane_header(
-            SemanticLane::ExternalDataPlane,
-            4,
-            "2026-07-28",
-            ConformanceServerEra::Modern,
-            OutputStyle::colored(),
-        );
         let results = result_map(ConformanceResults {
             scenarios: [
                 (
@@ -1192,8 +1120,6 @@ mod tests {
             false,
         );
 
-        assert!(header.contains("\x1b[36m────────────\x1b[0m"));
-        assert!(header.contains("\x1b[1;36m MCP conformance lane: external dataplane\x1b[0m"));
         assert!(rendered.contains("\x1b[33m       XFAIL\x1b[0m"));
         assert!(rendered.contains("\x1b[32m        PASS\x1b[0m"));
         assert!(rendered.contains("\x1b[31m       XPASS\x1b[0m"));
