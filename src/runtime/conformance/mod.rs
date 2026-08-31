@@ -569,25 +569,21 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     }
                 }
 
-                if failures.is_empty() && !reported_failure && bless {
-                    bless_baselines_transactionally(&baseline_root, &updates)
-                        .map_err(AppFailure::from)?;
+                let baselines_updated = finalize_conformance_execution(
+                    &baseline_root,
+                    &updates,
+                    &failures,
+                    reported_failure,
+                    bless,
+                )?;
+                if baselines_updated {
                     println!(
                         "{} {}",
                         OutputStyle::stdout().success("Conformance baselines updated:"),
                         baseline_root.display()
                     );
                 }
-                if failures.is_empty() && reported_failure {
-                    Err(AppFailure::reported())
-                } else if failures.is_empty() {
-                    Ok(())
-                } else {
-                    Err(AppFailure::from(anyhow!(
-                        "conformance completed the selected matrix with failures:\n- {}",
-                        failures.join("\n- ")
-                    )))
-                }
+                Ok(())
             }
             ConformanceAction::Report {
                 results_dir,
@@ -1366,6 +1362,29 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     }
 }
 
+fn finalize_conformance_execution(
+    baseline_root: &Path,
+    updates: &[BaselineUpdate],
+    failures: &[String],
+    reported_failure: bool,
+    bless: bool,
+) -> AppResult<bool> {
+    if failures.is_empty() && !reported_failure && bless {
+        bless_baselines_transactionally(baseline_root, updates).map_err(AppFailure::from)?;
+        return Ok(true);
+    }
+    if failures.is_empty() && reported_failure {
+        Err(AppFailure::reported())
+    } else if failures.is_empty() {
+        Ok(false)
+    } else {
+        Err(AppFailure::from(anyhow!(
+            "conformance completed the selected matrix with failures:\n- {}",
+            failures.join("\n- ")
+        )))
+    }
+}
+
 fn prepare_setup_log(path: &Path) -> AppResult<()> {
     let parent = path
         .parent()
@@ -1985,7 +2004,7 @@ mod tests {
     }
 
     #[test]
-    fn operational_lane_failure_is_an_unblessable_failure_in_baseline_output() {
+    fn operational_failure_preserves_results_returns_nonzero_and_skips_blessing() {
         let results = result_map(mixed_conformance_results());
         let failing = scored_finding("failing");
         let comparison = BaselineComparison {
@@ -2009,11 +2028,25 @@ mod tests {
             Duration::from_millis(1_250),
             OutputStyle::plain(),
         );
+        let directory = tempfile::tempdir().expect("temporary baseline parent");
+        let baseline_root = directory.path().join("baselines");
+        fs::create_dir(&baseline_root).expect("baseline root should be created");
+        let sentinel = baseline_root.join("sentinel.yml");
+        fs::write(&sentinel, "unchanged\n").expect("baseline sentinel should be written");
+
+        let error = finalize_conformance_execution(&baseline_root, &[], &[], true, true)
+            .expect_err("operational failures must return a failure exit");
 
         assert!(rendered.contains("XFAIL (1/2) server::external-data-plane::failing"));
+        assert!(rendered.contains("PASS (2/2) server::external-data-plane::passing"));
         assert!(rendered.contains("FAIL (1/1) server::built-in-data-plane::registration"));
         assert!(rendered.contains("gateway registration returned HTTP 502"));
         assert!(rendered.contains("1 passed, 1 xfailed, 0 xpassed, 1 failed"));
+        assert!(error.is_reported());
+        assert_eq!(
+            fs::read_to_string(sentinel).expect("baseline sentinel should remain readable"),
+            "unchanged\n"
+        );
     }
 
     #[test]
