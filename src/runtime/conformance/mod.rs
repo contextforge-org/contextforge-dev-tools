@@ -271,6 +271,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                     "{}",
                                     render_conformance_results(
                                         &results,
+                                        (&client_version, server_era),
                                         ConformanceDirection::Server,
                                         Some(&evaluation.comparisons),
                                         matrix_started.elapsed(),
@@ -285,6 +286,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                     "{}",
                                     render_conformance_results(
                                         &results,
+                                        (&client_version, server_era),
                                         ConformanceDirection::Server,
                                         None,
                                         matrix_started.elapsed(),
@@ -348,6 +350,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                         "{}",
                                         render_conformance_results(
                                             &client_results,
+                                            (&client_version, server_era),
                                             ConformanceDirection::Client,
                                             Some(&evaluation.comparisons),
                                             matrix_started.elapsed(),
@@ -386,6 +389,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                         "{}",
                                         render_conformance_results(
                                             &client_results,
+                                            (&client_version, server_era),
                                             ConformanceDirection::Client,
                                             None,
                                             matrix_started.elapsed(),
@@ -1184,12 +1188,14 @@ fn conformance_matrix(
 
 fn render_conformance_results(
     results: &BTreeMap<SemanticLane, ConformanceResults>,
+    matrix: (&str, ConformanceServerEra),
     direction: ConformanceDirection,
     comparisons: Option<&[BaselineComparison]>,
     elapsed: Duration,
     style: OutputStyle,
     blessing: bool,
 ) -> String {
+    let (client_version, server_era) = matrix;
     let mut passed = 0;
     let mut expected_failures = 0;
     let mut unexpected_passes = 0;
@@ -1207,7 +1213,12 @@ fn render_conformance_results(
         let total = lane_results.scenarios.len();
         let divider = style.info("────────────");
         let heading = style.heading(&format!(" MCP {direction} conformance results: {lane}"));
-        let _ = writeln!(output, "{divider}\n{heading}");
+        let _ = writeln!(
+            output,
+            "{divider}\n{heading}\n Client protocol: {client_version}\n Server protocols: {} [{}]",
+            server_era.label(),
+            server_era.protocol_versions_label()
+        );
         for (index, result) in lane_results.scenarios.values().enumerate() {
             let status = conformance_test_status(result, comparison, blessing);
             match status {
@@ -1562,6 +1573,7 @@ mod tests {
 
         let rendered = render_conformance_results(
             &results,
+            ("2026-07-28", ConformanceServerEra::Legacy),
             ConformanceDirection::Server,
             Some(&[comparison]),
             Duration::from_millis(1_250),
@@ -1571,7 +1583,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "────────────\n MCP server conformance results: external dataplane\n       XFAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 1 xfailed, 0 xpassed, 0 failed, 0 skipped, 0 unknown"
+            "────────────\n MCP server conformance results: external dataplane\n Client protocol: 2026-07-28\n Server protocols: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]\n       XFAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 1 xfailed, 0 xpassed, 0 failed, 0 skipped, 0 unknown"
         );
     }
 
@@ -1579,6 +1591,7 @@ mod tests {
     fn conformance_results_render_without_a_baseline_when_the_gate_cannot_load() {
         let rendered = render_conformance_results(
             &result_map(mixed_conformance_results()),
+            ("2026-07-28", ConformanceServerEra::Modern),
             ConformanceDirection::Server,
             None,
             Duration::from_millis(1_250),
@@ -1588,7 +1601,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "────────────\n MCP server conformance results: external dataplane\n        FAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 0 xfailed, 0 xpassed, 1 failed, 0 skipped, 0 unknown"
+            "────────────\n MCP server conformance results: external dataplane\n Client protocol: 2026-07-28\n Server protocols: modern [2026-07-28]\n        FAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 0 xfailed, 0 xpassed, 1 failed, 0 skipped, 0 unknown"
         );
     }
 
@@ -1596,6 +1609,7 @@ mod tests {
     fn client_conformance_results_render_the_downstream_direction() {
         let rendered = render_conformance_results(
             &result_map(mixed_conformance_results()),
+            ("2026-07-28", ConformanceServerEra::Modern),
             ConformanceDirection::Client,
             None,
             Duration::from_millis(1_250),
@@ -1604,6 +1618,8 @@ mod tests {
         );
 
         assert!(rendered.contains("MCP client conformance results: external dataplane"));
+        assert!(rendered.contains("Client protocol: 2026-07-28"));
+        assert!(rendered.contains("Server protocols: modern [2026-07-28]"));
         assert!(rendered.contains("client::external-data-plane::failing"));
         assert!(rendered.contains("client::external-data-plane::passing"));
     }
@@ -1644,6 +1660,7 @@ mod tests {
         };
         let rendered = render_conformance_results(
             &results,
+            ("2026-07-28", ConformanceServerEra::Modern),
             ConformanceDirection::Server,
             Some(&[comparison]),
             Duration::from_millis(1_250),
