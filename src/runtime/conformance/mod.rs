@@ -13,6 +13,21 @@ use crate::conformance::results::{DEFAULT_CONFORMANCE_SUITE, ScenarioOutcome};
 const CLIENT_CONFORMANCE_SERVER_ID: &str = "dataplane-client-conformance";
 
 impl<R: ProcessRunner> RuntimeContext<R> {
+    fn require_docker_daemon(&self) -> AppResult<()> {
+        self.runner
+            .capture_stdout(&CommandSpec::new("docker").args([
+                "info",
+                "--format",
+                "{{.ServerVersion}}",
+            ]))
+            .map(|_| ())
+            .map_err(|error| {
+                AppFailure::from(anyhow!(
+                    "Docker daemon is unavailable; start the selected Docker context and retry: {error}"
+                ))
+            })
+    }
+
     fn require_loopback_fixture_base_url(&self) -> AppResult<()> {
         let base_url = self.base_url()?;
         let url = url::Url::parse(base_url)
@@ -188,6 +203,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 bless,
                 output_dir,
             } => {
+                self.require_docker_daemon()?;
                 let artifact_root = results_dir
                     .as_deref()
                     .unwrap_or_else(|| self.config.integration_dir());
