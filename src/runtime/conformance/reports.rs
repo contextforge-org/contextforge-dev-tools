@@ -273,7 +273,13 @@ impl ConformancePaths {
     }
 
     pub(super) fn identity(&self) -> String {
-        format!("client {}, server {}", self.client_version, self.server_era)
+        format!(
+            "client {} [{}], server {} [{}]",
+            client_era_for_version(&self.client_version),
+            self.client_version,
+            self.server_era.label(),
+            self.server_era.protocol_versions_label()
+        )
     }
 
     pub(super) fn setup_log(&self) -> PathBuf {
@@ -621,6 +627,10 @@ mod tests {
             PathBuf::from(
                 "reports/conformance/2026-07-28/modern/built-in-data-plane/baseline-comparison.yml"
             )
+        );
+        assert_eq!(
+            paths.identity(),
+            "client modern [2026-07-28], server modern [2026-07-28]"
         );
     }
 

@@ -1110,7 +1110,10 @@ async fn gateway_create_failure_includes_safe_upstream_detail() {
             "POST",
             "/gateways",
             StatusCode::BAD_GATEWAY,
-            json!({"message": format!("fixture rejected protocol; token={TOKEN}")}).to_string(),
+            json!({"message": format!(
+                "fixture rejected protocol; token={TOKEN}\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/400"
+            )})
+            .to_string(),
         ),
         response("GET", "/gateways", json!([])),
         response("GET", "/gateways", json!([])),
@@ -1129,6 +1132,7 @@ async fn gateway_create_failure_includes_safe_upstream_detail() {
     );
     assert!(message.contains("fixture rejected protocol"), "{message}");
     assert!(message.contains("token=<redacted>"), "{message}");
+    assert!(!message.contains("developer.mozilla.org"), "{message}");
     assert!(!message.contains(TOKEN), "{message}");
     api.assert_complete();
 }

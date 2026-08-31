@@ -425,7 +425,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     Ok(())
                 } else {
                     Err(AppFailure::from(anyhow!(
-                        "conformance failed:\n- {}",
+                        "conformance completed the selected matrix with failures:\n- {}",
                         failures.join("\n- ")
                     )))
                 }
@@ -484,7 +484,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let cleanup_progress = Activity::spinner("Clear prior conformance fixture");
         let cleanup_result = self.stop_standalone_conformance_fixture(server_era).await;
         cleanup_progress.finish(cleanup_result.is_ok());
-        cleanup_result?;
+        if let Err(error) = cleanup_result {
+            failures.push(format!("fixture-direct pre-run cleanup: {error}"));
+        }
 
         let fixture_progress = Activity::spinner("Start the official fixture");
         let (start_result, start_interrupted) = finish_phase_after_interrupt(
@@ -543,7 +545,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             let cleanup_progress = Activity::spinner("Clear prior integration stacks");
             let cleanup_result = self.cleanup(TopologySelection::All, CleanupKind::Reset);
             cleanup_progress.finish(cleanup_result.is_ok());
-            cleanup_result?;
+            if let Err(error) = cleanup_result {
+                failures.push(format!("routed-lane pre-run cleanup: {error}"));
+            }
         }
 
         for topology in topologies {
@@ -640,7 +644,15 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                 topology_failure = Some(if interrupted {
                                     interrupted_conformance_failure()
                                 } else {
-                                    AppFailure::from(error)
+                                    let context =
+                                        fixture_registration_context(topology, server_era);
+                                    eprintln!(
+                                        "  {}",
+                                        OutputStyle::stderr().warning(&format!(
+                                            "{context}; continuing with the remaining lanes"
+                                        ))
+                                    );
+                                    AppFailure::from(error.context(context))
                                 });
                             }
                         }
@@ -793,7 +805,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         if failures.is_empty() {
             Ok(())
         } else {
-            Err(AppFailure::from(anyhow!(failures.join("; "))))
+            Err(AppFailure::from(anyhow!(
+                "one or more selected conformance lanes failed:\n  - {}",
+                failures.join("\n  - ")
+            )))
         }
     }
 
@@ -1435,6 +1450,15 @@ fn combine_cleanup_results(first: AppResult<()>, second: AppResult<()>) -> AppRe
     }
 }
 
+fn fixture_registration_context(topology: StackMode, server_era: ConformanceServerEra) -> String {
+    format!(
+        "ContextForge could not register the official fixture for {} with server era {} [{}]; routed tests for this lane were skipped",
+        topology.topology_label(),
+        server_era.label(),
+        server_era.protocol_versions_label()
+    )
+}
+
 async fn finish_phase_after_interrupt<F, I, T>(
     operation: F,
     interrupt: std::pin::Pin<&mut I>,
@@ -1633,6 +1657,17 @@ mod tests {
 
         assert!(error.contains("API cleanup failed"));
         assert!(error.contains("service cleanup failed"));
+    }
+
+    #[test]
+    fn fixture_registration_failure_explains_the_skipped_lane() {
+        let context =
+            fixture_registration_context(StackMode::Controlplane, ConformanceServerEra::Modern);
+
+        assert_eq!(
+            context,
+            "ContextForge could not register the official fixture for built-in dataplane with server era modern [2026-07-28]; routed tests for this lane were skipped"
+        );
     }
 
     #[test]

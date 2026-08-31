@@ -584,6 +584,9 @@ async fn bounded_error_detail(response: &mut reqwest::Response) -> Option<String
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
+    let sanitized = sanitized
+        .split_once(" For more information check: ")
+        .map_or(sanitized.as_str(), |(message, _)| message);
     let mut detail = sanitized
         .chars()
         .take(MAX_ERROR_DETAIL_CHARS)
