@@ -1032,6 +1032,15 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             }
         }
 
+        match client_driver_failures(&lane_paths.official_results) {
+            Ok(failures) => operational_failures.extend(
+                failures
+                    .into_iter()
+                    .map(|failure| failure.replace(token, "[redacted]")),
+            ),
+            Err(error) => operational_failures.push(error.to_string()),
+        }
+
         let results = load_client_results(&lane_paths.official_results).map_err(AppFailure::from);
         let validation = results.and_then(|results| {
             validate_scored_results(&results).map_err(AppFailure::from)?;
@@ -1170,6 +1179,46 @@ fn prepare_setup_log(path: &Path) -> AppResult<()> {
     fs::write(path, [])
         .with_context(|| format!("failed to clear conformance log {path:?}"))
         .map_err(AppFailure::from)
+}
+
+fn client_driver_failures(root: &Path) -> anyhow::Result<Vec<String>> {
+    let entries = fs::read_dir(root)
+        .with_context(|| format!("failed to inspect client-conformance results {root:?}"))?;
+    let mut run_directories = Vec::new();
+    for entry in entries {
+        let path = entry
+            .with_context(|| format!("failed to read client-conformance entry in {root:?}"))?
+            .path();
+        if path.is_dir() {
+            run_directories.push(path);
+        }
+    }
+    run_directories.sort();
+
+    let mut failures = Vec::new();
+    for run_directory in run_directories {
+        let stderr = run_directory.join("stderr.txt");
+        let contents = match fs::read_to_string(&stderr) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to read client-conformance stderr {stderr:?}")
+                });
+            }
+        };
+        if let Some(failure) = contents
+            .lines()
+            .find(|line| line.contains(CLIENT_DRIVER_FAILURE_PREFIX))
+        {
+            let run = run_directory
+                .file_name()
+                .and_then(OsStr::to_str)
+                .unwrap_or("unknown client scenario");
+            failures.push(format!("{run}: {}", failure.trim()));
+        }
+    }
+    Ok(failures)
 }
 
 fn conformance_matrix(
@@ -1474,6 +1523,34 @@ mod tests {
         [(SemanticLane::ExternalDataPlane, results)]
             .into_iter()
             .collect()
+    }
+
+    #[test]
+    fn client_driver_failures_are_not_hidden_by_completed_official_runs() {
+        let directory = tempfile::tempdir().expect("temporary result root");
+        let passing = directory.path().join("tools-call-run");
+        let failing = directory.path().join("request-metadata-run");
+        fs::create_dir_all(&passing).expect("passing result directory");
+        fs::create_dir_all(&failing).expect("failing result directory");
+        fs::write(
+            passing.join("stderr.txt"),
+            "Container client-driver Created\n",
+        )
+        .expect("passing stderr");
+        fs::write(
+            failing.join("stderr.txt"),
+            format!("{CLIENT_DRIVER_FAILURE_PREFIX}: upstream returned HTTP 500\n"),
+        )
+        .expect("failing stderr");
+
+        let failures = client_driver_failures(directory.path()).expect("inspect driver results");
+
+        assert_eq!(
+            failures,
+            [format!(
+                "request-metadata-run: {CLIENT_DRIVER_FAILURE_PREFIX}: upstream returned HTTP 500"
+            )]
+        );
     }
 
     #[test]

@@ -41,6 +41,8 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_RECONCILIATION_ATTEMPTS: usize = 5;
 const DEFAULT_RECONCILIATION_INTERVAL: Duration = Duration::from_millis(100);
 const REQUIRED_RECONCILIATION_QUIET_ATTEMPTS: usize = 2;
+const MAX_ERROR_RESPONSE_BYTES: usize = 4 * 1024;
+const MAX_ERROR_DETAIL_CHARS: usize = 1_024;
 const REDACTED: &str = "<redacted>";
 
 /// IDs created for one official conformance fixture.
@@ -444,13 +446,7 @@ impl ConformanceFixtureClient {
         if response.status().is_success() || response.status() == StatusCode::NOT_FOUND {
             return Ok(());
         }
-        Err(anyhow!(redact(
-            &format!(
-                "DELETE {path} returned status {}",
-                response.status().as_u16()
-            ),
-            &self.admin_token
-        )))
+        Err(self.response_error("DELETE", &path, response).await)
     }
 
     async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
@@ -468,10 +464,7 @@ impl ConformanceFixtureClient {
         if response.status().is_success() {
             return Ok(());
         }
-        Err(anyhow!(redact(
-            &format!("POST {path} returned status {}", response.status().as_u16()),
-            &self.admin_token
-        )))
+        Err(self.response_error("POST", path, response).await)
     }
 
     async fn parse_json<T: DeserializeOwned>(
@@ -482,10 +475,7 @@ impl ConformanceFixtureClient {
     ) -> Result<T> {
         let status = response.status();
         if !status.is_success() {
-            return Err(anyhow!(redact(
-                &format!("{method} {path} returned HTTP {}", status.as_u16()),
-                &self.admin_token
-            )));
+            return Err(self.response_error(method, path, response).await);
         }
         response.json().await.map_err(|error| {
             let message = if error.is_timeout() {
@@ -498,6 +488,24 @@ impl ConformanceFixtureClient {
             };
             anyhow!(redact(&message, &self.admin_token))
         })
+    }
+
+    async fn response_error(
+        &self,
+        method: &str,
+        path: &str,
+        mut response: reqwest::Response,
+    ) -> anyhow::Error {
+        let status = response.status().as_u16();
+        let detail = bounded_error_detail(&mut response).await;
+        let suffix = detail
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .map_or_else(String::new, |value| format!(": {value}"));
+        anyhow!(redact(
+            &format!("{method} {path} returned HTTP {status}{suffix}"),
+            &self.admin_token
+        ))
     }
 
     async fn request(
@@ -533,6 +541,57 @@ impl ConformanceFixtureClient {
             anyhow!(redact(&message, &self.admin_token))
         })
     }
+}
+
+async fn bounded_error_detail(response: &mut reqwest::Response) -> Option<String> {
+    let mut body = Vec::new();
+    let mut truncated = false;
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(_) => return None,
+        };
+        let remaining = MAX_ERROR_RESPONSE_BYTES.saturating_sub(body.len());
+        if chunk.len() > remaining {
+            body.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    let raw = serde_json::from_slice::<Value>(&body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("message")
+                .or_else(|| value.get("detail"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| String::from_utf8_lossy(&body).into_owned());
+    let sanitized = raw
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut detail = sanitized
+        .chars()
+        .take(MAX_ERROR_DETAIL_CHARS)
+        .collect::<String>();
+    if truncated || sanitized.chars().count() > MAX_ERROR_DETAIL_CHARS {
+        detail.push_str("… <truncated>");
+    }
+    Some(detail)
 }
 
 #[derive(Deserialize)]

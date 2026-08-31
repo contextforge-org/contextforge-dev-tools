@@ -1103,6 +1103,37 @@ async fn provision_combines_primary_and_cleanup_failures_in_that_order() {
 }
 
 #[tokio::test]
+async fn gateway_create_failure_includes_safe_upstream_detail() {
+    let mut expected = provision_prefix(json!([]));
+    expected.extend([
+        raw_response(
+            "POST",
+            "/gateways",
+            StatusCode::BAD_GATEWAY,
+            json!({"message": format!("fixture rejected protocol; token={TOKEN}")}).to_string(),
+        ),
+        response("GET", "/gateways", json!([])),
+        response("GET", "/gateways", json!([])),
+    ]);
+    let api = FakeApi::start(expected).await;
+
+    let error = test_client(&api.base_url)
+        .provision(OFFICIAL_CONFORMANCE_BACKEND_URL)
+        .await
+        .expect_err("gateway failure must remain visible");
+
+    let message = format!("{error:#}");
+    assert!(
+        message.contains("POST /gateways returned HTTP 502"),
+        "{message}"
+    );
+    assert!(message.contains("fixture rejected protocol"), "{message}");
+    assert!(message.contains("token=<redacted>"), "{message}");
+    assert!(!message.contains(TOKEN), "{message}");
+    api.assert_complete();
+}
+
+#[tokio::test]
 async fn malformed_gateway_create_response_reconciles_reserved_gateway() {
     let mut expected = provision_prefix(json!([]));
     expected.extend([

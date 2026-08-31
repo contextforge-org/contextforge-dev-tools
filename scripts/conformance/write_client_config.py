@@ -75,6 +75,7 @@ def main() -> None:
                         "resource_uri_aliases": [],
                         "prompt_name_aliases": [],
                         "completion": {},
+                        "tool_schemas": {name: {} for name in tool_names},
                     }
                 }
             }

@@ -676,13 +676,30 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         if !setting.tracks_main_revision() {
             return Ok(setting.resolved().to_owned());
         }
+        if let Some(image) = self.controlplane_image.get() {
+            return Ok(image.clone());
+        }
 
-        let revision = self.git_required(
+        let revisions = self.git_required(
             self.config.controlplane_dir(),
-            ["rev-parse", "refs/remotes/origin/main"],
+            [
+                "rev-list",
+                "--first-parent",
+                "--max-count=50",
+                "refs/remotes/origin/main",
+            ],
         )?;
-        let mut image = OsString::from("ghcr.io/ibm/mcp-context-forge:");
-        image.push(revision);
+        let image = latest_published_controlplane_image(&revisions, |image| {
+            self.runner
+                .capture_output(&CommandSpec::new("docker").args([
+                    OsString::from("manifest"),
+                    OsString::from("inspect"),
+                    image.to_owned(),
+                ]))
+                .is_ok()
+        })
+        .map_err(AppFailure::from)?;
+        let _ = self.controlplane_image.set(image.clone());
         Ok(image)
     }
 
@@ -977,6 +994,35 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     }
 }
 
+fn latest_published_controlplane_image(
+    revisions: &str,
+    mut is_published: impl FnMut(&OsStr) -> bool,
+) -> anyhow::Result<OsString> {
+    const IMAGE_PREFIX: &str = "ghcr.io/ibm/mcp-context-forge:";
+
+    let mut inspected = 0;
+    for revision in revisions
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(anyhow!(
+                "Git returned an invalid control-plane main revision {revision:?}"
+            ));
+        }
+        inspected += 1;
+        let image = OsString::from(format!("{IMAGE_PREFIX}{revision}"));
+        if is_published(&image) {
+            return Ok(image);
+        }
+    }
+
+    Err(anyhow!(
+        "no published control-plane image was found in the newest {inspected} commits on main"
+    ))
+}
+
 fn format_stack_endpoint_summary(
     public_origin: &str,
     public_mcp_endpoint: &url::Url,
@@ -1017,6 +1063,37 @@ fn with_default_conformance_server_era(command: CommandSpec) -> CommandSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_tracking_selects_the_newest_published_controlplane_commit_image() {
+        let newest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let published = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let mut inspected = Vec::new();
+
+        let image =
+            latest_published_controlplane_image(&format!("{newest}\n{published}\n"), |candidate| {
+                inspected.push(candidate.to_owned());
+                candidate == OsStr::new(&format!("ghcr.io/ibm/mcp-context-forge:{published}"))
+            })
+            .expect("a published main image should be selected");
+
+        assert_eq!(
+            image,
+            OsString::from(format!("ghcr.io/ibm/mcp-context-forge:{published}"))
+        );
+        assert_eq!(inspected.len(), 2);
+    }
+
+    #[test]
+    fn main_tracking_fails_when_no_main_commit_image_is_published() {
+        let error = latest_published_controlplane_image(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+            |_| false,
+        )
+        .expect_err("an unpublished main history must fail explicitly");
+
+        assert!(error.to_string().contains("newest 1 commits on main"));
+    }
 
     #[test]
     fn compose_commands_default_to_the_latest_modern_conformance_era() {

@@ -32,7 +32,11 @@ pub async fn run() -> ExitCode {
         return match conformance::client::run_internal_client(&arguments).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
-                eprintln!("{}", OutputStyle::stderr().failure(&format!("{error:#}")));
+                eprintln!(
+                    "{}: {}",
+                    conformance::client::CLIENT_DRIVER_FAILURE_PREFIX,
+                    OutputStyle::stderr().failure(&format!("{error:#}"))
+                );
                 ExitCode::FAILURE
             }
         };

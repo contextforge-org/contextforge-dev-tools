@@ -6,6 +6,7 @@ use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::conformance::baseline::{
@@ -14,8 +15,8 @@ use crate::conformance::baseline::{
     write_client_baseline_report,
 };
 use crate::conformance::client::{
-    CLIENT_BASE_URL_ENV, CLIENT_COMPOSE_ARGS_ENV, CLIENT_SERVER_ID_ENV, CLIENT_TOKEN_ENV,
-    INTERNAL_CLIENT_COMMAND,
+    CLIENT_BASE_URL_ENV, CLIENT_COMPOSE_ARGS_ENV, CLIENT_DRIVER_FAILURE_PREFIX,
+    CLIENT_SERVER_ID_ENV, CLIENT_TOKEN_ENV, INTERNAL_CLIENT_COMMAND,
 };
 use crate::conformance::fixture::{
     ConformanceFixtureClient, OFFICIAL_CONFORMANCE_BACKEND_URL, OFFICIAL_CONFORMANCE_PROXY_SERVICE,
@@ -80,13 +81,18 @@ use inspect::*;
 struct RuntimeContext<R> {
     config: AppConfig,
     runner: R,
+    controlplane_image: OnceLock<OsString>,
 }
 
 impl<R> RuntimeContext<R> {
     /// Creates runtime context without starting any process.
     #[must_use]
     fn new(config: AppConfig, runner: R) -> Self {
-        Self { config, runner }
+        Self {
+            config,
+            runner,
+            controlplane_image: OnceLock::new(),
+        }
     }
 }
 
