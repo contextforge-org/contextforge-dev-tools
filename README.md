@@ -130,8 +130,8 @@ cf-integration live --lane fixture-direct --group protocol \
 
 cf-integration conformance run
 cf-integration conformance run \
-  --protocol-version 2025-11-25 \
-  --protocol-version 2026-07-28 \
+  --client-era legacy \
+  --client-era modern \
   --server-era legacy \
   --server-era modern
 cf-integration conformance run --server-era dual --bless
@@ -140,8 +140,9 @@ cf-integration --version
 ```
 
 Workflows accept only `--lane`; `--topology` is reserved for stack commands.
-The direct fixture spelling is only `fixture-direct`. Protocol selection is
-only `--protocol-version`.
+The direct fixture spelling is only `fixture-direct`. Probe, load, live, and
+Inspector use `--protocol-version`; conformance uses the explicit
+`--client-era` and `--server-era` matrix axes.
 
 ## MCP and conformance behavior
 
@@ -166,21 +167,23 @@ servers. The four downstream scenarios are `tools_call`, `request-metadata`,
 `http-standard-headers`, and `http-custom-headers`; they run automatically
 whenever `external-data-plane` is selected. The workflow records raw official
 results without suppression, writes deterministic comparisons, and continues
-through every selected client-version/server-era combination before returning
+through every expanded client-revision/server-era combination before returning
 one aggregated result. `dual` is supported only when selected explicitly.
 
-The client protocol and fixture server era are independent:
+The client and fixture-server era selections are independent:
 
 ```bash
 cf-integration conformance run \
-  --protocol-version 2025-11-25 \
-  --protocol-version 2026-07-28 \
+  --client-era legacy \
+  --client-era modern \
   --server-era legacy \
   --server-era modern
 ```
 
-The repeated client and server selections form a Cartesian product. Artifacts
-default below `CF_INTEGRATION_DIR/conformance/<client-version>/<server-era>/`
+Client `legacy` expands to `2025-06-18` and `2025-11-25`; `modern` expands to
+`2026-07-28`; and `dual` expands to all three verified client revisions. The
+expanded client revisions and selected server eras form a Cartesian product.
+Artifacts default below `CF_INTEGRATION_DIR/conformance/<client-version>/<server-era>/`
 and reports below `reports/conformance/<client-version>/<server-era>/`.
 Server artifacts retain the lane directly below the era. Client artifacts and
 reports use `client/external-data-plane/` below the era. `--results-dir`,

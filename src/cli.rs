@@ -349,13 +349,13 @@ pub(crate) struct ConformanceRunArgs {
     #[arg(long, value_enum, action = ArgAction::Append)]
     pub(crate) lane: Vec<CliLane>,
 
-    /// MCP protocol version used by the official client; repeat for a matrix.
-    #[arg(long = "protocol-version", action = ArgAction::Append)]
-    pub(crate) protocol_version: Vec<ProtocolVersion>,
+    /// Protocol era used by the official client; repeat for a matrix.
+    #[arg(long, value_enum, action = ArgAction::Append)]
+    pub(crate) client_era: Vec<CliConformanceEra>,
 
     /// Protocol era exposed by the fixture; repeat for a matrix.
     #[arg(long, value_enum, action = ArgAction::Append)]
-    pub(crate) server_era: Vec<CliConformanceServerEra>,
+    pub(crate) server_era: Vec<CliConformanceEra>,
 
     /// Result artifact root; defaults below CF_INTEGRATION_DIR.
     #[arg(long)]
@@ -384,23 +384,23 @@ impl From<CliLane> for crate::conformance::results::SemanticLane {
     }
 }
 
-/// Protocol behavior exposed by the pinned upstream fixture.
+/// Protocol behavior selected for one side of the conformance matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-pub(crate) enum CliConformanceServerEra {
-    /// Accept both initialization-based and per-request clients.
+pub(crate) enum CliConformanceEra {
+    /// Select initialization-based and per-request protocol revisions.
     Dual,
-    /// Accept only initialization-based clients.
+    /// Select only initialization-based protocol revisions.
     Legacy,
-    /// Accept only per-request clients.
+    /// Select only per-request protocol revisions.
     Modern,
 }
 
-impl From<CliConformanceServerEra> for crate::conformance::results::ConformanceServerEra {
-    fn from(era: CliConformanceServerEra) -> Self {
+impl From<CliConformanceEra> for crate::conformance::results::ConformanceServerEra {
+    fn from(era: CliConformanceEra) -> Self {
         match era {
-            CliConformanceServerEra::Dual => Self::Dual,
-            CliConformanceServerEra::Legacy => Self::Legacy,
-            CliConformanceServerEra::Modern => Self::Modern,
+            CliConformanceEra::Dual => Self::Dual,
+            CliConformanceEra::Legacy => Self::Legacy,
+            CliConformanceEra::Modern => Self::Modern,
         }
     }
 }

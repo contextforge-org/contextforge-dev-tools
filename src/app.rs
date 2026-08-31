@@ -6,6 +6,9 @@ use std::path::PathBuf;
 use std::str::FromStr;
 
 use crate::conformance::DEFAULT_MCP_SPEC_VERSION;
+use crate::conformance::profile::{
+    DUAL_CLIENT_PROTOCOL_VERSIONS, LEGACY_CLIENT_PROTOCOL_VERSIONS, MODERN_CLIENT_PROTOCOL_VERSIONS,
+};
 use crate::conformance::results::{ConformanceServerEra, SemanticLane};
 use crate::infrastructure::StackMode;
 use crate::infrastructure::config::Environment;
@@ -82,17 +85,17 @@ impl Action {
             ),
             Self::Conformance(ConformanceAction::Run {
                 lanes,
-                client_versions,
+                client_eras,
                 server_eras,
                 ..
             }) => format!(
-                "Topology: {}\nClient protocol versions: {}\nServer protocol versions: {}",
+                "Topology: {}\nClient era: {}\nServer era: {}",
                 join_lane_labels(lanes),
-                client_versions.join(", "),
-                join_server_protocols(server_eras),
+                join_client_eras(client_eras),
+                join_server_eras(server_eras),
             ),
             Self::Conformance(ConformanceAction::Report { .. }) => String::from(
-                "Topology: recorded conformance results\nClient protocol versions: recorded conformance results\nServer protocol versions: recorded conformance results",
+                "Topology: recorded conformance results\nClient era: recorded conformance results\nServer era: recorded conformance results",
             ),
             Self::Debug(DebugAction::Token { .. }) => {
                 String::from("Topology: not applicable (token only)")
@@ -164,7 +167,22 @@ fn join_lane_labels(lanes: &[SemanticLane]) -> String {
         .join(", ")
 }
 
-fn join_server_protocols(server_eras: &[ConformanceServerEra]) -> String {
+fn join_client_eras(client_eras: &[ConformanceServerEra]) -> String {
+    client_eras
+        .iter()
+        .map(|era| {
+            let versions = match era {
+                ConformanceServerEra::Dual => DUAL_CLIENT_PROTOCOL_VERSIONS,
+                ConformanceServerEra::Legacy => LEGACY_CLIENT_PROTOCOL_VERSIONS,
+                ConformanceServerEra::Modern => MODERN_CLIENT_PROTOCOL_VERSIONS,
+            };
+            format!("{} [{}]", era.label(), versions.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn join_server_eras(server_eras: &[ConformanceServerEra]) -> String {
     server_eras
         .iter()
         .map(|era| format!("{} [{}]", era.label(), era.protocol_versions_label()))
@@ -204,6 +222,7 @@ pub(crate) struct ResolvedLoadArgs {
 pub(crate) enum ConformanceAction {
     Run {
         lanes: Vec<SemanticLane>,
+        client_eras: Vec<ConformanceServerEra>,
         client_versions: Vec<String>,
         server_eras: Vec<ConformanceServerEra>,
         results_dir: Option<PathBuf>,
@@ -285,15 +304,19 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
             })
         }
         Command::Conformance(args) => Ok(Action::Conformance(match args.command {
-            ConformanceCommand::Run(args) => ConformanceAction::Run {
-                lanes: resolve_lanes(args.lane.into_iter().map(Into::into)),
-                client_versions: resolve_client_versions(args.protocol_version),
-                server_eras: resolve_server_eras(args.server_era),
-                results_dir: args.results_dir,
-                baseline_dir: args.baseline_dir,
-                bless: args.bless,
-                output_dir: args.output_dir,
-            },
+            ConformanceCommand::Run(args) => {
+                let (client_eras, client_versions) = resolve_client_eras(args.client_era);
+                ConformanceAction::Run {
+                    lanes: resolve_lanes(args.lane.into_iter().map(Into::into)),
+                    client_eras,
+                    client_versions,
+                    server_eras: resolve_server_eras(args.server_era),
+                    results_dir: args.results_dir,
+                    baseline_dir: args.baseline_dir,
+                    bless: args.bless,
+                    output_dir: args.output_dir,
+                }
+            }
             ConformanceCommand::Report(args) => ConformanceAction::Report {
                 results_dir: args.results_dir,
                 output_dir: args.output_dir,
@@ -400,25 +423,39 @@ fn resolve_lanes(lanes: impl IntoIterator<Item = SemanticLane>) -> Vec<SemanticL
     }
 }
 
-fn resolve_client_versions(versions: Vec<ProtocolVersion>) -> Vec<String> {
-    if versions.is_empty() {
-        return vec![DEFAULT_MCP_SPEC_VERSION.to_owned()];
-    }
-    let mut seen = BTreeSet::new();
-    versions
+fn resolve_client_eras(
+    eras: Vec<crate::cli::CliConformanceEra>,
+) -> (Vec<ConformanceServerEra>, Vec<String>) {
+    let eras = if eras.is_empty() {
+        vec![crate::cli::CliConformanceEra::Modern]
+    } else {
+        eras
+    };
+    let mut seen_eras = BTreeSet::new();
+    let eras = eras
         .into_iter()
-        .map(|version| version.to_string())
-        .filter(|version| seen.insert(version.clone()))
-        .collect()
+        .map(Into::into)
+        .filter(|era| seen_eras.insert(*era))
+        .collect::<Vec<ConformanceServerEra>>();
+    let mut seen_versions = BTreeSet::new();
+    let versions = eras
+        .iter()
+        .flat_map(|era| match era {
+            ConformanceServerEra::Dual => DUAL_CLIENT_PROTOCOL_VERSIONS,
+            ConformanceServerEra::Legacy => LEGACY_CLIENT_PROTOCOL_VERSIONS,
+            ConformanceServerEra::Modern => MODERN_CLIENT_PROTOCOL_VERSIONS,
+        })
+        .map(|version| (*version).to_owned())
+        .filter(|version| seen_versions.insert(version.clone()))
+        .collect();
+    (eras, versions)
 }
 
-fn resolve_server_eras(
-    eras: Vec<crate::cli::CliConformanceServerEra>,
-) -> Vec<ConformanceServerEra> {
+fn resolve_server_eras(eras: Vec<crate::cli::CliConformanceEra>) -> Vec<ConformanceServerEra> {
     let eras = if eras.is_empty() {
         vec![
-            crate::cli::CliConformanceServerEra::Legacy,
-            crate::cli::CliConformanceServerEra::Modern,
+            crate::cli::CliConformanceEra::Legacy,
+            crate::cli::CliConformanceEra::Modern,
         ]
     } else {
         eras

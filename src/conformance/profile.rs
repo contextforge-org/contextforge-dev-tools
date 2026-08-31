@@ -15,6 +15,18 @@ pub(crate) const STABLE_MCP_SPEC_VERSION: &str = "2025-11-25";
 /// Oldest revision supported by the pinned official conformance package.
 pub(crate) const LEGACY_MCP_SPEC_VERSION: &str = "2025-06-18";
 
+/// Initialization-based revisions implemented by the pinned official client.
+pub(crate) const LEGACY_CLIENT_PROTOCOL_VERSIONS: &[&str] =
+    &[LEGACY_MCP_SPEC_VERSION, STABLE_MCP_SPEC_VERSION];
+/// Per-request revisions implemented by the pinned official client.
+pub(crate) const MODERN_CLIENT_PROTOCOL_VERSIONS: &[&str] = &[DEFAULT_MCP_SPEC_VERSION];
+/// Complete protocol set implemented by the pinned official client.
+pub(crate) const DUAL_CLIENT_PROTOCOL_VERSIONS: &[&str] = &[
+    LEGACY_MCP_SPEC_VERSION,
+    STABLE_MCP_SPEC_VERSION,
+    DEFAULT_MCP_SPEC_VERSION,
+];
+
 /// Stateful protocol revisions accepted by the pinned fixture in legacy mode.
 pub(crate) const LEGACY_SERVER_PROTOCOL_VERSIONS: &[&str] = &[
     "2024-11-05",

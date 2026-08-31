@@ -1,10 +1,9 @@
 use std::ffi::OsString;
 
 use cf_integration::cli::{
-    Cli, CliConformanceServerEra, CliLane, CliTopology, Command, ConformanceArgs,
-    ConformanceCommand, DebugArgs, DebugCommand, LiveGroup, LoadArgs, ProtocolVersion,
-    RoutedWorkflowTargetArgs, StackArgs, StackCommand, TokenKind, TopologySelection,
-    WorkflowTargetArgs,
+    Cli, CliConformanceEra, CliLane, CliTopology, Command, ConformanceArgs, ConformanceCommand,
+    DebugArgs, DebugCommand, LiveGroup, LoadArgs, ProtocolVersion, RoutedWorkflowTargetArgs,
+    StackArgs, StackCommand, TokenKind, TopologySelection, WorkflowTargetArgs,
 };
 use clap::{CommandFactory, Parser, error::ErrorKind};
 
@@ -378,7 +377,7 @@ fn conformance_defaults_to_all_lanes_and_july_revision_at_resolution_time() {
         panic!("expected conformance run")
     };
     assert!(args.lane.is_empty());
-    assert!(args.protocol_version.is_empty());
+    assert!(args.client_era.is_empty());
     assert!(args.server_era.is_empty());
     assert!(args.results_dir.is_none());
     assert!(args.baseline_dir.is_none());
@@ -387,7 +386,7 @@ fn conformance_defaults_to_all_lanes_and_july_revision_at_resolution_time() {
 }
 
 #[test]
-fn conformance_accepts_repeatable_exact_lanes_and_supported_revisions() {
+fn conformance_accepts_repeatable_exact_lanes_and_protocol_eras() {
     let Command::Conformance(ConformanceArgs {
         command: ConformanceCommand::Run(args),
     }) = parse(&[
@@ -398,10 +397,10 @@ fn conformance_accepts_repeatable_exact_lanes_and_supported_revisions() {
         "fixture-direct",
         "--lane",
         "external-data-plane",
-        "--protocol-version",
-        "2025-11-25",
-        "--protocol-version",
-        "2026-07-28",
+        "--client-era",
+        "legacy",
+        "--client-era",
+        "dual",
         "--server-era",
         "legacy",
         "--server-era",
@@ -421,26 +420,30 @@ fn conformance_accepts_repeatable_exact_lanes_and_supported_revisions() {
         [CliLane::FixtureDirect, CliLane::ExternalDataPlane]
     );
     assert_eq!(
-        args.protocol_version,
-        [
-            "2025-11-25"
-                .parse::<ProtocolVersion>()
-                .expect("valid protocol version"),
-            "2026-07-28"
-                .parse::<ProtocolVersion>()
-                .expect("valid protocol version"),
-        ]
+        args.client_era,
+        [CliConformanceEra::Legacy, CliConformanceEra::Dual]
     );
     assert_eq!(
         args.server_era,
-        [
-            CliConformanceServerEra::Legacy,
-            CliConformanceServerEra::Dual
-        ]
+        [CliConformanceEra::Legacy, CliConformanceEra::Dual]
     );
     assert_eq!(args.baseline_dir, Some("baselines".into()));
     assert_eq!(args.output_dir, Some("reports".into()));
     assert!(args.bless);
+    rejected(&[
+        "cf-integration",
+        "conformance",
+        "run",
+        "--client-protocol-version",
+        "2025-11-25",
+    ]);
+    rejected(&[
+        "cf-integration",
+        "conformance",
+        "run",
+        "--protocol-version",
+        "2025-11-25",
+    ]);
     rejected(&[
         "cf-integration",
         "conformance",

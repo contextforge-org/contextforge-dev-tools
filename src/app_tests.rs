@@ -88,11 +88,11 @@ fn every_subcommand_reports_its_resolved_topology_at_startup() {
         ),
         (
             &["cf-integration", "conformance", "run"],
-            "Topology: fixture direct, built-in dataplane, external dataplane\nClient protocol versions: 2026-07-28\nServer protocol versions: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]; modern [2026-07-28]",
+            "Topology: fixture direct, built-in dataplane, external dataplane\nClient era: modern [2026-07-28]\nServer era: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]; modern [2026-07-28]",
         ),
         (
             &["cf-integration", "conformance", "report"],
-            "Topology: recorded conformance results\nClient protocol versions: recorded conformance results\nServer protocol versions: recorded conformance results",
+            "Topology: recorded conformance results\nClient era: recorded conformance results\nServer era: recorded conformance results",
         ),
         (
             &["cf-integration", "debug", "inspect"],
@@ -118,10 +118,10 @@ fn conformance_startup_reports_every_selected_client_and_server_protocol() {
             "run",
             "--lane",
             "built-in-data-plane",
-            "--protocol-version",
-            "2025-11-25",
-            "--protocol-version",
-            "2026-07-28",
+            "--client-era",
+            "legacy",
+            "--client-era",
+            "modern",
             "--server-era",
             "dual",
         ],
@@ -130,7 +130,28 @@ fn conformance_startup_reports_every_selected_client_and_server_protocol() {
 
     assert_eq!(
         resolved.startup_summary(),
-        "Topology: built-in dataplane\nClient protocol versions: 2025-11-25, 2026-07-28\nServer protocol versions: dual [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25, 2026-07-28]"
+        "Topology: built-in dataplane\nClient era: legacy [2025-06-18, 2025-11-25]; modern [2026-07-28]\nServer era: dual [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25, 2026-07-28]"
+    );
+}
+
+#[test]
+fn conformance_startup_labels_both_legacy_era_selections() {
+    let resolved = action(
+        &[
+            "cf-integration",
+            "conformance",
+            "run",
+            "--client-era",
+            "legacy",
+            "--server-era",
+            "legacy",
+        ],
+        &[],
+    );
+
+    assert_eq!(
+        resolved.startup_summary(),
+        "Topology: fixture direct, built-in dataplane, external dataplane\nClient era: legacy [2025-06-18, 2025-11-25]\nServer era: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]"
     );
 }
 
@@ -336,6 +357,7 @@ fn conformance_defaults_to_all_three_ordered_lanes() {
                 SemanticLane::BuiltInDataPlane,
                 SemanticLane::ExternalDataPlane,
             ],
+            client_eras: vec![ConformanceServerEra::Modern],
             client_versions: vec!["2026-07-28".to_owned()],
             server_eras: vec![ConformanceServerEra::Legacy, ConformanceServerEra::Modern],
             results_dir: None,
@@ -360,10 +382,10 @@ fn conformance_lanes_are_deduplicated_and_normalized() {
                 "fixture-direct",
                 "--lane",
                 "external-data-plane",
-                "--protocol-version",
-                "2025-06-18",
-                "--protocol-version",
-                "2025-11-25",
+                "--client-era",
+                "legacy",
+                "--client-era",
+                "modern",
                 "--server-era",
                 "modern",
                 "--server-era",
@@ -382,7 +404,12 @@ fn conformance_lanes_are_deduplicated_and_normalized() {
         ),
         Action::Conformance(ConformanceAction::Run {
             lanes: vec![SemanticLane::FixtureDirect, SemanticLane::ExternalDataPlane,],
-            client_versions: vec!["2025-06-18".to_owned(), "2025-11-25".to_owned()],
+            client_eras: vec![ConformanceServerEra::Legacy, ConformanceServerEra::Modern],
+            client_versions: vec![
+                "2025-06-18".to_owned(),
+                "2025-11-25".to_owned(),
+                "2026-07-28".to_owned(),
+            ],
             server_eras: vec![ConformanceServerEra::Modern, ConformanceServerEra::Legacy],
             results_dir: Some(PathBuf::from("results")),
             baseline_dir: Some(PathBuf::from("baselines")),

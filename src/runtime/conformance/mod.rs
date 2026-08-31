@@ -8,6 +8,9 @@ use std::fmt::Write as _;
 use std::time::Instant;
 
 use crate::conformance::DEFAULT_MCP_SPEC_VERSION;
+use crate::conformance::profile::{
+    LEGACY_CLIENT_PROTOCOL_VERSIONS, MODERN_CLIENT_PROTOCOL_VERSIONS,
+};
 use crate::conformance::results::{DEFAULT_CONFORMANCE_SUITE, ScenarioOutcome};
 
 const CLIENT_CONFORMANCE_SERVER_ID: &str = "dataplane-client-conformance";
@@ -196,6 +199,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         match action {
             ConformanceAction::Run {
                 lanes,
+                client_eras: _,
                 client_versions,
                 server_eras,
                 results_dir,
@@ -1264,7 +1268,8 @@ fn render_conformance_results(
         let heading = style.heading(&format!(" MCP {direction} conformance results: {lane}"));
         let _ = writeln!(
             output,
-            "{divider}\n{heading}\n Client protocol: {client_version}\n Server protocols: {} [{}]",
+            "{divider}\n{heading}\n Client era: {} [{client_version}]\n Server era: {} [{}]",
+            client_era_for_version(client_version),
             server_era.label(),
             server_era.protocol_versions_label()
         );
@@ -1306,6 +1311,16 @@ fn render_conformance_results(
         elapsed.as_secs_f64()
     );
     output
+}
+
+fn client_era_for_version(client_version: &str) -> &'static str {
+    if LEGACY_CLIENT_PROTOCOL_VERSIONS.contains(&client_version) {
+        "legacy"
+    } else if MODERN_CLIENT_PROTOCOL_VERSIONS.contains(&client_version) {
+        "modern"
+    } else {
+        "unknown"
+    }
 }
 
 fn conformance_test_status(
@@ -1660,7 +1675,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "────────────\n MCP server conformance results: external dataplane\n Client protocol: 2026-07-28\n Server protocols: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]\n       XFAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 1 xfailed, 0 xpassed, 0 failed, 0 skipped, 0 unknown"
+            "────────────\n MCP server conformance results: external dataplane\n Client era: modern [2026-07-28]\n Server era: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]\n       XFAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 1 xfailed, 0 xpassed, 0 failed, 0 skipped, 0 unknown"
         );
     }
 
@@ -1678,7 +1693,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "────────────\n MCP server conformance results: external dataplane\n Client protocol: 2026-07-28\n Server protocols: modern [2026-07-28]\n        FAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 0 xfailed, 0 xpassed, 1 failed, 0 skipped, 0 unknown"
+            "────────────\n MCP server conformance results: external dataplane\n Client era: modern [2026-07-28]\n Server era: modern [2026-07-28]\n        FAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 0 xfailed, 0 xpassed, 1 failed, 0 skipped, 0 unknown"
         );
     }
 
@@ -1695,8 +1710,8 @@ mod tests {
         );
 
         assert!(rendered.contains("MCP client conformance results: external dataplane"));
-        assert!(rendered.contains("Client protocol: 2026-07-28"));
-        assert!(rendered.contains("Server protocols: modern [2026-07-28]"));
+        assert!(rendered.contains("Client era: modern [2026-07-28]"));
+        assert!(rendered.contains("Server era: modern [2026-07-28]"));
         assert!(rendered.contains("client::external-data-plane::failing"));
         assert!(rendered.contains("client::external-data-plane::passing"));
     }
