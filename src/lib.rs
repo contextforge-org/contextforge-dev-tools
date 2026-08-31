@@ -102,15 +102,14 @@ pub async fn run() -> ExitCode {
     }
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("{}", OutputStyle::stderr().failure(&error.to_string()));
-            exit_code(error.exit_code())
-        }
+        Err(error) => report_failure(error),
     }
 }
 
 fn report_failure(error: AppFailure) -> ExitCode {
-    eprintln!("{}", OutputStyle::stderr().failure(&error.to_string()));
+    if !error.is_reported() {
+        eprintln!("{}", OutputStyle::stderr().failure(&error.to_string()));
+    }
     exit_code(error.exit_code())
 }
 

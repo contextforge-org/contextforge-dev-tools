@@ -456,7 +456,8 @@ pub(super) fn conformance_process_completed(process_result: &AppResult<()>) -> b
             status.code().is_some()
         }
         Err(AppFailure::Infrastructure(InfrastructureError::Native(_)))
-        | Err(AppFailure::Native(_)) => false,
+        | Err(AppFailure::Native(_))
+        | Err(AppFailure::Reported) => false,
     }
 }
 

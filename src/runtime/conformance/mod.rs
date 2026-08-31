@@ -5,6 +5,7 @@ mod reports;
 use super::*;
 use reports::*;
 use std::fmt::Write as _;
+use std::io::Write as _;
 use std::time::Instant;
 
 use crate::conformance::DEFAULT_MCP_SPEC_VERSION;
@@ -221,6 +222,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 });
                 let report_root = output_dir.unwrap_or_else(|| self.config.root().join("reports"));
                 let mut failures = Vec::new();
+                let mut reported_failure = false;
                 let mut updates = Vec::<BaselineUpdate>::new();
 
                 for (client_version, server_era) in
@@ -250,11 +252,15 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                         executor.load_completed_conformance_results(&paths, &lanes)
                     };
                     if let Err(error) = run_result {
-                        failures.push(format!(
-                            "{}: {error}\n  Setup log: {}",
-                            paths.identity(),
-                            setup_log.display()
-                        ));
+                        if error.is_reported() {
+                            reported_failure = true;
+                        } else {
+                            failures.push(format!(
+                                "{}: {error}\n  Setup log: {}",
+                                paths.identity(),
+                                setup_log.display()
+                            ));
+                        }
                     }
 
                     let evaluated = results.and_then(|results| {
@@ -412,7 +418,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     }
                 }
 
-                if failures.is_empty() && bless {
+                if failures.is_empty() && !reported_failure && bless {
                     bless_baselines_transactionally(&baseline_root, &updates)
                         .map_err(AppFailure::from)?;
                     println!(
@@ -421,7 +427,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                         baseline_root.display()
                     );
                 }
-                if failures.is_empty() {
+                if failures.is_empty() && reported_failure {
+                    Err(AppFailure::reported())
+                } else if failures.is_empty() {
                     Ok(())
                 } else {
                     Err(AppFailure::from(anyhow!(
@@ -805,10 +813,20 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         if failures.is_empty() {
             Ok(())
         } else {
-            Err(AppFailure::from(anyhow!(
-                "one or more selected conformance lanes failed:\n  - {}",
-                failures.join("\n  - ")
-            )))
+            let setup_log = paths.setup_log();
+            append_conformance_failures(&setup_log, &failures)?;
+            eprintln!(
+                "{}",
+                OutputStyle::stderr().warning(
+                    "Some selected conformance lanes could not run; completed results follow."
+                )
+            );
+            eprintln!(
+                "{} {}",
+                OutputStyle::stderr().info("Details:"),
+                setup_log.display()
+            );
+            Err(AppFailure::reported())
         }
     }
 
@@ -1459,6 +1477,24 @@ fn fixture_registration_context(topology: StackMode, server_era: ConformanceServ
     )
 }
 
+fn append_conformance_failures(path: &Path, failures: &[String]) -> AppResult<()> {
+    let mut log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open conformance setup log {path:?}"))
+        .map_err(AppFailure::from)?;
+    writeln!(log, "\nConformance failures:")
+        .with_context(|| format!("failed to append conformance failures to {path:?}"))
+        .map_err(AppFailure::from)?;
+    for failure in failures {
+        writeln!(log, "- {failure}")
+            .with_context(|| format!("failed to append conformance failures to {path:?}"))
+            .map_err(AppFailure::from)?;
+    }
+    Ok(())
+}
+
 async fn finish_phase_after_interrupt<F, I, T>(
     operation: F,
     interrupt: std::pin::Pin<&mut I>,
@@ -1667,6 +1703,27 @@ mod tests {
         assert_eq!(
             context,
             "ContextForge could not register the official fixture for built-in dataplane with server era modern [2026-07-28]; routed tests for this lane were skipped"
+        );
+    }
+
+    #[test]
+    fn operational_failures_are_written_to_the_setup_log() {
+        let directory = tempfile::tempdir().expect("temporary log directory");
+        let path = directory.path().join("setup.log");
+        fs::write(&path, "setup output\n").expect("initial setup log");
+
+        append_conformance_failures(
+            &path,
+            &[
+                "built-in registration failed".to_owned(),
+                "cleanup failed".to_owned(),
+            ],
+        )
+        .expect("operational failures should be appended");
+
+        assert_eq!(
+            fs::read_to_string(path).expect("setup log should remain readable"),
+            "setup output\n\nConformance failures:\n- built-in registration failed\n- cleanup failed\n"
         );
     }
 
