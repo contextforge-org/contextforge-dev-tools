@@ -172,7 +172,6 @@ impl StackCommandPlan {
         }
         if build {
             arguments.push(OsString::from("--build"));
-            arguments.push(OsString::from("--quiet-build"));
         }
         if mode == StackMode::Controlplane && start_locust_ui {
             arguments.push(OsString::from("--scale"));
