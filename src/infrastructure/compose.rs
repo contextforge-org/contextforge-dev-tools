@@ -45,6 +45,20 @@ pub(crate) struct ComposeProject {
 }
 
 impl ComposeProject {
+    /// Builds the standalone official MCP conformance fixture project.
+    #[must_use]
+    pub(crate) fn conformance_fixture(repository_root: &Path, project_name: OsString) -> Self {
+        Self {
+            project_name,
+            files: vec![
+                repository_root
+                    .join("docker")
+                    .join("docker-compose.cf-conformance-fixture.yaml"),
+            ],
+            profiles: vec![OsString::from("conformance")],
+        }
+    }
+
     /// Builds the control-plane plus dataplane overlay project.
     #[must_use]
     pub(crate) fn dataplane(
@@ -135,6 +149,12 @@ impl ComposeProject {
     /// profile-gated fixture itself is launched.
     #[must_use]
     pub(crate) fn with_conformance_overlay(mut self, repository_root: &Path) -> Self {
+        let fixture = repository_root
+            .join("docker")
+            .join("docker-compose.cf-conformance-fixture.yaml");
+        if !self.files.contains(&fixture) {
+            self.files.push(fixture);
+        }
         let overlay = repository_root
             .join("docker")
             .join("docker-compose.cf-conformance.yaml");

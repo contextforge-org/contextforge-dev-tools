@@ -182,6 +182,12 @@ fn compose_overlays_assign_short_container_display_names() {
             .expect("read conformance Compose overlay");
     let conformance: yaml_serde::Value =
         yaml_serde::from_str(&conformance).expect("parse conformance Compose overlay");
+    let fixture = fs::read_to_string(
+        workspace_root().join("docker/docker-compose.cf-conformance-fixture.yaml"),
+    )
+    .expect("read standalone conformance fixture Compose file");
+    let fixture: yaml_serde::Value =
+        yaml_serde::from_str(&fixture).expect("parse standalone conformance fixture Compose file");
 
     for (service, expected_name) in [
         ("gateway", "cf-controlplane"),
@@ -212,7 +218,7 @@ fn compose_overlays_assign_short_container_display_names() {
         Some("cf-dataplane")
     );
     assert_eq!(
-        conformance["services"]["mcp_conformance_server"]["labels"]["name"].as_str(),
+        fixture["services"]["mcp_conformance_server"]["labels"]["name"].as_str(),
         Some("cf-conformance-server")
     );
     assert_eq!(
@@ -324,6 +330,12 @@ fn conformance_fixture_is_an_explicit_overlay_and_profile() {
         !default_project
             .files()
             .iter()
+            .any(|file| file.ends_with("docker-compose.cf-conformance-fixture.yaml"))
+    );
+    assert!(
+        !default_project
+            .files()
+            .iter()
             .any(|file| file.ends_with("docker-compose.cf-conformance.yaml"))
     );
 
@@ -337,8 +349,11 @@ fn conformance_fixture_is_an_explicit_overlay_and_profile() {
         default_project.files()
     );
     assert_eq!(
-        overlay.files().last().map(PathBuf::as_path),
-        Some(Path::new("/repo/docker/docker-compose.cf-conformance.yaml"))
+        &overlay.files()[default_project.files().len()..],
+        [
+            PathBuf::from("/repo/docker/docker-compose.cf-conformance-fixture.yaml"),
+            PathBuf::from("/repo/docker/docker-compose.cf-conformance.yaml"),
+        ]
     );
 
     let conformance = overlay.with_conformance_fixture(Path::new("/repo"));
@@ -353,6 +368,24 @@ fn conformance_fixture_is_an_explicit_overlay_and_profile() {
             .count(),
         1
     );
+    assert_eq!(
+        deduplicated
+            .files()
+            .iter()
+            .filter(|file| file.ends_with("docker-compose.cf-conformance-fixture.yaml"))
+            .count(),
+        1
+    );
+
+    let standalone =
+        ComposeProject::conformance_fixture(Path::new("/repo"), OsString::from("fixture"));
+    assert_eq!(
+        standalone.files(),
+        [PathBuf::from(
+            "/repo/docker/docker-compose.cf-conformance-fixture.yaml"
+        )]
+    );
+    assert_eq!(standalone.profiles(), ["conformance"]);
 }
 
 #[test]
@@ -362,8 +395,11 @@ fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
         .expect("read conformance Dockerfile");
     let patch = fs::read_to_string(root.join("docker/patch-mcp-conformance-hosts.mjs"))
         .expect("read host patch script");
-    let compose = fs::read_to_string(root.join("docker/docker-compose.cf-conformance.yaml"))
-        .expect("read conformance Compose overlay");
+    let compose =
+        fs::read_to_string(root.join("docker/docker-compose.cf-conformance-fixture.yaml"))
+            .expect("read standalone conformance fixture Compose file");
+    let routed_compose = fs::read_to_string(root.join("docker/docker-compose.cf-conformance.yaml"))
+        .expect("read routed conformance Compose overlay");
 
     assert!(dockerfile.contains("FROM node:22-bookworm-slim"));
     assert!(
@@ -411,11 +447,6 @@ fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
     let expected_compose: yaml_serde::Value = yaml_serde::from_str(
         r#"
 services:
-  gateway:
-    environment:
-      GATEWAY_TOOL_NAME_SEPARATOR: "_"
-    volumes:
-      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/conformance/write_client_config.py:/opt/contextforge-conformance/write_client_config.py:ro
   mcp_conformance_server:
     profiles: ["conformance"]
     image: cf-integration/mcp-conformance-server:0.2.0-alpha.11
@@ -430,8 +461,6 @@ services:
       MCP_CONFORMANCE_SERVER_ERA: ${CF_CONFORMANCE_SERVER_ERA:?Set CF_CONFORMANCE_SERVER_ERA to legacy, modern, or dual}
     ports:
       - "127.0.0.1:${CF_CONFORMANCE_PORT:-0}:3000"
-    networks:
-      - mcpnet
     healthcheck:
       test:
         - CMD
@@ -442,6 +471,24 @@ services:
       timeout: 2s
       retries: 30
       start_period: 2s
+"#,
+    )
+    .expect("parse expected conformance Compose contract");
+    assert_eq!(actual_compose, expected_compose);
+
+    let actual_routed_compose: yaml_serde::Value =
+        yaml_serde::from_str(&routed_compose).expect("parse routed conformance Compose overlay");
+    let expected_routed_compose: yaml_serde::Value = yaml_serde::from_str(
+        r#"
+services:
+  gateway:
+    environment:
+      GATEWAY_TOOL_NAME_SEPARATOR: "_"
+    volumes:
+      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/conformance/write_client_config.py:/opt/contextforge-conformance/write_client_config.py:ro
+  mcp_conformance_server:
+    networks:
+      - mcpnet
   mcp_conformance_proxy:
     profiles: ["conformance"]
     image: nginx:1.30.4-alpine3.24
@@ -457,8 +504,8 @@ services:
         condition: service_healthy
 "#,
     )
-    .expect("parse expected conformance Compose contract");
-    assert_eq!(actual_compose, expected_compose);
+    .expect("parse expected routed conformance Compose overlay");
+    assert_eq!(actual_routed_compose, expected_routed_compose);
 
     let proxy = fs::read_to_string(root.join("docker/nginx.cf-conformance-proxy.conf"))
         .expect("read conformance proxy config");

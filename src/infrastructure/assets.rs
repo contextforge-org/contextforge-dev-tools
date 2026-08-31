@@ -23,6 +23,7 @@ macro_rules! asset {
 }
 
 const ASSETS: &[EmbeddedAsset] = &[
+    asset!("docker/docker-compose.cf-conformance-fixture.yaml"),
     asset!("docker/docker-compose.cf-conformance-runtime.yaml"),
     asset!("docker/docker-compose.cf-conformance.yaml"),
     asset!("docker/docker-compose.cf-controlplane-build-labels.yaml"),

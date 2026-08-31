@@ -32,6 +32,83 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         Ok(())
     }
 
+    fn standalone_conformance_project(&self) -> ComposeProject {
+        let project_name = format!(
+            "{}-conformance-fixture",
+            self.config.integration_project().value.to_string_lossy()
+        );
+        ComposeProject::conformance_fixture(self.config.asset_root(), project_name.into())
+    }
+
+    fn standalone_conformance_environment(
+        &self,
+        command: CommandSpec,
+        server_era: ConformanceServerEra,
+    ) -> CommandSpec {
+        let command_environment = command.environment().clone();
+        let mut command = command.cwd(self.config.root());
+        for (key, value) in self.config.environment().iter() {
+            if !command_environment.contains_key(key) {
+                command = command.env(key.clone(), value.value.clone());
+            }
+        }
+        command
+            .env("CF_INTEGRATION_ROOT", self.config.asset_root().as_os_str())
+            .env(CONFORMANCE_SERVER_ERA_ENV, server_era.label())
+    }
+
+    async fn start_standalone_conformance_fixture(
+        &self,
+        server_era: ConformanceServerEra,
+    ) -> AppResult<()> {
+        let project = self.standalone_conformance_project();
+        let build = self.standalone_conformance_environment(
+            project.command(["build", OFFICIAL_CONFORMANCE_SERVICE]),
+            server_era,
+        );
+        self.runner.run_async(&build).await?;
+
+        let up = self.standalone_conformance_environment(
+            project.command(["up", "-d", "--wait", OFFICIAL_CONFORMANCE_SERVICE]),
+            server_era,
+        );
+        self.runner.run_async(&up).await.map_err(AppFailure::from)
+    }
+
+    fn standalone_conformance_fixture_endpoint(
+        &self,
+        server_era: ConformanceServerEra,
+    ) -> AppResult<url::Url> {
+        let command = self.standalone_conformance_environment(
+            self.standalone_conformance_project().command([
+                "port",
+                OFFICIAL_CONFORMANCE_SERVICE,
+                "3000",
+            ]),
+            server_era,
+        );
+        let output = self.runner.capture_stdout(&command)?;
+        parse_conformance_fixture_endpoint(&output).map_err(AppFailure::from)
+    }
+
+    async fn stop_standalone_conformance_fixture(
+        &self,
+        server_era: ConformanceServerEra,
+    ) -> AppResult<()> {
+        let command = self.standalone_conformance_environment(
+            self.standalone_conformance_project().command([
+                "down",
+                "--volumes",
+                "--remove-orphans",
+            ]),
+            server_era,
+        );
+        self.runner
+            .run_async(&command)
+            .await
+            .map_err(AppFailure::from)
+    }
+
     pub(super) async fn start_conformance_service(
         &self,
         topology: StackMode,
@@ -369,23 +446,86 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         }
         expected_server_scenarios(DEFAULT_CONFORMANCE_SUITE, spec_version)
             .map_err(AppFailure::from)?;
-        self.require_loopback_fixture_base_url()?;
-
         paths.clear_conformance()?;
 
         let topologies = conformance_topologies(lanes);
-        let mut direct_complete = false;
+        if !topologies.is_empty() {
+            self.require_loopback_fixture_base_url()?;
+        }
         let mut failures = Vec::new();
         let mut interrupted = false;
         tokio::pin!(interrupt);
         let (cancellation_sender, cancellation_receiver) = tokio::sync::watch::channel(false);
 
-        let cleanup_progress = Activity::spinner("Clear prior integration stacks");
-        let cleanup_result = self.cleanup(TopologySelection::All, CleanupKind::Reset);
+        let cleanup_progress = Activity::spinner("Clear prior conformance fixture");
+        let cleanup_result = self.stop_standalone_conformance_fixture(server_era).await;
         cleanup_progress.finish(cleanup_result.is_ok());
         cleanup_result?;
 
+        let fixture_progress = Activity::spinner("Start the official fixture");
+        let (start_result, start_interrupted) = finish_phase_after_interrupt(
+            self.start_standalone_conformance_fixture(server_era),
+            interrupt.as_mut(),
+        )
+        .await;
+        fixture_progress.finish(start_result.is_ok() && !start_interrupted);
+        interrupted |= start_interrupted;
+        let mut direct_failure = match start_result {
+            Ok(()) if interrupted => Some(interrupted_conformance_failure()),
+            Ok(()) => match self.standalone_conformance_fixture_endpoint(server_era) {
+                Ok(endpoint) => {
+                    let metadata = ConformanceFixtureMetadata {
+                        repository: OFFICIAL_CONFORMANCE_REPOSITORY.to_owned(),
+                        revision: OFFICIAL_CONFORMANCE_REVISION.to_owned(),
+                        server_id: OFFICIAL_CONFORMANCE_SERVER_ID.to_owned(),
+                    };
+                    let direct_run = DirectConformanceRun {
+                        endpoint: &endpoint,
+                        spec_version,
+                        server_era,
+                        fixture: &metadata,
+                        cancellation: cancellation_receiver.clone(),
+                    };
+                    let direct = self.run_official_conformance_direct(&direct_run, paths);
+                    tokio::pin!(direct);
+                    tokio::select! {
+                        result = &mut direct => result.err(),
+                        () = interrupt.as_mut() => {
+                            interrupted = true;
+                            cancellation_sender.send_replace(true);
+                            let _ = direct.await;
+                            Some(interrupted_conformance_failure())
+                        }
+                    }
+                }
+                Err(error) => Some(error),
+            },
+            Err(error) => Some(if interrupted {
+                interrupted_conformance_failure()
+            } else {
+                error
+            }),
+        };
+        direct_failure = finish_with_cleanup(
+            direct_failure,
+            self.stop_standalone_conformance_fixture(server_era).await,
+        )
+        .err();
+        if let Some(error) = direct_failure {
+            failures.push(format!("fixture direct: {error}"));
+        }
+
+        if !topologies.is_empty() && !interrupted {
+            let cleanup_progress = Activity::spinner("Clear prior integration stacks");
+            let cleanup_result = self.cleanup(TopologySelection::All, CleanupKind::Reset);
+            cleanup_progress.finish(cleanup_result.is_ok());
+            cleanup_result?;
+        }
+
         for topology in topologies {
+            if interrupted {
+                break;
+            }
             let target = conformance_target(topology);
             let run_routed = lanes.contains(&target);
             let stack_progress =
@@ -394,7 +534,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             stack_progress.finish(topology_failure.is_none());
             let mut fixture_state = None;
             let mut fixture_metadata = None;
-            let mut fixture_endpoint = None;
             let mut service_started = false;
             let mut managed_token = None;
 
@@ -416,17 +555,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                         if interrupted {
                             topology_failure = Some(interrupted_conformance_failure());
                         } else {
-                            match self.conformance_fixture_endpoint(topology) {
-                                Ok(endpoint) => {
-                                    fixture_endpoint = Some(endpoint);
-                                    fixture_metadata = Some(ConformanceFixtureMetadata {
-                                        repository: OFFICIAL_CONFORMANCE_REPOSITORY.to_owned(),
-                                        revision: OFFICIAL_CONFORMANCE_REVISION.to_owned(),
-                                        server_id: OFFICIAL_CONFORMANCE_SERVER_ID.to_owned(),
-                                    });
-                                }
-                                Err(error) => topology_failure = Some(error),
-                            }
+                            fixture_metadata = Some(ConformanceFixtureMetadata {
+                                repository: OFFICIAL_CONFORMANCE_REPOSITORY.to_owned(),
+                                revision: OFFICIAL_CONFORMANCE_REVISION.to_owned(),
+                                server_id: OFFICIAL_CONFORMANCE_SERVER_ID.to_owned(),
+                            });
                         }
                     }
                     Err(error) => {
@@ -435,47 +568,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                         } else {
                             error
                         });
-                    }
-                }
-            }
-
-            // Routed baselines subtract findings reproduced by the direct fixture,
-            // so every selected matrix needs one direct run even when that lane is
-            // not itself selected for baseline gating.
-            if topology_failure.is_none() && !direct_complete {
-                let run_inputs = fixture_endpoint.as_ref().zip(fixture_metadata.as_ref());
-                match run_inputs {
-                    Some((endpoint, metadata)) => {
-                        let run = DirectConformanceRun {
-                            endpoint,
-                            spec_version,
-                            server_era,
-                            fixture: metadata,
-                            cancellation: cancellation_receiver.clone(),
-                        };
-                        let direct = self.run_official_conformance_direct(&run, paths);
-                        tokio::pin!(direct);
-                        tokio::select! {
-                            result = &mut direct => {
-                                direct_complete = true;
-                                if let Err(error) = result {
-                                    let failure = format!("fixture direct: {error}");
-                                    failures.push(failure);
-                                }
-                            }
-                            () = interrupt.as_mut() => {
-                                interrupted = true;
-                                cancellation_sender.send_replace(true);
-                                let _ = direct.await;
-                                direct_complete = true;
-                                topology_failure = Some(interrupted_conformance_failure());
-                            }
-                        }
-                    }
-                    None => {
-                        topology_failure = Some(AppFailure::from(anyhow!(
-                            "successful fixture startup did not retain its direct endpoint"
-                        )));
                     }
                 }
             }
@@ -1193,9 +1285,6 @@ fn conformance_topologies(lanes: &[SemanticLane]) -> Vec<StackMode> {
     if lanes.contains(&SemanticLane::ExternalDataPlane) {
         topologies.push(StackMode::Dataplane);
     }
-    if topologies.is_empty() {
-        topologies.push(StackMode::Controlplane);
-    }
     topologies
 }
 
@@ -1362,10 +1451,7 @@ mod tests {
 
     #[test]
     fn lane_selection_uses_only_required_stack_topologies() {
-        assert_eq!(
-            conformance_topologies(&[SemanticLane::FixtureDirect]),
-            [StackMode::Controlplane]
-        );
+        assert_eq!(conformance_topologies(&[SemanticLane::FixtureDirect]), []);
         assert_eq!(
             conformance_topologies(
                 &[SemanticLane::FixtureDirect, SemanticLane::ExternalDataPlane,]
