@@ -211,7 +211,9 @@ before server comparison. Client findings are gated independently without
 fixture subtraction. Unexpected, stale, unknown, malformed, incomplete,
 missing, and operational results fail the matrix. `--bless` replaces all
 selected server and client baselines in one directory transaction only after
-every combination succeeds. Outside a developer checkout, an omitted
+every combination succeeds. Operational lane failures render as unconditional
+`FAIL` rows, count in the nextest-style summary, and cannot be blessed. Outside
+a developer checkout, an omitted
 `--baseline-dir` writes blessed baselines beneath the current workspace rather
 than modifying embedded assets. Server comparison regeneration discovers every
 protocol/era partition beneath the selected result root and accepts

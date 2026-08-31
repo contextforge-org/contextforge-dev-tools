@@ -16,6 +16,48 @@ use crate::conformance::results::{DEFAULT_CONFORMANCE_SUITE, ScenarioOutcome};
 
 const CLIENT_CONFORMANCE_SERVER_ID: &str = "dataplane-client-conformance";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConformanceOperationalFailure {
+    direction: ConformanceDirection,
+    lane: Option<SemanticLane>,
+    stage: &'static str,
+    message: String,
+}
+
+impl ConformanceOperationalFailure {
+    fn server(lane: Option<SemanticLane>, stage: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            direction: ConformanceDirection::Server,
+            lane,
+            stage,
+            message: message.into(),
+        }
+    }
+
+    fn client(lane: SemanticLane, stage: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            direction: ConformanceDirection::Client,
+            lane: Some(lane),
+            stage,
+            message: message.into(),
+        }
+    }
+
+    fn test_name(&self) -> String {
+        format!(
+            "{}::{}::{}",
+            self.direction.label(),
+            self.lane.map_or("matrix", SemanticLane::slug),
+            self.stage
+        )
+    }
+}
+
+#[derive(Debug, Default)]
+struct ConformanceRunOutcome {
+    operational_failures: Vec<ConformanceOperationalFailure>,
+}
+
 impl<R: ProcessRunner> RuntimeContext<R> {
     fn require_docker_daemon(&self) -> AppResult<()> {
         self.runner
@@ -246,25 +288,80 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     let run_result = executor
                         .run_conformance(&lanes, &client_version, server_era, &paths)
                         .await;
-                    let results = if run_result.is_ok() {
+                    let run_completed = matches!(
+                        &run_result,
+                        Ok(outcome) if outcome.operational_failures.is_empty()
+                    );
+                    let results = if run_completed {
                         executor.load_selected_conformance_results(&paths, &lanes)
                     } else {
                         executor.load_completed_conformance_results(&paths, &lanes)
                     };
-                    if let Err(error) = run_result {
-                        if error.is_reported() {
+                    let operational_failures = match run_result {
+                        Ok(outcome) => outcome.operational_failures,
+                        Err(error) if error.is_reported() => {
                             reported_failure = true;
-                        } else {
+                            Vec::new()
+                        }
+                        Err(error) => {
                             failures.push(format!(
                                 "{}: {error}\n  Setup log: {}",
                                 paths.identity(),
                                 setup_log.display()
                             ));
+                            Vec::new()
                         }
+                    };
+                    if !operational_failures.is_empty() {
+                        reported_failure = true;
                     }
+                    let server_operational_failures = operational_failures
+                        .iter()
+                        .filter(|failure| failure.direction == ConformanceDirection::Server)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let client_operational_failures = operational_failures
+                        .iter()
+                        .filter(|failure| failure.direction == ConformanceDirection::Client)
+                        .cloned()
+                        .collect::<Vec<_>>();
 
+                    if results.is_err() && !server_operational_failures.is_empty() {
+                        println!(
+                            "{}",
+                            render_conformance_results(
+                                &BTreeMap::new(),
+                                (&client_version, server_era),
+                                ConformanceDirection::Server,
+                                ConformanceGateDisplay::new(
+                                    None,
+                                    &server_operational_failures,
+                                    bless,
+                                ),
+                                matrix_started.elapsed(),
+                                OutputStyle::stdout(),
+                            )
+                        );
+                    }
                     let evaluated = results.and_then(|results| {
                         if results.is_empty() {
+                            if !server_operational_failures.is_empty() {
+                                println!(
+                                    "{}",
+                                    render_conformance_results(
+                                        &results,
+                                        (&client_version, server_era),
+                                        ConformanceDirection::Server,
+                                        ConformanceGateDisplay::new(
+                                            None,
+                                            &server_operational_failures,
+                                            bless,
+                                        ),
+                                        matrix_started.elapsed(),
+                                        OutputStyle::stdout(),
+                                    )
+                                );
+                            }
                             return Ok(None);
                         }
                         let completed_lanes = results.keys().copied().collect::<Vec<_>>();
@@ -283,10 +380,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                         &results,
                                         (&client_version, server_era),
                                         ConformanceDirection::Server,
-                                        Some(&evaluation.comparisons),
+                                        ConformanceGateDisplay::new(
+                                            Some(&evaluation.comparisons),
+                                            &server_operational_failures,
+                                            bless,
+                                        ),
                                         matrix_started.elapsed(),
                                         OutputStyle::stdout(),
-                                        bless,
                                     )
                                 );
                                 Ok(Some(evaluation))
@@ -298,10 +398,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                         &results,
                                         (&client_version, server_era),
                                         ConformanceDirection::Server,
-                                        None,
+                                        ConformanceGateDisplay::new(
+                                            None,
+                                            &server_operational_failures,
+                                            bless,
+                                        ),
                                         matrix_started.elapsed(),
                                         OutputStyle::stdout(),
-                                        bless,
                                     )
                                 );
                                 Err(AppFailure::from(error))
@@ -344,6 +447,23 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 
                     match executor.load_completed_client_conformance_results(&paths) {
                         Err(error) => {
+                            if !client_operational_failures.is_empty() {
+                                println!(
+                                    "{}",
+                                    render_conformance_results(
+                                        &BTreeMap::new(),
+                                        (&client_version, server_era),
+                                        ConformanceDirection::Client,
+                                        ConformanceGateDisplay::new(
+                                            None,
+                                            &client_operational_failures,
+                                            bless,
+                                        ),
+                                        matrix_started.elapsed(),
+                                        OutputStyle::stdout(),
+                                    )
+                                );
+                            }
                             failures.push(format!("{} client artifacts: {error}", paths.identity()))
                         }
                         Ok(client_results) if !client_results.is_empty() => {
@@ -362,10 +482,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                             &client_results,
                                             (&client_version, server_era),
                                             ConformanceDirection::Client,
-                                            Some(&evaluation.comparisons),
+                                            ConformanceGateDisplay::new(
+                                                Some(&evaluation.comparisons),
+                                                &client_operational_failures,
+                                                bless,
+                                            ),
                                             matrix_started.elapsed(),
                                             OutputStyle::stdout(),
-                                            bless,
                                         )
                                     );
                                     for comparison in &evaluation.comparisons {
@@ -401,10 +524,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                             &client_results,
                                             (&client_version, server_era),
                                             ConformanceDirection::Client,
-                                            None,
+                                            ConformanceGateDisplay::new(
+                                                None,
+                                                &client_operational_failures,
+                                                bless,
+                                            ),
                                             matrix_started.elapsed(),
                                             OutputStyle::stdout(),
-                                            bless,
                                         )
                                     );
                                     failures.push(format!(
@@ -414,7 +540,32 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                 }
                             }
                         }
-                        Ok(_) => {}
+                        Ok(client_results) => {
+                            if !client_operational_failures.is_empty() {
+                                println!(
+                                    "{}",
+                                    render_conformance_results(
+                                        &client_results,
+                                        (&client_version, server_era),
+                                        ConformanceDirection::Client,
+                                        ConformanceGateDisplay::new(
+                                            None,
+                                            &client_operational_failures,
+                                            bless,
+                                        ),
+                                        matrix_started.elapsed(),
+                                        OutputStyle::stdout(),
+                                    )
+                                );
+                            }
+                        }
+                    }
+                    if !operational_failures.is_empty() {
+                        println!(
+                            "{} {}",
+                            OutputStyle::stdout().info("Details:"),
+                            setup_log.display()
+                        );
                     }
                 }
 
@@ -451,7 +602,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         spec_version: &str,
         server_era: ConformanceServerEra,
         paths: &ConformancePaths,
-    ) -> AppResult<()> {
+    ) -> AppResult<ConformanceRunOutcome> {
         self.run_conformance_with_interrupt(lanes, spec_version, server_era, paths, async {
             if tokio::signal::ctrl_c().await.is_err() {
                 std::future::pending::<()>().await;
@@ -467,7 +618,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         server_era: ConformanceServerEra,
         paths: &ConformancePaths,
         interrupt: I,
-    ) -> AppResult<()>
+    ) -> AppResult<ConformanceRunOutcome>
     where
         I: Future<Output = ()>,
     {
@@ -493,7 +644,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let cleanup_result = self.stop_standalone_conformance_fixture(server_era).await;
         cleanup_progress.finish(cleanup_result.is_ok());
         if let Err(error) = cleanup_result {
-            failures.push(format!("fixture-direct pre-run cleanup: {error}"));
+            failures.push(ConformanceOperationalFailure::server(
+                Some(SemanticLane::FixtureDirect),
+                "cleanup",
+                format!("fixture-direct pre-run cleanup: {error}"),
+            ));
         }
 
         let fixture_progress = Activity::spinner("Start the official fixture");
@@ -546,7 +701,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         )
         .err();
         if let Some(error) = direct_failure {
-            failures.push(format!("fixture direct: {error}"));
+            failures.push(ConformanceOperationalFailure::server(
+                Some(SemanticLane::FixtureDirect),
+                "run",
+                format!("fixture direct: {error}"),
+            ));
         }
 
         if !topologies.is_empty() && !interrupted {
@@ -554,7 +713,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             let cleanup_result = self.cleanup(TopologySelection::All, CleanupKind::Reset);
             cleanup_progress.finish(cleanup_result.is_ok());
             if let Err(error) = cleanup_result {
-                failures.push(format!("routed-lane pre-run cleanup: {error}"));
+                failures.push(ConformanceOperationalFailure::server(
+                    None,
+                    "cleanup",
+                    format!("routed-lane pre-run cleanup: {error}"),
+                ));
             }
         }
 
@@ -654,12 +817,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                 } else {
                                     let context =
                                         fixture_registration_context(topology, server_era);
-                                    eprintln!(
-                                        "  {}",
-                                        OutputStyle::stderr().warning(&format!(
-                                            "{context}; continuing with the remaining lanes"
-                                        ))
-                                    );
                                     AppFailure::from(error.context(context))
                                 });
                             }
@@ -749,8 +906,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             )
             .err();
             if let Some(error) = topology_failure {
-                let failure = format!("{} topology: {error}", topology.topology_label());
-                failures.push(failure);
+                failures.push(ConformanceOperationalFailure::server(
+                    Some(target),
+                    "run",
+                    format!("{} topology: {error}", topology.topology_label()),
+                ));
             }
             if interrupted {
                 cancellation_sender.send_replace(true);
@@ -772,14 +932,22 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             tokio::select! {
                 result = &mut client => {
                     if let Err(error) = result {
-                        failures.push(format!("external dataplane client: {error}"));
+                        failures.push(ConformanceOperationalFailure::client(
+                            SemanticLane::ExternalDataPlane,
+                            "run",
+                            format!("external dataplane client: {error}"),
+                        ));
                     }
                 }
                 () = interrupt.as_mut() => {
                     interrupted = true;
                     cancellation_sender.send_replace(true);
                     let _ = client.await;
-                    failures.push("external dataplane client: conformance workflow interrupted by Ctrl-C".to_owned());
+                    failures.push(ConformanceOperationalFailure::client(
+                        SemanticLane::ExternalDataPlane,
+                        "run",
+                        "external dataplane client: conformance workflow interrupted by Ctrl-C",
+                    ));
                 }
             }
         }
@@ -804,30 +972,22 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     path.display()
                 ),
                 Err(error) => {
-                    let failure = format!("comparison report: {error}");
-                    failures.push(failure);
+                    failures.push(ConformanceOperationalFailure::server(
+                        None,
+                        "comparison-report",
+                        format!("comparison report: {error}"),
+                    ));
                 }
             }
         }
 
-        if failures.is_empty() {
-            Ok(())
-        } else {
+        if !failures.is_empty() {
             let setup_log = paths.setup_log();
             append_conformance_failures(&setup_log, &failures)?;
-            eprintln!(
-                "{}",
-                OutputStyle::stderr().warning(
-                    "Some selected conformance lanes could not run; completed results follow."
-                )
-            );
-            eprintln!(
-                "{} {}",
-                OutputStyle::stderr().info("Details:"),
-                setup_log.display()
-            );
-            Err(AppFailure::reported())
         }
+        Ok(ConformanceRunOutcome {
+            operational_failures: failures,
+        })
     }
 
     async fn run_official_conformance_mode(
@@ -1272,14 +1432,33 @@ fn conformance_matrix(
         .collect()
 }
 
+struct ConformanceGateDisplay<'a> {
+    comparisons: Option<&'a [BaselineComparison]>,
+    operational_failures: &'a [ConformanceOperationalFailure],
+    blessing: bool,
+}
+
+impl<'a> ConformanceGateDisplay<'a> {
+    fn new(
+        comparisons: Option<&'a [BaselineComparison]>,
+        operational_failures: &'a [ConformanceOperationalFailure],
+        blessing: bool,
+    ) -> Self {
+        Self {
+            comparisons,
+            operational_failures,
+            blessing,
+        }
+    }
+}
+
 fn render_conformance_results(
     results: &BTreeMap<SemanticLane, ConformanceResults>,
     matrix: (&str, ConformanceServerEra),
     direction: ConformanceDirection,
-    comparisons: Option<&[BaselineComparison]>,
+    gate: ConformanceGateDisplay<'_>,
     elapsed: Duration,
     style: OutputStyle,
-    blessing: bool,
 ) -> String {
     let (client_version, server_era) = matrix;
     let mut passed = 0;
@@ -1291,7 +1470,7 @@ fn render_conformance_results(
     let mut output = String::new();
 
     for (lane, lane_results) in results {
-        let comparison = comparisons.and_then(|comparisons| {
+        let comparison = gate.comparisons.and_then(|comparisons| {
             comparisons
                 .iter()
                 .find(|comparison| comparison.lane == *lane)
@@ -1307,7 +1486,7 @@ fn render_conformance_results(
             server_era.protocol_versions_label()
         );
         for (index, result) in lane_results.scenarios.values().enumerate() {
-            let status = conformance_test_status(result, comparison, blessing);
+            let status = conformance_test_status(result, comparison, gate.blessing);
             match status {
                 TestStatus::Pass => passed += 1,
                 TestStatus::ExpectedFailure => expected_failures += 1,
@@ -1327,6 +1506,34 @@ fn render_conformance_results(
                 "{}",
                 style.test_result(status, &name, None, Some((index + 1, total)))
             );
+        }
+    }
+
+    if !gate.operational_failures.is_empty() {
+        let divider = style.info("────────────");
+        let heading = style.failure_heading(&format!(
+            " MCP {direction} conformance operational failures"
+        ));
+        let _ = writeln!(
+            output,
+            "{divider}\n{heading}\n Client era: {} [{client_version}]\n Server era: {} [{}]",
+            client_era_for_version(client_version),
+            server_era.label(),
+            server_era.protocol_versions_label()
+        );
+        for (index, failure) in gate.operational_failures.iter().enumerate() {
+            failed += 1;
+            let _ = writeln!(
+                output,
+                "{}",
+                style.test_result(
+                    TestStatus::Fail,
+                    &failure.test_name(),
+                    None,
+                    Some((index + 1, gate.operational_failures.len())),
+                )
+            );
+            let _ = writeln!(output, "             {}", failure.message);
         }
     }
 
@@ -1477,7 +1684,10 @@ fn fixture_registration_context(topology: StackMode, server_era: ConformanceServ
     )
 }
 
-fn append_conformance_failures(path: &Path, failures: &[String]) -> AppResult<()> {
+fn append_conformance_failures(
+    path: &Path,
+    failures: &[ConformanceOperationalFailure],
+) -> AppResult<()> {
     let mut log = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1488,7 +1698,7 @@ fn append_conformance_failures(path: &Path, failures: &[String]) -> AppResult<()
         .with_context(|| format!("failed to append conformance failures to {path:?}"))
         .map_err(AppFailure::from)?;
     for failure in failures {
-        writeln!(log, "- {failure}")
+        writeln!(log, "- {}: {}", failure.test_name(), failure.message)
             .with_context(|| format!("failed to append conformance failures to {path:?}"))
             .map_err(AppFailure::from)?;
     }
@@ -1715,15 +1925,19 @@ mod tests {
         append_conformance_failures(
             &path,
             &[
-                "built-in registration failed".to_owned(),
-                "cleanup failed".to_owned(),
+                ConformanceOperationalFailure::server(
+                    Some(SemanticLane::BuiltInDataPlane),
+                    "registration",
+                    "built-in registration failed",
+                ),
+                ConformanceOperationalFailure::server(None, "cleanup", "cleanup failed"),
             ],
         )
         .expect("operational failures should be appended");
 
         assert_eq!(
             fs::read_to_string(path).expect("setup log should remain readable"),
-            "setup output\n\nConformance failures:\n- built-in registration failed\n- cleanup failed\n"
+            "setup output\n\nConformance failures:\n- server::built-in-data-plane::registration: built-in registration failed\n- server::matrix::cleanup: cleanup failed\n"
         );
     }
 
@@ -1759,10 +1973,9 @@ mod tests {
             &results,
             ("2026-07-28", ConformanceServerEra::Legacy),
             ConformanceDirection::Server,
-            Some(&[comparison]),
+            ConformanceGateDisplay::new(Some(&[comparison]), &[], false),
             Duration::from_millis(1_250),
             OutputStyle::plain(),
-            false,
         );
 
         assert_eq!(
@@ -1772,15 +1985,46 @@ mod tests {
     }
 
     #[test]
+    fn operational_lane_failure_is_an_unblessable_failure_in_baseline_output() {
+        let results = result_map(mixed_conformance_results());
+        let failing = scored_finding("failing");
+        let comparison = BaselineComparison {
+            lane: SemanticLane::ExternalDataPlane,
+            actual: vec![failing.clone()],
+            expected: vec![failing],
+            unexpected: Vec::new(),
+            stale: Vec::new(),
+        };
+        let operational_failure = ConformanceOperationalFailure::server(
+            Some(SemanticLane::BuiltInDataPlane),
+            "registration",
+            "gateway registration returned HTTP 502",
+        );
+
+        let rendered = render_conformance_results(
+            &results,
+            ("2026-07-28", ConformanceServerEra::Modern),
+            ConformanceDirection::Server,
+            ConformanceGateDisplay::new(Some(&[comparison]), &[operational_failure], true),
+            Duration::from_millis(1_250),
+            OutputStyle::plain(),
+        );
+
+        assert!(rendered.contains("XFAIL (1/2) server::external-data-plane::failing"));
+        assert!(rendered.contains("FAIL (1/1) server::built-in-data-plane::registration"));
+        assert!(rendered.contains("gateway registration returned HTTP 502"));
+        assert!(rendered.contains("1 passed, 1 xfailed, 0 xpassed, 1 failed"));
+    }
+
+    #[test]
     fn conformance_results_render_without_a_baseline_when_the_gate_cannot_load() {
         let rendered = render_conformance_results(
             &result_map(mixed_conformance_results()),
             ("2026-07-28", ConformanceServerEra::Modern),
             ConformanceDirection::Server,
-            None,
+            ConformanceGateDisplay::new(None, &[], false),
             Duration::from_millis(1_250),
             OutputStyle::plain(),
-            false,
         );
 
         assert_eq!(
@@ -1795,10 +2039,9 @@ mod tests {
             &result_map(mixed_conformance_results()),
             ("2026-07-28", ConformanceServerEra::Modern),
             ConformanceDirection::Client,
-            None,
+            ConformanceGateDisplay::new(None, &[], false),
             Duration::from_millis(1_250),
             OutputStyle::plain(),
-            false,
         );
 
         assert!(rendered.contains("MCP client conformance results: external dataplane"));
@@ -1846,10 +2089,9 @@ mod tests {
             &results,
             ("2026-07-28", ConformanceServerEra::Modern),
             ConformanceDirection::Server,
-            Some(&[comparison]),
+            ConformanceGateDisplay::new(Some(&[comparison]), &[], false),
             Duration::from_millis(1_250),
             OutputStyle::colored(),
-            false,
         );
 
         assert!(rendered.contains("\x1b[33m       XFAIL\x1b[0m"));
