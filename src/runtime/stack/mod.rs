@@ -147,8 +147,19 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 AppFailure::from(anyhow!("CONTROLPLANE_LOCUST_WORKERS must be an integer"))
             })?;
         let command = StackCommandPlan::up(project, mode, build, start_locust, locust_workers);
-        self.runner
-            .run(&self.compose_environment(command.command().clone(), mode, true)?)?;
+        let command = self.compose_environment(command.command().clone(), mode, true)?;
+        let (controlplane_pull_policy, dataplane_pull_policy) = compose_pull_policies(
+            mode,
+            build,
+            !self.config.dataplane_ref().value.is_empty(),
+            self.config.controlplane_image().pull_policy(),
+            self.config.dataplane_image().pull_policy(),
+        );
+        self.runner.run(
+            &command
+                .env("CF_CONTROLPLANE_PULL_POLICY", controlplane_pull_policy)
+                .env("CF_DATAPLANE_PULL_POLICY", dataplane_pull_policy),
+        )?;
         self.wait_for_public_endpoint(mode, report_progress).await?;
         if report_progress {
             println!(
@@ -251,6 +262,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 command = command.env(key.clone(), value.value.clone());
             }
         }
+        let (controlplane_pull_policy, dataplane_pull_policy) = compose_pull_policies(
+            mode,
+            false,
+            !self.config.dataplane_ref().value.is_empty(),
+            self.config.controlplane_image().pull_policy(),
+            self.config.dataplane_image().pull_policy(),
+        );
         command = command
             .env("CF_INTEGRATION_ROOT", self.config.asset_root().as_os_str())
             .env(
@@ -263,10 +281,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             )
             .env("CF_DATAPLANE_DIR", self.config.dataplane_dir().as_os_str())
             .env("CF_CONTROLPLANE_IMAGE", controlplane_image.clone())
-            .env(
-                "CF_CONTROLPLANE_PULL_POLICY",
-                self.config.controlplane_image().pull_policy().as_str(),
-            )
+            .env("CF_CONTROLPLANE_PULL_POLICY", controlplane_pull_policy)
             .env("IMAGE_LOCAL", controlplane_image)
             .env(
                 "FAST_TIME_IMAGE",
@@ -276,10 +291,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 "CF_DATAPLANE_IMAGE",
                 self.config.dataplane_image().resolved().to_owned(),
             )
-            .env(
-                "CF_DATAPLANE_PULL_POLICY",
-                self.config.dataplane_image().pull_policy().as_str(),
-            )
+            .env("CF_DATAPLANE_PULL_POLICY", dataplane_pull_policy)
             .env("CF_DATAPLANE_PLATFORM", self.dataplane_platform()?)
             .env("JWT_SECRET_KEY", self.config.jwt_secret_key().value.clone())
             .env(
@@ -1019,6 +1031,30 @@ fn require_preloaded_image(label: &str, image: &OsStr, local_exists: bool) -> Ap
     )))
 }
 
+fn compose_pull_policies(
+    mode: StackMode,
+    build: bool,
+    dataplane_source: bool,
+    controlplane: ImagePullPolicy,
+    dataplane: ImagePullPolicy,
+) -> (&'static str, &'static str) {
+    let controlplane = if build && (mode == StackMode::Controlplane || !dataplane_source) {
+        "build"
+    } else {
+        controlplane.as_str()
+    };
+    let dataplane = if dataplane_source {
+        if build && mode == StackMode::Dataplane {
+            "build"
+        } else {
+            "never"
+        }
+    } else {
+        dataplane.as_str()
+    };
+    (controlplane, dataplane)
+}
+
 fn latest_published_controlplane_image(
     revisions: &str,
     mut is_published: impl FnMut(&OsStr) -> bool,
@@ -1135,6 +1171,48 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "cf-dataplane image local/dataplane:test is not loaded locally; preload it or set its pull policy to always"
+        );
+    }
+
+    #[test]
+    fn source_dataplane_build_does_not_change_the_controlplane_policy() {
+        assert_eq!(
+            compose_pull_policies(
+                StackMode::Dataplane,
+                true,
+                true,
+                ImagePullPolicy::Always,
+                ImagePullPolicy::Always,
+            ),
+            ("always", "build")
+        );
+    }
+
+    #[test]
+    fn current_source_dataplane_uses_its_cached_image_without_rebuilding() {
+        assert_eq!(
+            compose_pull_policies(
+                StackMode::Dataplane,
+                false,
+                true,
+                ImagePullPolicy::Always,
+                ImagePullPolicy::Always,
+            ),
+            ("always", "never")
+        );
+    }
+
+    #[test]
+    fn controlplane_build_uses_compose_build_policy() {
+        assert_eq!(
+            compose_pull_policies(
+                StackMode::Controlplane,
+                true,
+                false,
+                ImagePullPolicy::Always,
+                ImagePullPolicy::Always,
+            ),
+            ("build", "always")
         );
     }
 
