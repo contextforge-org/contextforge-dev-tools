@@ -167,6 +167,61 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.97.0
 
+      - name: Replace stale unpublished release state
+        id: release-state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r 'first(.packages[] | select(.name == "cf-integration") | .version) // ""')
+          if [[ -z "$version" ]]; then
+            echo "cf-integration is missing from cargo metadata" >&2
+            exit 1
+          fi
+
+          tag="v$version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          registry_status=$(curl --silent --show-error \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            --user-agent 'contextforge-dev-tools-release' \
+            "https://crates.io/api/v1/crates/cf-integration/$version")
+          case "$registry_status" in
+            200)
+              exit 0
+              ;;
+            404)
+              ;;
+            *)
+              echo "crates.io returned HTTP $registry_status while checking cf-integration $version" >&2
+              exit 1
+              ;;
+          esac
+
+          release_rows=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" \
+            --jq ".[] | select(.tag_name == \"$tag\") | [.id, .draft] | @tsv")
+          while IFS=$'\t' read -r release_id draft; do
+            [[ -z "$release_id" ]] && continue
+            if [[ "$draft" != "true" ]]; then
+              echo "refusing to replace published GitHub release $tag" >&2
+              exit 1
+            fi
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/releases/$release_id"
+          done <<< "$release_rows"
+
+          if tag_probe=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" 2>&1); then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag"
+          elif [[ "$tag_probe" != *"HTTP 404"* ]]; then
+            echo "$tag_probe" >&2
+            exit 1
+          fi
+
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            git tag --delete "$tag"
+          fi
+
       - name: Publish root package
         id: release-plz
         uses: release-plz/action@2eb1d8bcb770b4c48ccfaad919734b38b51958c9 # v0.5.131
@@ -180,9 +235,23 @@ jobs:
         id: root-release
         shell: bash
         env:
+          CANDIDATE_TAG: ${{ steps.release-state.outputs.tag }}
           RELEASES: ${{ steps.release-plz.outputs.releases }}
         run: |
           tag=$(jq -r 'first(.[] | select(.package_name == "cf-integration") | .tag) // ""' <<<"$RELEASES")
+          if [[ -z "$tag" ]] \
+            && git fetch --force origin "refs/tags/$CANDIDATE_TAG:refs/tags/$CANDIDATE_TAG" \
+            && [[ "$(git rev-list -n 1 "$CANDIDATE_TAG")" == "$GITHUB_SHA" ]]; then
+            version=${CANDIDATE_TAG#v}
+            registry_status=$(curl --silent --show-error \
+              --output /dev/null \
+              --write-out '%{http_code}' \
+              --user-agent 'contextforge-dev-tools-release' \
+              "https://crates.io/api/v1/crates/cf-integration/$version")
+            if [[ "$registry_status" == "200" ]]; then
+              tag=$CANDIDATE_TAG
+            fi
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
   publish-binaries:
