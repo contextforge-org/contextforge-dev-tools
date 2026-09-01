@@ -259,6 +259,11 @@ upstream reserves `:latest` for releases. Stack startup pulls changes;
 incompatible main images make the workflow fail instead of selecting an older
 pair.
 
+CI jobs that package the code under test as a local image can opt out of
+registry access with `CF_CONTROLPLANE_PULL_POLICY=never` or
+`CF_DATAPLANE_PULL_POLICY=never`. This is never the default: the selected image
+must already be loaded in Docker, and startup fails if it is absent.
+
 Compose requires `JWT_SECRET_KEY` and `AUTH_ENCRYPTION_SECRET`. If either is
 unset, a runtime-backed action generates stable values under
 `CF_INTEGRATION_DIR`. Canonical configuration is exported internally as the

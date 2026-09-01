@@ -30,6 +30,7 @@ services:
 
   dataplane:
     image: ${CF_DATAPLANE_IMAGE:?Set CF_DATAPLANE_IMAGE to the cf-dataplane image tag}
+    pull_policy: ${CF_DATAPLANE_PULL_POLICY:-always}
     platform: ${CF_DATAPLANE_PLATFORM:?Set CF_DATAPLANE_PLATFORM to the cf-dataplane image platform}
     labels:
       name: cf-dataplane

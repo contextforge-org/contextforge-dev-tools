@@ -276,6 +276,10 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
         Some("host.docker.internal:host-gateway"),
         "client conformance must let the dataplane reach the official scenario server"
     );
+    assert_eq!(
+        compose["services"]["dataplane"]["pull_policy"].as_str(),
+        Some("${CF_DATAPLANE_PULL_POLICY:-always}")
+    );
     for obsolete in [
         "CONTEXTFORGE_GATEWAY_RS_ADDRESS",
         "CONTEXTFORGE_GATEWAY_RS_REDIS_HOSTNAME",
@@ -297,6 +301,24 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
         build["services"]["dataplane"]["build"]["dockerfile"].as_str(),
         Some("docker/Dockerfile")
     );
+}
+
+#[test]
+fn controlplane_image_consumers_share_the_explicit_pull_policy() {
+    let root = workspace_root();
+    let compose =
+        fs::read_to_string(root.join("docker/docker-compose.cf-controlplane-build-labels.yaml"))
+            .expect("read controlplane metadata overlay");
+    let compose: yaml_serde::Value =
+        yaml_serde::from_str(&compose).expect("parse controlplane metadata overlay");
+
+    for service in ["gateway", "migration", "register_fast_time"] {
+        assert_eq!(
+            compose["services"][service]["pull_policy"].as_str(),
+            Some("${CF_CONTROLPLANE_PULL_POLICY:-always}"),
+            "{service} must honor the controlplane image pull policy"
+        );
+    }
 }
 
 #[test]

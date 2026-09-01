@@ -53,6 +53,27 @@ pub(crate) struct ImageSetting {
     resolved: OsString,
     prebuilt: bool,
     tracks_main_revision: bool,
+    pull_policy: ImagePullPolicy,
+}
+
+/// Whether a prebuilt image may be refreshed from its registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImagePullPolicy {
+    /// Resolve registry freshness and pull changed images.
+    Always,
+    /// Require an image that is already loaded in the local Docker daemon.
+    Never,
+}
+
+impl ImagePullPolicy {
+    /// Returns the Docker Compose spelling for this policy.
+    #[must_use]
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::Never => "never",
+        }
+    }
 }
 
 impl ImageSetting {
@@ -72,6 +93,12 @@ impl ImageSetting {
     #[must_use]
     pub(crate) fn tracks_main_revision(&self) -> bool {
         self.tracks_main_revision
+    }
+
+    /// Returns whether this image may be refreshed from its registry.
+    #[must_use]
+    pub(crate) const fn pull_policy(&self) -> ImagePullPolicy {
+        self.pull_policy
     }
 }
 
@@ -155,6 +182,7 @@ impl fmt::Debug for ImageSetting {
             .field("resolved", &REDACTED)
             .field("prebuilt", &self.prebuilt)
             .field("tracks_main_revision", &self.tracks_main_revision)
+            .field("pull_policy", &self.pull_policy)
             .finish()
     }
 }
@@ -327,8 +355,15 @@ impl AppConfig {
                     .auth_encryption_secret,
             ),
         };
-        let controlplane_image = controlplane_image(&environment);
-        let dataplane_image = dataplane_image(&environment, &dataplane_ref);
+        let controlplane_image = controlplane_image(
+            &environment,
+            image_pull_policy(&environment, "CF_CONTROLPLANE_PULL_POLICY")?,
+        );
+        let dataplane_image = dataplane_image(
+            &environment,
+            &dataplane_ref,
+            image_pull_policy(&environment, "CF_DATAPLANE_PULL_POLICY")?,
+        );
         let dataplane_platform = shell_value(
             &environment,
             "CF_DATAPLANE_PLATFORM",
@@ -598,7 +633,10 @@ fn prefixed_value(prefix: &str, suffix: &OsStr) -> OsString {
     value
 }
 
-fn controlplane_image(environment: &LoadedEnvironment) -> ImageSetting {
+fn controlplane_image(
+    environment: &LoadedEnvironment,
+    pull_policy: ImagePullPolicy,
+) -> ImageSetting {
     let (resolved, tracks_main_revision) =
         if let Some(image) = first_nonempty(environment, "CF_CONTROLPLANE_IMAGE") {
             (image.value.clone(), false)
@@ -619,10 +657,15 @@ fn controlplane_image(environment: &LoadedEnvironment) -> ImageSetting {
         resolved,
         prebuilt: true,
         tracks_main_revision,
+        pull_policy,
     }
 }
 
-fn dataplane_image(environment: &LoadedEnvironment, dataplane_ref: &SourcedValue) -> ImageSetting {
+fn dataplane_image(
+    environment: &LoadedEnvironment,
+    dataplane_ref: &SourcedValue,
+    pull_policy: ImagePullPolicy,
+) -> ImageSetting {
     let explicitly_set = is_configured_value(environment, "CF_DATAPLANE_IMAGE");
     let resolved = if let Some(image) = first_nonempty(environment, "CF_DATAPLANE_IMAGE") {
         image.value.clone()
@@ -649,6 +692,16 @@ fn dataplane_image(environment: &LoadedEnvironment, dataplane_ref: &SourcedValue
         resolved,
         prebuilt: explicitly_set || dataplane_ref.value.is_empty(),
         tracks_main_revision: false,
+        pull_policy,
+    }
+}
+
+fn image_pull_policy(environment: &LoadedEnvironment, key: &str) -> Result<ImagePullPolicy> {
+    let value = shell_value(environment, key, OsString::from("always"));
+    match value.value.to_str() {
+        Some("always") => Ok(ImagePullPolicy::Always),
+        Some("never") => Ok(ImagePullPolicy::Never),
+        _ => bail!("{key} must be always or never"),
     }
 }
 
@@ -960,9 +1013,14 @@ mod tests {
         assert!(config.controlplane_image.prebuilt);
         assert!(config.controlplane_image.tracks_main_revision);
         assert_eq!(
+            config.controlplane_image.pull_policy,
+            ImagePullPolicy::Always
+        );
+        assert_eq!(
             config.dataplane_image.resolved,
             OsStr::new("ghcr.io/contextforge-org/contextforge-data-plane:latest")
         );
+        assert_eq!(config.dataplane_image.pull_policy, ImagePullPolicy::Always);
         assert_sourced(
             &config.dataplane_platform,
             OsStr::new("auto"),
@@ -1178,6 +1236,39 @@ mod tests {
         assert_eq!(
             explicit_config.dataplane_image.resolved,
             OsStr::new("direct/image:tag")
+        );
+    }
+
+    #[test]
+    fn image_pull_policies_are_independent_explicit_opt_ins() {
+        let root = repository_root();
+        let process = environment(&[
+            ("CF_CONTROLPLANE_PULL_POLICY", "never"),
+            ("CF_DATAPLANE_PULL_POLICY", "never"),
+        ]);
+
+        let config = load_app_config(root.path(), &process);
+
+        assert_eq!(
+            config.controlplane_image.pull_policy(),
+            ImagePullPolicy::Never
+        );
+        assert_eq!(config.dataplane_image.pull_policy(), ImagePullPolicy::Never);
+    }
+
+    #[test]
+    fn invalid_image_pull_policy_is_rejected() {
+        let root = repository_root();
+        let process = environment(&[("CF_DATAPLANE_PULL_POLICY", "sometimes")]);
+        let bootstrap =
+            ConfigBootstrap::load(&process, root.path()).expect("bootstrap should load");
+
+        let error = AppConfig::load(bootstrap, ConfigRequirements::RUNTIME)
+            .expect_err("an unknown pull policy must fail");
+
+        assert_eq!(
+            error.to_string(),
+            "CF_DATAPLANE_PULL_POLICY must be always or never"
         );
     }
 

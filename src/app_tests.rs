@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use cf_integration::app::{
-    Action, ConformanceAction, DebugAction, ResolvedLoadArgs, StackAction, resolve_action,
+    Action, CiAction, ConformanceAction, DebugAction, ResolvedLoadArgs, StackAction, resolve_action,
 };
 use cf_integration::cli::{Cli, LiveGroup, ProtocolVersion, TokenKind, TopologySelection};
 use cf_integration::conformance::results::{ConformanceServerEra, SemanticLane};
@@ -49,6 +49,57 @@ fn every_subcommand_has_a_stable_progress_description() {
     for (arguments, expected) in cases {
         assert_eq!(action(arguments, &[]).description(), *expected);
     }
+}
+
+#[test]
+fn ci_image_preparation_is_read_only_until_execution() {
+    let action = action(
+        &[
+            "cf-integration",
+            "ci",
+            "prepare-image",
+            "--artifact",
+            "contextforge-data-plane-conformance",
+            "--binary",
+            "contextforge-data-plane",
+            "--image",
+            "contextforge-data-plane:conformance",
+        ],
+        &[(
+            "GITHUB_REPOSITORY",
+            "contextforge-org/contextforge-data-plane",
+        )],
+    );
+
+    assert!(matches!(&action, Action::Ci(CiAction::PrepareImage { .. })));
+    assert_eq!(action.description(), "prepare prebuilt CI image");
+    assert!(!action.requires_runtime_assets());
+}
+
+#[test]
+fn ci_image_preparation_rejects_nested_artifact_paths() {
+    let cli = Cli::try_parse_from([
+        "cf-integration",
+        "ci",
+        "prepare-image",
+        "--artifact",
+        "artifact",
+        "--binary",
+        "nested/binary",
+        "--image",
+        "service:test",
+        "--repository",
+        "owner/repository",
+    ])
+    .expect("CLI syntax should parse before path validation");
+
+    let error = resolve_action(cli, &Environment::new())
+        .expect_err("artifact binary must remain inside its download root");
+
+    assert_eq!(
+        error.to_string(),
+        "--binary must be one filename at the artifact root"
+    );
 }
 
 #[test]

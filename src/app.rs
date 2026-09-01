@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
-use std::path::PathBuf;
+use std::path::{Component, PathBuf};
 use std::str::FromStr;
 
 use crate::conformance::DEFAULT_MCP_SPEC_VERSION;
@@ -16,7 +16,7 @@ use crate::performance::LoadRequest;
 use anyhow::{Result, bail};
 
 use crate::cli::{
-    Cli, CliLane, CliTopology, Command, ConformanceCommand, DebugCommand, LiveGroup,
+    CiCommand, Cli, CliLane, CliTopology, Command, ConformanceCommand, DebugCommand, LiveGroup,
     ProtocolVersion, StackCommand, TokenKind, TopologySelection,
 };
 const STACK_MODE_ENV: &str = "CF_MCP_STACK_MODE";
@@ -38,6 +38,7 @@ pub(crate) enum Action {
     },
     Conformance(ConformanceAction),
     Debug(DebugAction),
+    Ci(CiAction),
 }
 
 impl Action {
@@ -57,6 +58,9 @@ impl Action {
             Self::Conformance(ConformanceAction::Report { .. }) => "conformance report",
             Self::Debug(DebugAction::Inspect { .. }) => "debug inspect",
             Self::Debug(DebugAction::Token { .. }) => "debug token",
+            Self::Ci(CiAction::PrepareImage { .. }) => "prepare prebuilt CI image",
+            Self::Ci(CiAction::PrepareRelease) => "prepare release state",
+            Self::Ci(CiAction::SelectRelease) => "select release tag",
         }
     }
 
@@ -100,6 +104,13 @@ impl Action {
             Self::Debug(DebugAction::Token { .. }) => {
                 String::from("Topology: not applicable (token only)")
             }
+            Self::Ci(CiAction::PrepareImage { .. }) => {
+                String::from("CI operation: prepare prebuilt image")
+            }
+            Self::Ci(CiAction::PrepareRelease) => {
+                String::from("CI operation: prepare release state")
+            }
+            Self::Ci(CiAction::SelectRelease) => String::from("CI operation: select release tag"),
         }
     }
 
@@ -121,6 +132,7 @@ impl Action {
             self,
             Self::Conformance(ConformanceAction::Report { .. })
                 | Self::Debug(DebugAction::Token { .. })
+                | Self::Ci(_)
         )
     }
 }
@@ -251,6 +263,23 @@ pub(crate) enum DebugAction {
     },
 }
 
+/// Repository CI operation executed by the published CLI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CiAction {
+    PrepareImage {
+        artifact: String,
+        binary: PathBuf,
+        image: String,
+        repository: String,
+        revision: Option<String>,
+        dockerfile: PathBuf,
+        target: String,
+        download_dir: PathBuf,
+    },
+    PrepareRelease,
+    SelectRelease,
+}
+
 /// Resolves a parsed CLI without starting child processes or mutating global state.
 ///
 /// # Errors
@@ -346,7 +375,41 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
                 }
             }
         })),
+        Command::Ci(args) => Ok(Action::Ci(match args.command {
+            CiCommand::PrepareImage(args) => {
+                let mut components = args.binary.components();
+                if !matches!(components.next(), Some(Component::Normal(_)))
+                    || components.next().is_some()
+                {
+                    bail!("--binary must be one filename at the artifact root");
+                }
+                let repository = args
+                    .repository
+                    .or_else(|| environment_utf8(environment, "GITHUB_REPOSITORY"))
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("set --repository or GITHUB_REPOSITORY"))?;
+                CiAction::PrepareImage {
+                    artifact: args.artifact,
+                    binary: args.binary,
+                    image: args.image,
+                    repository,
+                    revision: args.revision,
+                    dockerfile: args.dockerfile,
+                    target: args.target,
+                    download_dir: args.download_dir,
+                }
+            }
+            CiCommand::PrepareRelease => CiAction::PrepareRelease,
+            CiCommand::SelectRelease => CiAction::SelectRelease,
+        })),
     }
+}
+
+fn environment_utf8(environment: &Environment, key: &str) -> Option<String> {
+    environment
+        .get(std::ffi::OsStr::new(key))
+        .and_then(|value| value.to_str())
+        .map(str::to_owned)
 }
 
 fn resolve_live_lane(lane: Option<CliLane>, environment: &Environment) -> Result<SemanticLane> {
