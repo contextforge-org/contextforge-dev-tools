@@ -278,6 +278,7 @@ jobs:
 
       - name: Upload assets and publish release
         env:
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.publish.outputs.tag }}
         run: |
