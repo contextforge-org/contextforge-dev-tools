@@ -49,8 +49,8 @@ use crate::performance::{LoadSettings, LocustCommand, audit_locust_reports};
 use anyhow::{Context, anyhow};
 
 use crate::app::{
-    Action, ConformanceAction, DebugAction, ResolvedLoadArgs, StackAction, selected_topologies,
-    topology_selection,
+    Action, CiAction, ConformanceAction, DebugAction, ResolvedLoadArgs, StackAction,
+    selected_topologies, topology_selection,
 };
 use crate::cli::{LiveGroup, ProtocolVersion, TokenKind as CliTokenKind, TopologySelection};
 use crate::error::AppFailure;
@@ -63,6 +63,7 @@ const STACK_READY_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const STACK_READY_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const CONFORMANCE_SERVER_ERA_ENV: &str = "CF_CONFORMANCE_SERVER_ERA";
 const DEFAULT_CONFORMANCE_SERVER_ERA: ConformanceServerEra = ConformanceServerEra::Modern;
+mod ci;
 mod conformance;
 mod control_plane;
 mod inspect;
@@ -116,6 +117,7 @@ struct ProbeWorkflow<'a, R>(&'a RuntimeContext<R>);
 struct PerformanceWorkflow<'a, R>(&'a RuntimeContext<R>);
 struct LiveWorkflow<'a, R>(&'a RuntimeContext<R>);
 struct ConformanceWorkflow<'a, R>(&'a RuntimeContext<R>);
+struct CiWorkflow<'a, R>(&'a RuntimeContext<R>);
 
 impl<R: ProcessRunner> RuntimeDispatcher<R> {
     /// Dispatches one fully resolved operation through its workflow owner.
@@ -141,6 +143,7 @@ impl<R: ProcessRunner> RuntimeDispatcher<R> {
                     .await
             }
             Action::Conformance(action) => ConformanceWorkflow(&self.context).execute(action).await,
+            Action::Ci(action) => CiWorkflow(&self.context).execute(action).await,
             Action::Debug(DebugAction::Token { kind, server_id }) => {
                 self.context.print_token(kind, server_id).await
             }
@@ -194,6 +197,12 @@ impl<'a, R: ProcessRunner> LiveWorkflow<'a, R> {
 impl<'a, R: ProcessRunner> ConformanceWorkflow<'a, R> {
     async fn execute(&self, action: ConformanceAction) -> AppResult<()> {
         self.0.execute_conformance(action).await
+    }
+}
+
+impl<'a, R: ProcessRunner> CiWorkflow<'a, R> {
+    async fn execute(&self, action: CiAction) -> AppResult<()> {
+        self.0.execute_ci(action).await
     }
 }
 

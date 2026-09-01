@@ -34,9 +34,29 @@ fn command_at(path: &[&str]) -> clap::Command {
 fn subcommands(path: &[&str]) -> Vec<String> {
     command_at(path)
         .get_subcommands()
-        .filter(|command| command.get_name() != "help")
+        .filter(|command| command.get_name() != "help" && !command.is_hide_set())
         .map(|command| command.get_name().to_owned())
         .collect()
+}
+
+#[test]
+fn hidden_ci_commands_parse_without_expanding_the_public_command_tree() {
+    let cli = parse(&[
+        "cf-integration",
+        "ci",
+        "prepare-image",
+        "--artifact",
+        "contextforge-data-plane-conformance",
+        "--binary",
+        "contextforge-data-plane",
+        "--image",
+        "contextforge-data-plane:conformance",
+        "--repository",
+        "contextforge-org/contextforge-data-plane",
+    ]);
+
+    assert!(matches!(cli.command, Command::Ci(_)));
+    assert!(!subcommands(&[]).contains(&String::from("ci")));
 }
 
 #[test]

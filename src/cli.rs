@@ -99,6 +99,64 @@ pub(crate) enum Command {
     Conformance(ConformanceArgs),
     /// Run manual debugging utilities.
     Debug(DebugArgs),
+    /// Repository CI orchestration used by ContextForge workflows.
+    #[command(hide = true)]
+    Ci(CiArgs),
+}
+
+/// Internal CI command selection.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub(crate) struct CiArgs {
+    /// CI operation to run.
+    #[command(subcommand)]
+    pub(crate) command: CiCommand,
+}
+
+/// Internal CI operations kept in the published binary instead of workflow scripts.
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub(crate) enum CiCommand {
+    /// Download an exact CI artifact and package it as a local Docker image.
+    PrepareImage(CiPrepareImageArgs),
+    /// Remove stale unpublished release state before release-plz runs.
+    PrepareRelease,
+    /// Select the release tag produced by or recoverable after release-plz.
+    SelectRelease,
+}
+
+/// Options for packaging a prebuilt service binary from GitHub Actions.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub(crate) struct CiPrepareImageArgs {
+    /// GitHub Actions artifact prefix; the exact checkout revision is appended.
+    #[arg(long)]
+    pub(crate) artifact: String,
+
+    /// Binary filename at the root of the downloaded artifact.
+    #[arg(long)]
+    pub(crate) binary: PathBuf,
+
+    /// Local Docker image tag to create.
+    #[arg(long)]
+    pub(crate) image: String,
+
+    /// GitHub owner/repository; defaults to GITHUB_REPOSITORY.
+    #[arg(long)]
+    pub(crate) repository: Option<String>,
+
+    /// Exact artifact revision; defaults to the current Git checkout.
+    #[arg(long)]
+    pub(crate) revision: Option<String>,
+
+    /// Dockerfile containing the prebuilt image target.
+    #[arg(long, default_value = "docker/Dockerfile")]
+    pub(crate) dockerfile: PathBuf,
+
+    /// Dockerfile target that copies from the prebuilt build context.
+    #[arg(long, default_value = "conformance-prebuilt")]
+    pub(crate) target: String,
+
+    /// Generated artifact download directory.
+    #[arg(long, default_value = ".integration/ci/prebuilt")]
+    pub(crate) download_dir: PathBuf,
 }
 
 /// Stack command selection.
