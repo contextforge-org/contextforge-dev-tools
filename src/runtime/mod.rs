@@ -33,7 +33,7 @@ use crate::conformance::results::{
 };
 use crate::infrastructure::checkout::{CheckoutManager, CheckoutRequest};
 use crate::infrastructure::compose::{ComposeProject, validate_integration_contract};
-use crate::infrastructure::config::AppConfig;
+use crate::infrastructure::config::{AppConfig, ImagePullPolicy};
 use crate::infrastructure::process::{CommandSpec, LoggingProcessRunner, ProcessRunner};
 use crate::infrastructure::stack::{
     BuildInputs, BuildMode, CleanupKind, FreshnessSnapshot, ServiceSnapshot, StackCommandPlan,

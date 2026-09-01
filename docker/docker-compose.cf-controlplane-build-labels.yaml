@@ -2,6 +2,7 @@
 
 services:
   gateway:
+    pull_policy: ${CF_CONTROLPLANE_PULL_POLICY:-always}
     labels:
       name: cf-controlplane
     environment:
@@ -19,6 +20,7 @@ services:
         org.opencontainers.image.ref.name: ${CF_CONTROLPLANE_CHECKOUT_REF:-unknown}
 
   migration:
+    pull_policy: ${CF_CONTROLPLANE_PULL_POLICY:-always}
     labels:
       name: cf-migration
     build:
@@ -27,6 +29,7 @@ services:
         org.opencontainers.image.ref.name: ${CF_CONTROLPLANE_CHECKOUT_REF:-unknown}
 
   register_fast_time:
+    pull_policy: ${CF_CONTROLPLANE_PULL_POLICY:-always}
     labels:
       name: cf-register-fast-time
 

@@ -263,6 +263,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             )
             .env("CF_DATAPLANE_DIR", self.config.dataplane_dir().as_os_str())
             .env("CF_CONTROLPLANE_IMAGE", controlplane_image.clone())
+            .env(
+                "CF_CONTROLPLANE_PULL_POLICY",
+                self.config.controlplane_image().pull_policy().as_str(),
+            )
             .env("IMAGE_LOCAL", controlplane_image)
             .env(
                 "FAST_TIME_IMAGE",
@@ -271,6 +275,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .env(
                 "CF_DATAPLANE_IMAGE",
                 self.config.dataplane_image().resolved().to_owned(),
+            )
+            .env(
+                "CF_DATAPLANE_PULL_POLICY",
+                self.config.dataplane_image().pull_policy().as_str(),
             )
             .env("CF_DATAPLANE_PLATFORM", self.dataplane_platform()?)
             .env("JWT_SECRET_KEY", self.config.jwt_secret_key().value.clone())
@@ -522,6 +530,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 "cf-controlplane",
                 &controlplane_image,
                 None,
+                self.config.controlplane_image().pull_policy(),
                 report_progress,
             )?;
         }
@@ -531,6 +540,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 "cf-dataplane",
                 self.config.dataplane_image().resolved(),
                 Some(platform.as_os_str()),
+                self.config.dataplane_image().pull_policy(),
                 report_progress,
             )?;
         }
@@ -542,16 +552,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         label: &str,
         image: &OsStr,
         platform: Option<&OsStr>,
+        pull_policy: ImagePullPolicy,
         report_progress: bool,
     ) -> AppResult<()> {
-        let inspect = CommandSpec::new("docker").args([
-            OsString::from("buildx"),
-            OsString::from("imagetools"),
-            OsString::from("inspect"),
-            image.to_owned(),
-            OsString::from("--format"),
-            OsString::from("{{.Manifest.Digest}}"),
-        ]);
         let local_ids = self.capture_text(&CommandSpec::new("docker").args([
             OsString::from("image"),
             OsString::from("ls"),
@@ -560,6 +563,18 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             image.to_owned(),
         ]))?;
         let local_exists = !local_ids.is_empty();
+        if pull_policy == ImagePullPolicy::Never {
+            return require_preloaded_image(label, image, local_exists);
+        }
+
+        let inspect = CommandSpec::new("docker").args([
+            OsString::from("buildx"),
+            OsString::from("imagetools"),
+            OsString::from("inspect"),
+            image.to_owned(),
+            OsString::from("--format"),
+            OsString::from("{{.Manifest.Digest}}"),
+        ]);
         let remote_digest = match self.capture_text(&inspect) {
             Ok(digest) => (!digest.is_empty()).then_some(digest),
             Err(error) if local_exists => {
@@ -994,6 +1009,16 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     }
 }
 
+fn require_preloaded_image(label: &str, image: &OsStr, local_exists: bool) -> AppResult<()> {
+    if local_exists {
+        return Ok(());
+    }
+    Err(AppFailure::from(anyhow!(
+        "{label} image {} is not loaded locally; preload it or set its pull policy to always",
+        image.to_string_lossy()
+    )))
+}
+
 fn latest_published_controlplane_image(
     revisions: &str,
     mut is_published: impl FnMut(&OsStr) -> bool,
@@ -1093,6 +1118,24 @@ mod tests {
         .expect_err("an unpublished main history must fail explicitly");
 
         assert!(error.to_string().contains("newest 1 commits on main"));
+    }
+
+    #[test]
+    fn never_pull_policy_accepts_a_preloaded_image() {
+        require_preloaded_image("cf-dataplane", OsStr::new("local/dataplane:test"), true)
+            .expect("a preloaded image should satisfy the never pull policy");
+    }
+
+    #[test]
+    fn never_pull_policy_rejects_a_missing_local_image() {
+        let error =
+            require_preloaded_image("cf-dataplane", OsStr::new("local/dataplane:test"), false)
+                .expect_err("a missing preloaded image must fail");
+
+        assert_eq!(
+            error.to_string(),
+            "cf-dataplane image local/dataplane:test is not loaded locally; preload it or set its pull policy to always"
+        );
     }
 
     #[test]
