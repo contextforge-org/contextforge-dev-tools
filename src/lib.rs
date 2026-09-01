@@ -3,7 +3,7 @@
 #[cfg(test)]
 extern crate self as cf_integration;
 
-use std::process::ExitCode;
+use std::{io::Write, process::ExitCode};
 
 use clap::Parser;
 
@@ -107,6 +107,9 @@ pub async fn run() -> ExitCode {
 }
 
 fn report_failure(error: AppFailure) -> ExitCode {
+    // Keep completed result output ahead of wrapper diagnostics such as Make's
+    // nonzero-exit message when stdout and stderr are captured separately.
+    let _ = std::io::stdout().flush();
     if !error.is_reported() {
         eprintln!("{}", OutputStyle::stderr().failure(&error.to_string()));
     }
