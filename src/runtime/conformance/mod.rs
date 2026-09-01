@@ -625,6 +625,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         }
         expected_server_scenarios(DEFAULT_CONFORMANCE_SUITE, spec_version)
             .map_err(AppFailure::from)?;
+        let run_external_client = spec_version == DEFAULT_MCP_SPEC_VERSION
+            && lanes.contains(&SemanticLane::ExternalDataPlane);
+        if run_external_client {
+            expected_client_scenarios(spec_version).map_err(AppFailure::from)?;
+        }
         paths.clear_conformance()?;
 
         let topologies = conformance_topologies(lanes);
@@ -633,6 +638,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         }
         let mut failures = Vec::new();
         let mut interrupted = false;
+        let mut external_stack_retained = false;
         tokio::pin!(interrupt);
         let (cancellation_sender, cancellation_receiver) = tokio::sync::watch::channel(false);
 
@@ -726,6 +732,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             let stack_progress =
                 Activity::spinner(format!("Prepare {}", topology.topology_label()));
             let mut topology_failure = self.stack_up_for_conformance(topology, true).await.err();
+            let stack_started = topology_failure.is_none();
             stack_progress.finish(topology_failure.is_none());
             let mut fixture_state = None;
             let mut fixture_metadata = None;
@@ -896,11 +903,15 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 .err();
             }
 
-            topology_failure = finish_with_cleanup(
-                topology_failure,
-                self.cleanup(topology_selection(topology), CleanupKind::Down),
-            )
-            .err();
+            if can_reuse_external_stack(topology, stack_started, interrupted, run_external_client) {
+                external_stack_retained = true;
+            } else {
+                topology_failure = finish_with_cleanup(
+                    topology_failure,
+                    self.cleanup(topology_selection(topology), CleanupKind::Down),
+                )
+                .err();
+            }
             if let Some(error) = topology_failure {
                 failures.push(ConformanceOperationalFailure::server(
                     Some(target),
@@ -914,15 +925,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             }
         }
 
-        if !interrupted
-            && spec_version == DEFAULT_MCP_SPEC_VERSION
-            && lanes.contains(&SemanticLane::ExternalDataPlane)
-        {
+        if !interrupted && run_external_client {
             let client = self.run_external_client_conformance(
                 spec_version,
                 server_era,
                 paths,
                 cancellation_receiver.clone(),
+                external_stack_retained,
             );
             tokio::pin!(client);
             tokio::select! {
@@ -1039,11 +1048,16 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         server_era: ConformanceServerEra,
         paths: &ConformancePaths,
         cancellation: tokio::sync::watch::Receiver<bool>,
+        reuse_stack: bool,
     ) -> AppResult<()> {
-        expected_client_scenarios(spec_version).map_err(AppFailure::from)?;
-        let stack_progress = Activity::spinner("Prepare external dataplane client conformance");
+        let progress = if reuse_stack {
+            "Reuse external dataplane for client conformance"
+        } else {
+            "Prepare external dataplane client conformance"
+        };
+        let stack_progress = Activity::spinner(progress);
         let stack_result = self
-            .stack_up_for_conformance(StackMode::Dataplane, true)
+            .stack_up_for_conformance(StackMode::Dataplane, !reuse_stack)
             .await;
         stack_progress.finish(stack_result.is_ok());
         let mut failure = stack_result.err();
@@ -1638,6 +1652,15 @@ fn conformance_topologies(lanes: &[SemanticLane]) -> Vec<StackMode> {
     topologies
 }
 
+fn can_reuse_external_stack(
+    topology: StackMode,
+    stack_started: bool,
+    interrupted: bool,
+    run_external_client: bool,
+) -> bool {
+    topology == StackMode::Dataplane && stack_started && !interrupted && run_external_client
+}
+
 fn parse_conformance_fixture_endpoint(output: &[u8]) -> anyhow::Result<url::Url> {
     let output = std::str::from_utf8(output).context("Compose fixture port output is not UTF-8")?;
     let address = output
@@ -1873,6 +1896,24 @@ mod tests {
             ]),
             [StackMode::Controlplane, StackMode::Dataplane]
         );
+    }
+
+    #[test]
+    fn external_stack_is_reused_only_for_a_started_uninterrupted_client_run() {
+        let cases = [
+            (StackMode::Dataplane, true, false, true, true),
+            (StackMode::Controlplane, true, false, true, false),
+            (StackMode::Dataplane, false, false, true, false),
+            (StackMode::Dataplane, true, true, true, false),
+            (StackMode::Dataplane, true, false, false, false),
+        ];
+
+        for (topology, stack_started, interrupted, run_client, expected) in cases {
+            assert_eq!(
+                can_reuse_external_stack(topology, stack_started, interrupted, run_client),
+                expected,
+            );
+        }
     }
 
     #[test]
