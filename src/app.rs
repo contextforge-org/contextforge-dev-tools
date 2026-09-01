@@ -5,11 +5,15 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use crate::conformance::DEFAULT_MCP_SPEC_VERSION;
+use crate::conformance::profile::{
+    DUAL_CLIENT_PROTOCOL_VERSIONS, LEGACY_CLIENT_PROTOCOL_VERSIONS, MODERN_CLIENT_PROTOCOL_VERSIONS,
+};
+use crate::conformance::results::{ConformanceServerEra, SemanticLane};
+use crate::infrastructure::StackMode;
+use crate::infrastructure::config::Environment;
+use crate::performance::LoadRequest;
 use anyhow::{Result, bail};
-use cf_integration_compliance::conformance::{ConformanceServerEra, ConformanceTarget};
-use cf_integration_load::LoadRequest;
-use cf_integration_platform::StackMode;
-use cf_integration_platform::config::Environment;
 
 use crate::cli::{
     Cli, CliLane, CliTopology, Command, ConformanceCommand, DebugCommand, LiveGroup,
@@ -20,7 +24,7 @@ const PROTOCOL_VERSION_ENV: &str = "MCP_PROTOCOL_VERSION";
 
 /// Fully resolved application operation.
 #[derive(Debug, Clone, PartialEq)]
-pub enum Action {
+pub(crate) enum Action {
     Stack(StackAction),
     Probe {
         topology: StackMode,
@@ -28,7 +32,7 @@ pub enum Action {
     },
     Load(ResolvedLoadArgs),
     Live {
-        lane: LiveLane,
+        lane: SemanticLane,
         group: LiveGroup,
         protocol_version: ProtocolVersion,
     },
@@ -36,9 +40,159 @@ pub enum Action {
     Debug(DebugAction),
 }
 
+impl Action {
+    /// Stable command path used by lifecycle output.
+    #[must_use]
+    pub(crate) const fn description(&self) -> &'static str {
+        match self {
+            Self::Stack(StackAction::Up { .. }) => "stack up",
+            Self::Stack(StackAction::Down { .. }) => "stack down",
+            Self::Stack(StackAction::Status(_)) => "stack status",
+            Self::Stack(StackAction::Logs { .. }) => "stack logs",
+            Self::Stack(StackAction::Config(_)) => "stack config",
+            Self::Probe { .. } => "probe",
+            Self::Load(_) => "load test",
+            Self::Live { .. } => "live tests",
+            Self::Conformance(ConformanceAction::Run { .. }) => "conformance tests",
+            Self::Conformance(ConformanceAction::Report { .. }) => "conformance report",
+            Self::Debug(DebugAction::Inspect { .. }) => "debug inspect",
+            Self::Debug(DebugAction::Token { .. }) => "debug token",
+        }
+    }
+
+    /// Resolved execution context printed before the command starts.
+    #[must_use]
+    pub(crate) fn startup_summary(&self) -> String {
+        match self {
+            Self::Stack(action) => action.startup_summary(),
+            Self::Probe {
+                topology,
+                protocol_version,
+            }
+            | Self::Debug(DebugAction::Inspect {
+                topology,
+                protocol_version,
+                ..
+            }) => topology_and_protocol(*topology, protocol_version),
+            Self::Load(args) => topology_and_protocol(args.topology, &args.protocol_version),
+            Self::Live {
+                lane,
+                protocol_version,
+                ..
+            } => format!(
+                "Topology: {}\nProtocol version: {protocol_version}",
+                lane.label()
+            ),
+            Self::Conformance(ConformanceAction::Run {
+                lanes,
+                client_eras,
+                server_eras,
+                ..
+            }) => format!(
+                "Topology: {}\nClient era: {}\nServer era: {}",
+                join_lane_labels(lanes),
+                join_client_eras(client_eras),
+                join_server_eras(server_eras),
+            ),
+            Self::Conformance(ConformanceAction::Report { .. }) => String::from(
+                "Topology: recorded conformance results\nClient era: recorded conformance results\nServer era: recorded conformance results",
+            ),
+            Self::Debug(DebugAction::Token { .. }) => {
+                String::from("Topology: not applicable (token only)")
+            }
+        }
+    }
+
+    /// Returns whether the dispatcher should own one command-wide activity line.
+    #[must_use]
+    pub(crate) const fn uses_global_activity(&self) -> bool {
+        !matches!(
+            self,
+            Self::Stack(StackAction::Up { .. })
+                | Self::Load(_)
+                | Self::Conformance(ConformanceAction::Run { .. })
+        )
+    }
+
+    /// Returns whether this operation needs Compose overlays or runtime scripts.
+    #[must_use]
+    pub(crate) const fn requires_runtime_assets(&self) -> bool {
+        !matches!(
+            self,
+            Self::Conformance(ConformanceAction::Report { .. })
+                | Self::Debug(DebugAction::Token { .. })
+        )
+    }
+}
+
+impl StackAction {
+    fn startup_summary(&self) -> String {
+        let topology = match self {
+            Self::Up { topology, .. }
+            | Self::Status(topology)
+            | Self::Logs { topology, .. }
+            | Self::Config(topology) => topology.topology_label().to_owned(),
+            Self::Down { topology, .. } => match topology {
+                TopologySelection::Controlplane => {
+                    StackMode::Controlplane.topology_label().to_owned()
+                }
+                TopologySelection::Dataplane => StackMode::Dataplane.topology_label().to_owned(),
+                TopologySelection::All => format!(
+                    "{}, {}",
+                    StackMode::Controlplane.topology_label(),
+                    StackMode::Dataplane.topology_label()
+                ),
+            },
+        };
+        if matches!(self, Self::Up { .. }) {
+            format!("Topology: {topology}\nProtocol version: {DEFAULT_MCP_SPEC_VERSION}")
+        } else {
+            format!("Topology: {topology}")
+        }
+    }
+}
+
+fn topology_and_protocol(topology: StackMode, protocol_version: &ProtocolVersion) -> String {
+    format!(
+        "Topology: {}\nProtocol version: {protocol_version}",
+        topology.topology_label()
+    )
+}
+
+fn join_lane_labels(lanes: &[SemanticLane]) -> String {
+    lanes
+        .iter()
+        .map(|lane| lane.label())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn join_client_eras(client_eras: &[ConformanceServerEra]) -> String {
+    client_eras
+        .iter()
+        .map(|era| {
+            let versions = match era {
+                ConformanceServerEra::Dual => DUAL_CLIENT_PROTOCOL_VERSIONS,
+                ConformanceServerEra::Legacy => LEGACY_CLIENT_PROTOCOL_VERSIONS,
+                ConformanceServerEra::Modern => MODERN_CLIENT_PROTOCOL_VERSIONS,
+            };
+            format!("{} [{}]", era.label(), versions.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn join_server_eras(server_eras: &[ConformanceServerEra]) -> String {
+    server_eras
+        .iter()
+        .map(|era| format!("{} [{}]", era.label(), era.protocol_versions_label()))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// Fully resolved stack operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StackAction {
+pub(crate) enum StackAction {
     Up {
         topology: StackMode,
         fresh: bool,
@@ -57,28 +211,24 @@ pub enum StackAction {
 
 /// Fully resolved load-test options.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ResolvedLoadArgs {
-    pub topology: StackMode,
-    pub protocol_version: ProtocolVersion,
-    pub request: LoadRequest,
-}
-
-/// One upstream live-test execution path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LiveLane {
-    Fixture,
-    BuiltInDataPlane,
-    ExternalDataPlane,
+pub(crate) struct ResolvedLoadArgs {
+    pub(crate) topology: StackMode,
+    pub(crate) protocol_version: ProtocolVersion,
+    pub(crate) request: LoadRequest,
 }
 
 /// Fully resolved official conformance operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConformanceAction {
+pub(crate) enum ConformanceAction {
     Run {
-        lanes: Vec<ConformanceTarget>,
-        spec_version: String,
-        server_era: ConformanceServerEra,
+        lanes: Vec<SemanticLane>,
+        client_eras: Vec<ConformanceServerEra>,
+        client_versions: Vec<String>,
+        server_eras: Vec<ConformanceServerEra>,
         results_dir: Option<PathBuf>,
+        baseline_dir: Option<PathBuf>,
+        bless: bool,
+        output_dir: Option<PathBuf>,
     },
     Report {
         results_dir: Option<PathBuf>,
@@ -88,7 +238,7 @@ pub enum ConformanceAction {
 
 /// Fully resolved manual debugging operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DebugAction {
+pub(crate) enum DebugAction {
     Inspect {
         topology: StackMode,
         protocol_version: ProtocolVersion,
@@ -107,7 +257,7 @@ pub enum DebugAction {
 ///
 /// Returns an error when a command needs `CF_MCP_STACK_MODE` and its value is
 /// neither `controlplane` nor `dataplane`.
-pub fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
+pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
     match cli.command {
         Command::Stack(args) => resolve_stack(args.command, environment).map(Action::Stack),
         Command::Probe(args) => {
@@ -140,7 +290,7 @@ pub fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
         }
         Command::Live(args) => {
             let lane = resolve_live_lane(args.target.lane, environment)?;
-            if lane == LiveLane::Fixture && args.group != LiveGroup::Protocol {
+            if lane == SemanticLane::FixtureDirect && args.group != LiveGroup::Protocol {
                 bail!("--lane fixture-direct requires --group protocol");
             }
             Ok(Action::Live {
@@ -154,12 +304,19 @@ pub fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
             })
         }
         Command::Conformance(args) => Ok(Action::Conformance(match args.command {
-            ConformanceCommand::Run(args) => ConformanceAction::Run {
-                lanes: resolve_lanes(args.lane.into_iter().map(Into::into)),
-                spec_version: args.protocol_version.to_string(),
-                server_era: args.server_era.into(),
-                results_dir: args.results_dir,
-            },
+            ConformanceCommand::Run(args) => {
+                let (client_eras, client_versions) = resolve_client_eras(args.client_era);
+                ConformanceAction::Run {
+                    lanes: resolve_lanes(args.lane.into_iter().map(Into::into)),
+                    client_eras,
+                    client_versions,
+                    server_eras: resolve_server_eras(args.server_era),
+                    results_dir: args.results_dir,
+                    baseline_dir: args.baseline_dir,
+                    bless: args.bless,
+                    output_dir: args.output_dir,
+                }
+            }
             ConformanceCommand::Report(args) => ConformanceAction::Report {
                 results_dir: args.results_dir,
                 output_dir: args.output_dir,
@@ -192,14 +349,14 @@ pub fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
     }
 }
 
-fn resolve_live_lane(lane: Option<CliLane>, environment: &Environment) -> Result<LiveLane> {
+fn resolve_live_lane(lane: Option<CliLane>, environment: &Environment) -> Result<SemanticLane> {
     Ok(match lane {
-        Some(CliLane::FixtureDirect) => LiveLane::Fixture,
-        Some(CliLane::BuiltInDataPlane) => LiveLane::BuiltInDataPlane,
-        Some(CliLane::ExternalDataPlane) => LiveLane::ExternalDataPlane,
+        Some(CliLane::FixtureDirect) => SemanticLane::FixtureDirect,
+        Some(CliLane::BuiltInDataPlane) => SemanticLane::BuiltInDataPlane,
+        Some(CliLane::ExternalDataPlane) => SemanticLane::ExternalDataPlane,
         None => match resolve_topology(None, environment)? {
-            StackMode::Controlplane => LiveLane::BuiltInDataPlane,
-            StackMode::Dataplane => LiveLane::ExternalDataPlane,
+            StackMode::Controlplane => SemanticLane::BuiltInDataPlane,
+            StackMode::Dataplane => SemanticLane::ExternalDataPlane,
         },
     })
 }
@@ -250,12 +407,12 @@ fn resolve_stack(command: StackCommand, environment: &Environment) -> Result<Sta
     }
 }
 
-fn resolve_lanes(lanes: impl IntoIterator<Item = ConformanceTarget>) -> Vec<ConformanceTarget> {
+fn resolve_lanes(lanes: impl IntoIterator<Item = SemanticLane>) -> Vec<SemanticLane> {
     let selected = lanes.into_iter().collect::<BTreeSet<_>>();
     let all = [
-        ConformanceTarget::Fixture,
-        ConformanceTarget::BuiltInDataPlane,
-        ConformanceTarget::ExternalDataPlane,
+        SemanticLane::FixtureDirect,
+        SemanticLane::BuiltInDataPlane,
+        SemanticLane::ExternalDataPlane,
     ];
     if selected.is_empty() {
         all.into_iter().collect()
@@ -264,6 +421,50 @@ fn resolve_lanes(lanes: impl IntoIterator<Item = ConformanceTarget>) -> Vec<Conf
             .filter(|lane| selected.contains(lane))
             .collect()
     }
+}
+
+fn resolve_client_eras(
+    eras: Vec<crate::cli::CliConformanceEra>,
+) -> (Vec<ConformanceServerEra>, Vec<String>) {
+    let eras = if eras.is_empty() {
+        vec![crate::cli::CliConformanceEra::Modern]
+    } else {
+        eras
+    };
+    let mut seen_eras = BTreeSet::new();
+    let eras = eras
+        .into_iter()
+        .map(Into::into)
+        .filter(|era| seen_eras.insert(*era))
+        .collect::<Vec<ConformanceServerEra>>();
+    let mut seen_versions = BTreeSet::new();
+    let versions = eras
+        .iter()
+        .flat_map(|era| match era {
+            ConformanceServerEra::Dual => DUAL_CLIENT_PROTOCOL_VERSIONS,
+            ConformanceServerEra::Legacy => LEGACY_CLIENT_PROTOCOL_VERSIONS,
+            ConformanceServerEra::Modern => MODERN_CLIENT_PROTOCOL_VERSIONS,
+        })
+        .map(|version| (*version).to_owned())
+        .filter(|version| seen_versions.insert(version.clone()))
+        .collect();
+    (eras, versions)
+}
+
+fn resolve_server_eras(eras: Vec<crate::cli::CliConformanceEra>) -> Vec<ConformanceServerEra> {
+    let eras = if eras.is_empty() {
+        vec![
+            crate::cli::CliConformanceEra::Legacy,
+            crate::cli::CliConformanceEra::Modern,
+        ]
+    } else {
+        eras
+    };
+    let mut seen = BTreeSet::new();
+    eras.into_iter()
+        .map(Into::into)
+        .filter(|era| seen.insert(*era))
+        .collect()
 }
 
 fn resolve_topology(explicit: Option<CliTopology>, environment: &Environment) -> Result<StackMode> {

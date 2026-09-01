@@ -1,130 +1,148 @@
 //! Operating-system-backed execution of resolved CLI actions.
 
+use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::OnceLock;
 use std::time::Duration;
 
-use anyhow::{Context, anyhow};
-use cf_integration_compliance::conformance::{
-    ComparisonFixtureTrust, ComparisonReport, ConformanceFixtureMetadata, ConformanceResults,
-    ConformanceRunMetadata, ConformanceServerEra, ConformanceTarget,
-    compare_result_sets_with_fixture_trust, expected_server_scenarios, is_trusted_official_fixture,
-    load_server_results, official_server_command, validate_server_scenario_set,
-    write_comparison_report,
+use crate::conformance::baseline::{
+    BaselineComparison, BaselineUpdate, bless_baselines_transactionally, evaluate_baselines,
+    evaluate_client_baselines, validate_scored_results, write_baseline_report,
+    write_client_baseline_report,
 };
-use cf_integration_compliance::conformance_fixture::{
+use crate::conformance::client::{
+    CLIENT_BASE_URL_ENV, CLIENT_COMPOSE_ARGS_ENV, CLIENT_DRIVER_FAILURE_PREFIX,
+    CLIENT_SERVER_ID_ENV, CLIENT_TOKEN_ENV, INTERNAL_CLIENT_COMMAND,
+};
+use crate::conformance::fixture::{
     ConformanceFixtureClient, OFFICIAL_CONFORMANCE_BACKEND_URL, OFFICIAL_CONFORMANCE_PROXY_SERVICE,
     OFFICIAL_CONFORMANCE_REPOSITORY, OFFICIAL_CONFORMANCE_REVISION, OFFICIAL_CONFORMANCE_SERVER_ID,
     OFFICIAL_CONFORMANCE_SERVICE,
 };
-use cf_integration_load::{LoadSettings, LocustCommand, audit_locust_reports};
-use cf_integration_mcp::GatewayTopology;
-use cf_integration_mcp::auth_proxy::AuthProxy;
-use cf_integration_mcp::gateway::GatewayClient;
-use cf_integration_mcp::http_transport::ReqwestProbeTransport;
-use cf_integration_mcp::mcp::ACCEPT as MCP_ACCEPT;
-use cf_integration_mcp::probe::{ProbeConfig, run_probe};
-use cf_integration_platform::checkout::{CheckoutManager, CheckoutRequest};
-use cf_integration_platform::compose::{ComposeProject, validate_integration_contract};
-use cf_integration_platform::config::AppConfig;
-use cf_integration_platform::process::{CommandSpec, LoggingProcessRunner, ProcessRunner};
-use cf_integration_platform::stack::{
+use crate::conformance::results::{
+    ComparisonReport, ConformanceDirection, ConformanceFixtureMetadata, ConformanceResults,
+    ConformanceRunMetadata, ConformanceServerEra, DEFAULT_CLIENT_CONFORMANCE_SCENARIOS,
+    SemanticLane, compare_result_sets, expected_client_scenarios, expected_server_scenarios,
+    is_trusted_official_fixture, load_client_results, load_server_results, official_client_command,
+    official_server_command, validate_client_scenario_set, validate_server_scenario_set,
+    write_comparison_report,
+};
+use crate::infrastructure::checkout::{CheckoutManager, CheckoutRequest};
+use crate::infrastructure::compose::{ComposeProject, validate_integration_contract};
+use crate::infrastructure::config::AppConfig;
+use crate::infrastructure::process::{CommandSpec, LoggingProcessRunner, ProcessRunner};
+use crate::infrastructure::stack::{
     BuildInputs, BuildMode, CleanupKind, FreshnessSnapshot, ServiceSnapshot, StackCommandPlan,
     StackFreshness, resolve_build,
 };
-use cf_integration_platform::{PlatformError, StackMode};
-use serde::Deserialize;
+use crate::infrastructure::{InfrastructureError, StackMode};
+use crate::mcp::GatewayTopology;
+use crate::mcp::auth_proxy::AuthProxy;
+use crate::mcp::gateway::GatewayClient;
+use crate::mcp::probe::{ProbeConfig, run_probe};
+use crate::mcp::protocol::ACCEPT as MCP_ACCEPT;
+use crate::performance::{LoadSettings, LocustCommand, audit_locust_reports};
+use anyhow::{Context, anyhow};
 
-use crate::OutputStyle;
 use crate::app::{
-    Action, ConformanceAction, DebugAction, LiveLane, ResolvedLoadArgs, StackAction,
-    selected_topologies, topology_selection,
+    Action, ConformanceAction, DebugAction, ResolvedLoadArgs, StackAction, selected_topologies,
+    topology_selection,
 };
 use crate::cli::{LiveGroup, ProtocolVersion, TokenKind as CliTokenKind, TopologySelection};
 use crate::error::AppFailure;
+use crate::{Activity, OutputStyle, TestStatus};
 
 type AppResult<T> = std::result::Result<T, AppFailure>;
 
 const STACK_READY_TIMEOUT: Duration = Duration::from_secs(90);
 const STACK_READY_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const STACK_READY_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-const MANAGED_TOKEN_DESCRIPTION: &str = "Ephemeral cf-integration dataplane credential";
-const CONFORMANCE_TOKEN_DESCRIPTION: &str = "Ephemeral cf-integration conformance credential";
-
-mod compliance;
+const CONFORMANCE_SERVER_ERA_ENV: &str = "CF_CONFORMANCE_SERVER_ERA";
+const DEFAULT_CONFORMANCE_SERVER_ERA: ConformanceServerEra = ConformanceServerEra::Modern;
+mod conformance;
+mod control_plane;
 mod inspect;
 mod live;
-mod reports;
-mod sources;
+mod performance;
+mod probe;
+mod session;
 mod stack;
-mod workloads;
 
+#[cfg(test)]
+use control_plane::CONFORMANCE_TOKEN_DESCRIPTION;
+use control_plane::{ControlPlaneClient, ManagedBearerToken};
 use inspect::*;
-use reports::*;
 
-/// Runtime services backed by one loaded configuration and process runner.
-pub struct RuntimeExecutor<R> {
+/// Shared dependencies borrowed by concrete workflow owners.
+struct RuntimeContext<R> {
     config: AppConfig,
     runner: R,
+    controlplane_image: OnceLock<OsString>,
 }
 
-struct ManagedBearerToken {
-    value: String,
-    catalog_id: Option<String>,
-    catalog_admin_token: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct TokenCreateResponse {
-    token: TokenRecord,
-    access_token: String,
-}
-
-#[derive(Deserialize)]
-struct TokenRecord {
-    id: String,
-}
-
-#[derive(Deserialize)]
-struct AuthenticationResponse {
-    access_token: String,
-}
-
-impl<R> RuntimeExecutor<R> {
-    /// Creates an executor without starting any process.
+impl<R> RuntimeContext<R> {
+    /// Creates runtime context without starting any process.
     #[must_use]
-    pub fn new(config: AppConfig, runner: R) -> Self {
-        Self { config, runner }
-    }
-
-    /// Returns the loaded application configuration.
-    #[must_use]
-    pub fn config(&self) -> &AppConfig {
-        &self.config
+    fn new(config: AppConfig, runner: R) -> Self {
+        Self {
+            config,
+            runner,
+            controlplane_image: OnceLock::new(),
+        }
     }
 }
 
-impl<R: ProcessRunner> RuntimeExecutor<R> {
-    /// Executes one fully resolved operation.
-    pub async fn execute(&mut self, action: Action) -> AppResult<()> {
+/// Small CLI action dispatcher backed by concrete workflow owners.
+pub(crate) struct RuntimeDispatcher<R> {
+    context: RuntimeContext<R>,
+}
+
+impl<R> RuntimeDispatcher<R> {
+    /// Creates a dispatcher without starting any process.
+    #[must_use]
+    pub(crate) fn new(config: AppConfig, runner: R) -> Self {
+        Self {
+            context: RuntimeContext::new(config, runner),
+        }
+    }
+}
+
+struct StackWorkflow<'a, R>(&'a RuntimeContext<R>);
+struct ProbeWorkflow<'a, R>(&'a RuntimeContext<R>);
+struct PerformanceWorkflow<'a, R>(&'a RuntimeContext<R>);
+struct LiveWorkflow<'a, R>(&'a RuntimeContext<R>);
+struct ConformanceWorkflow<'a, R>(&'a RuntimeContext<R>);
+
+impl<R: ProcessRunner> RuntimeDispatcher<R> {
+    /// Dispatches one fully resolved operation through its workflow owner.
+    pub(crate) async fn execute(&self, action: Action) -> AppResult<()> {
         match action {
-            Action::Stack(action) => self.execute_stack(action).await,
+            Action::Stack(action) => StackWorkflow(&self.context).execute(action).await,
             Action::Probe {
                 topology,
                 protocol_version,
-            } => self.run_probe(topology, &protocol_version).await,
-            Action::Load(args) => self.run_load(args).await,
+            } => {
+                ProbeWorkflow(&self.context)
+                    .execute(topology, &protocol_version)
+                    .await
+            }
+            Action::Load(args) => PerformanceWorkflow(&self.context).execute(args).await,
             Action::Live {
                 lane,
                 group,
                 protocol_version,
-            } => self.run_live(lane, group, &protocol_version).await,
-            Action::Conformance(action) => self.execute_conformance(action).await,
+            } => {
+                LiveWorkflow(&self.context)
+                    .execute(lane, group, &protocol_version)
+                    .await
+            }
+            Action::Conformance(action) => ConformanceWorkflow(&self.context).execute(action).await,
             Action::Debug(DebugAction::Token { kind, server_id }) => {
-                self.print_token(kind, server_id).await
+                self.context.print_token(kind, server_id).await
             }
             Action::Debug(DebugAction::Inspect {
                 topology,
@@ -132,14 +150,54 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
                 method,
                 server_id,
             }) => {
-                self.inspect(topology, &protocol_version, &method, server_id.as_deref())
+                self.context
+                    .inspect(topology, &protocol_version, &method, server_id.as_deref())
                     .await
             }
         }
     }
 }
 
-impl<R: ProcessRunner> RuntimeExecutor<R> {
+impl<'a, R: ProcessRunner> StackWorkflow<'a, R> {
+    async fn execute(&self, action: StackAction) -> AppResult<()> {
+        self.0.execute_stack(action).await
+    }
+}
+
+impl<'a, R: ProcessRunner> ProbeWorkflow<'a, R> {
+    async fn execute(
+        &self,
+        topology: StackMode,
+        protocol_version: &ProtocolVersion,
+    ) -> AppResult<()> {
+        self.0.run_probe(topology, protocol_version).await
+    }
+}
+
+impl<'a, R: ProcessRunner> PerformanceWorkflow<'a, R> {
+    async fn execute(&self, args: ResolvedLoadArgs) -> AppResult<()> {
+        self.0.run_load(args).await
+    }
+}
+
+impl<'a, R: ProcessRunner> LiveWorkflow<'a, R> {
+    async fn execute(
+        &self,
+        lane: SemanticLane,
+        group: LiveGroup,
+        protocol_version: &ProtocolVersion,
+    ) -> AppResult<()> {
+        self.0.run_live(lane, group, protocol_version).await
+    }
+}
+
+impl<'a, R: ProcessRunner> ConformanceWorkflow<'a, R> {
+    async fn execute(&self, action: ConformanceAction) -> AppResult<()> {
+        self.0.execute_conformance(action).await
+    }
+}
+
+impl<R: ProcessRunner> RuntimeContext<R> {
     async fn print_token(&self, kind: CliTokenKind, server_id: Option<String>) -> AppResult<()> {
         let token = match kind {
             CliTokenKind::Scoped => {
@@ -155,10 +213,6 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
     fn default_server_id(&self) -> &str {
         self.environment_text("MCP_SERVER_ID")
             .filter(|value| !value.is_empty())
-            .or_else(|| {
-                self.environment_text("MCP_VIRTUAL_SERVER_ID")
-                    .filter(|value| !value.is_empty())
-            })
             .or_else(|| self.config.fast_time_server_id().value.to_str())
             .unwrap_or("9779b6698cbd4b4995ee04a4fab38737")
     }
@@ -176,185 +230,37 @@ impl<R: ProcessRunner> RuntimeExecutor<R> {
             .environment_text("MCPGATEWAY_BEARER_TOKEN")
             .filter(|token| !token.is_empty())
         {
-            return Ok(ManagedBearerToken {
-                value: token.to_owned(),
-                catalog_id: None,
-                catalog_admin_token: None,
-            });
+            return Ok(ManagedBearerToken::unmanaged(token.to_owned()));
         }
         if mode == StackMode::Controlplane {
-            return Ok(ManagedBearerToken {
-                value: self.admin_session_token().await?,
-                catalog_id: None,
-                catalog_admin_token: None,
-            });
+            return Ok(ManagedBearerToken::unmanaged(
+                self.admin_session_token().await?,
+            ));
         }
 
         self.issue_dataplane_token(server_id).await
     }
 
     async fn admin_session_token(&self) -> AppResult<String> {
-        let endpoint = url::Url::parse(self.base_url()?)
-            .context("MCP_CLI_BASE_URL is not a valid URL")
-            .and_then(|base| {
-                base.join("/v1/auth/email/login")
-                    .context("failed to construct control-plane login URL")
-            })
-            .map_err(AppFailure::from)?;
-        let email = required_text(
-            &self.config.platform_admin_email().value,
-            "PLATFORM_ADMIN_EMAIL",
-        )?;
-        let password = required_text(
-            &self.config.platform_admin_password().value,
-            "PLATFORM_ADMIN_PASSWORD",
-        )?;
-        let response = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .context("failed to build control-plane login client")
-            .map_err(AppFailure::from)?
-            .post(endpoint)
-            .json(&serde_json::json!({"email": email, "password": password}))
-            .send()
+        ControlPlaneClient::new(&self.config)?
+            .admin_session_token()
             .await
-            .context("control-plane login failed before receiving a response")
-            .map_err(AppFailure::from)?;
-        if !response.status().is_success() {
-            return Err(AppFailure::from(anyhow!(
-                "control-plane login returned HTTP {}",
-                response.status().as_u16()
-            )));
-        }
-        let authenticated: AuthenticationResponse = response
-            .json()
-            .await
-            .context("control-plane login returned an invalid authentication response")
-            .map_err(AppFailure::from)?;
-        if authenticated.access_token.is_empty() {
-            return Err(AppFailure::from(anyhow!(
-                "control-plane login returned an empty access token"
-            )));
-        }
-        Ok(authenticated.access_token)
     }
 
     async fn issue_dataplane_token(&self, server_id: &str) -> AppResult<ManagedBearerToken> {
-        self.issue_catalog_token(Some(server_id), MANAGED_TOKEN_DESCRIPTION)
+        ControlPlaneClient::new(&self.config)?
+            .issue_dataplane_token(server_id)
             .await
     }
 
     async fn issue_conformance_token(&self) -> AppResult<ManagedBearerToken> {
-        self.issue_catalog_token(None, CONFORMANCE_TOKEN_DESCRIPTION)
+        ControlPlaneClient::new(&self.config)?
+            .issue_conformance_token()
             .await
-    }
-
-    async fn issue_catalog_token(
-        &self,
-        server_id: Option<&str>,
-        description: &str,
-    ) -> AppResult<ManagedBearerToken> {
-        let endpoint = url::Url::parse(self.base_url()?)
-            .context("MCP_CLI_BASE_URL is not a valid URL")
-            .and_then(|base| {
-                base.join("/v1/tokens")
-                    .context("failed to construct token catalog URL")
-            })
-            .map_err(AppFailure::from)?;
-        let admin_token = self.admin_session_token().await?;
-        let user_email = required_text(
-            &self.config.platform_admin_email().value,
-            "PLATFORM_ADMIN_EMAIL",
-        )?;
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .context("failed to build token catalog client")
-            .map_err(AppFailure::from)?;
-        let mut payload = serde_json::json!({
-            "name": format!("cf-integration-{}", uuid::Uuid::new_v4()),
-            "description": description,
-            "expires_in_days": 1,
-            "user_email": user_email,
-        });
-        if let Some(server_id) = server_id {
-            payload["scope"] = serde_json::json!({
-                "server_id": server_id,
-                "permissions": ["servers.read", "servers.use", "tools.read", "tools.call"],
-            });
-        }
-        let response = http
-            .post(endpoint)
-            .bearer_auth(&admin_token)
-            .json(&payload)
-            .send()
-            .await
-            .context("token catalog request failed before receiving a response")
-            .map_err(AppFailure::from)?;
-        if !response.status().is_success() {
-            return Err(AppFailure::from(anyhow!(
-                "token catalog returned HTTP {} while issuing a managed credential",
-                response.status().as_u16()
-            )));
-        }
-        let issued: TokenCreateResponse = response
-            .json()
-            .await
-            .context("token catalog returned an invalid credential response")
-            .map_err(AppFailure::from)?;
-        if issued.token.id.is_empty() || issued.access_token.is_empty() {
-            return Err(AppFailure::from(anyhow!(
-                "token catalog returned an incomplete credential response"
-            )));
-        }
-        Ok(ManagedBearerToken {
-            value: issued.access_token,
-            catalog_id: Some(issued.token.id),
-            catalog_admin_token: Some(admin_token),
-        })
     }
 
     async fn revoke_managed_token(&self, token: &ManagedBearerToken) -> AppResult<()> {
-        let Some(id) = token.catalog_id.as_deref() else {
-            return Ok(());
-        };
-        let admin_token = token.catalog_admin_token.as_deref().ok_or_else(|| {
-            AppFailure::from(anyhow!(
-                "managed token is missing its control-plane cleanup credential"
-            ))
-        })?;
-        let endpoint = url::Url::parse(self.base_url()?)
-            .context("MCP_CLI_BASE_URL is not a valid URL")
-            .and_then(|base| {
-                base.join(&format!("/v1/tokens/{id}"))
-                    .context("failed to construct token revocation URL")
-            })
-            .map_err(AppFailure::from)?;
-        let response = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .no_proxy()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .context("failed to build token catalog client")
-            .map_err(AppFailure::from)?
-            .delete(endpoint)
-            .bearer_auth(admin_token)
-            .send()
-            .await
-            .context("token revocation failed before receiving a response")
-            .map_err(AppFailure::from)?;
-        if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
-            Ok(())
-        } else {
-            Err(AppFailure::from(anyhow!(
-                "token catalog returned HTTP {} while revoking the dataplane credential",
-                response.status().as_u16()
-            )))
-        }
+        ControlPlaneClient::new(&self.config)?.revoke(token).await
     }
 }
 
@@ -366,14 +272,25 @@ fn required_text<'a>(value: &'a OsStr, name: &str) -> AppResult<&'a str> {
 }
 
 fn finish_with_cleanup(primary: Option<AppFailure>, cleanup: AppResult<()>) -> AppResult<()> {
-    match (primary, cleanup) {
-        (None, Ok(())) => Ok(()),
-        (Some(primary), Ok(())) => Err(primary),
-        (None, Err(cleanup)) => Err(cleanup),
-        (Some(primary), Err(cleanup)) => Err(AppFailure::from(anyhow!(
-            "{primary}; additionally cleanup failed: {cleanup}"
-        ))),
+    finish_with_cleanup_failures(primary, cleanup.err().into_iter().collect())
+}
+
+fn finish_with_cleanup_failures(
+    primary: Option<AppFailure>,
+    cleanup_failures: Vec<AppFailure>,
+) -> AppResult<()> {
+    if cleanup_failures.is_empty() {
+        return primary.map_or(Ok(()), Err);
     }
+    let mut message = primary.map_or_else(
+        || "cleanup failed".to_owned(),
+        |primary| format!("{primary}"),
+    );
+    for cleanup in cleanup_failures {
+        message.push_str("; additionally cleanup failed: ");
+        message.push_str(&cleanup.to_string());
+    }
+    Err(AppFailure::from(anyhow!(message)))
 }
 
 async fn wait_for_http_endpoint(
@@ -395,7 +312,7 @@ async fn wait_for_http_endpoint(
         if now >= deadline {
             return Err(AppFailure::from(anyhow!(
                 "{} public MCP endpoint {} was not ready within {:.3}s; last result: {last_failure}",
-                stack_mode_label(mode),
+                mode.topology_label(),
                 endpoint,
                 timeout.as_secs_f64()
             )));
@@ -435,13 +352,6 @@ const fn is_expected_readiness_status(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 401 | 403 | 405)
 }
 
-const fn stack_mode_label(mode: StackMode) -> &'static str {
-    match mode {
-        StackMode::Controlplane => "controlplane",
-        StackMode::Dataplane => "dataplane",
-    }
-}
-
 const fn gateway_topology(mode: StackMode) -> GatewayTopology {
     match mode {
         StackMode::Controlplane => GatewayTopology::Direct,
@@ -453,13 +363,13 @@ const fn gateway_topology(mode: StackMode) -> GatewayTopology {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use crate::infrastructure::config::{ConfigBootstrap, ConfigRequirements, Environment};
+    use crate::infrastructure::process::SystemProcessRunner;
     use axum::Router;
     use axum::body::Body;
     use axum::extract::{Request, State};
     use axum::http::{HeaderMap, Method, Response, StatusCode};
     use axum::routing::any;
-    use cf_integration_platform::config::Environment;
-    use cf_integration_platform::process::SystemProcessRunner;
     use serde_json::{Value, json};
     use tokio::net::TcpListener;
 
@@ -534,7 +444,8 @@ mod tests {
         .expect("temporary manifest should be written");
         fs::create_dir_all(root.join("docker")).expect("temporary docker directory should exist");
         fs::write(
-            root.join("docker/docker-compose.cf-integration.yaml"),
+            root.join("docker")
+                .join("docker-compose.cf-integration.yaml"),
             "services: {}\n",
         )
         .expect("temporary Compose marker should be written");
@@ -562,13 +473,9 @@ mod tests {
                 .iter()
                 .map(|(key, value)| (OsString::from(key), OsString::from(value))),
         );
-        AppConfig::load(
-            &environment,
-            &root.join("target/debug/cf-integration"),
-            root,
-        )
-        .expect("test application config should load")
-        .config
+        let bootstrap = ConfigBootstrap::load(&environment, root).expect("bootstrap should load");
+        AppConfig::load(bootstrap, ConfigRequirements::RUNTIME)
+            .expect("test application config should load")
     }
 
     #[tokio::test]
@@ -591,7 +498,7 @@ mod tests {
         );
         let root = tempfile::tempdir().expect("temporary repository should be created");
         let config = app_config(root.path(), &format!("http://{address}"), &[]);
-        let runtime = RuntimeExecutor::new(config, SystemProcessRunner);
+        let runtime = RuntimeContext::new(config, SystemProcessRunner);
 
         let token = runtime
             .managed_bearer_token(StackMode::Dataplane, "server-id")
@@ -645,7 +552,7 @@ mod tests {
             "http://127.0.0.1:9",
             &[("MCPGATEWAY_BEARER_TOKEN", "caller-token")],
         );
-        let runtime = RuntimeExecutor::new(config, SystemProcessRunner);
+        let runtime = RuntimeContext::new(config, SystemProcessRunner);
 
         let token = runtime
             .managed_bearer_token(StackMode::Dataplane, "server-id")
@@ -680,7 +587,7 @@ mod tests {
         );
         let root = tempfile::tempdir().expect("temporary repository should be created");
         let config = app_config(root.path(), &format!("http://{address}"), &[]);
-        let runtime = RuntimeExecutor::new(config, SystemProcessRunner);
+        let runtime = RuntimeContext::new(config, SystemProcessRunner);
 
         let token = runtime
             .issue_conformance_token()
@@ -700,5 +607,38 @@ mod tests {
         assert_eq!(requests[1].1, "/v1/tokens");
         assert_eq!(requests[1].3["description"], CONFORMANCE_TOKEN_DESCRIPTION);
         assert!(requests[1].3.get("scope").is_none());
+    }
+
+    #[test]
+    fn cleanup_aggregation_preserves_primary_and_every_cleanup_failure() {
+        let result = finish_with_cleanup_failures(
+            Some(AppFailure::from(anyhow!("primary failure"))),
+            vec![
+                AppFailure::from(anyhow!("token cleanup failure")),
+                AppFailure::from(anyhow!("stack cleanup failure")),
+            ],
+        )
+        .expect_err("cleanup failures should be aggregated");
+        let message = result.to_string();
+
+        assert!(message.contains("primary failure"));
+        assert!(message.contains("token cleanup failure"));
+        assert!(message.contains("stack cleanup failure"));
+    }
+
+    #[test]
+    fn cleanup_aggregation_reports_every_failure_without_a_primary_error() {
+        let result = finish_with_cleanup_failures(
+            None,
+            vec![
+                AppFailure::from(anyhow!("first cleanup failure")),
+                AppFailure::from(anyhow!("second cleanup failure")),
+            ],
+        )
+        .expect_err("cleanup failures should fail the session");
+        let message = result.to_string();
+
+        assert!(message.contains("first cleanup failure"));
+        assert!(message.contains("second cleanup failure"));
     }
 }

@@ -1,4 +1,7 @@
 .integration/
+dbdoc/
+dist/
+reports/conformance/
 .env
 __pycache__/
 *.pyc

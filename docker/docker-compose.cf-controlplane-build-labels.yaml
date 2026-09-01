@@ -67,14 +67,6 @@ services:
     labels:
       name: cf-locust-token
 
-  fast_test_server:
-    labels:
-      name: cf-fast-test-server
-
-  register_fast_test:
-    labels:
-      name: cf-register-fast-test
-
   a2a_echo_agent:
     labels:
       name: cf-a2a-echo-agent

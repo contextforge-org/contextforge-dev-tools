@@ -2,32 +2,11 @@ services:
   gateway:
     environment:
       GATEWAY_TOOL_NAME_SEPARATOR: "_"
+    volumes:
+      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/conformance/write_client_config.py:/opt/contextforge-conformance/write_client_config.py:ro
   mcp_conformance_server:
-    profiles: ["conformance"]
-    image: cf-integration/mcp-conformance-server:0.2.0-alpha.11
-    labels:
-      name: cf-conformance-server
-    build:
-      context: ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}
-      dockerfile: docker/mcp-conformance-server.Dockerfile
-    restart: "no"
-    environment:
-      PORT: "3000"
-      MCP_CONFORMANCE_SERVER_ERA: ${CF_CONFORMANCE_SERVER_ERA:-dual}
-    ports:
-      - "127.0.0.1:${CF_CONFORMANCE_PORT:-0}:3000"
     networks:
       - mcpnet
-    healthcheck:
-      test:
-        - CMD
-        - node
-        - -e
-        - fetch('http://127.0.0.1:3000/mcp').then(response => { if (response.status !== 400) process.exit(1); }).catch(() => process.exit(1))
-      interval: 2s
-      timeout: 2s
-      retries: 30
-      start_period: 2s
   mcp_conformance_proxy:
     profiles: ["conformance"]
     image: nginx:1.30.4-alpine3.24

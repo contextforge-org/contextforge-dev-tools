@@ -5,8 +5,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use cf_integration_compliance::DEFAULT_MCP_SPEC_VERSION;
-use cf_integration_mcp::mcp::PROTOCOL_VERSION;
+use crate::mcp::protocol::PROTOCOL_VERSION;
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
 const RUN_TIME_ERROR: &str =
@@ -78,16 +77,16 @@ fn parse_run_time(value: &str) -> Result<String, String> {
 
 /// Orchestrates control-plane and dataplane integration workflows.
 #[derive(Debug, Clone, PartialEq, Parser)]
-#[command(name = "cf-integration", arg_required_else_help = true)]
-pub struct Cli {
+#[command(name = "cf-integration", version, arg_required_else_help = true)]
+pub(crate) struct Cli {
     /// Workflow to run.
     #[command(subcommand)]
-    pub command: Command,
+    pub(crate) command: Command,
 }
 
 /// Top-level integration workflow.
 #[derive(Debug, Clone, PartialEq, Subcommand)]
-pub enum Command {
+pub(crate) enum Command {
     /// Manage Compose stacks.
     Stack(StackArgs),
     /// Probe one public MCP route.
@@ -104,15 +103,15 @@ pub enum Command {
 
 /// Stack command selection.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub struct StackArgs {
+pub(crate) struct StackArgs {
     /// Stack operation to run.
     #[command(subcommand)]
-    pub command: StackCommand,
+    pub(crate) command: StackCommand,
 }
 
 /// Operation on one or more Compose stacks.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum StackCommand {
+pub(crate) enum StackCommand {
     /// Start one stack topology.
     Up(StackUpArgs),
     /// Stop one or both stack topologies.
@@ -127,82 +126,82 @@ pub enum StackCommand {
 
 /// Options for starting one stack.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub struct StackUpArgs {
+pub(crate) struct StackUpArgs {
     /// Stack topology; defaults to CF_MCP_STACK_MODE, then dataplane.
     #[arg(long, value_enum)]
-    pub topology: Option<CliTopology>,
+    pub(crate) topology: Option<CliTopology>,
 
     /// Remove existing stack volumes before starting.
     #[arg(long)]
-    pub fresh: bool,
+    pub(crate) fresh: bool,
 }
 
 /// Options for stopping stacks.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub struct StackDownArgs {
+pub(crate) struct StackDownArgs {
     /// Stack topology; defaults to all.
     #[arg(long, value_enum)]
-    pub topology: Option<TopologySelection>,
+    pub(crate) topology: Option<TopologySelection>,
 
     /// Remove persistent volumes as well as containers and networks.
     #[arg(long)]
-    pub volumes: bool,
+    pub(crate) volumes: bool,
 }
 
 /// A command targeting one stack topology.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub struct TopologyArgs {
+pub(crate) struct TopologyArgs {
     /// Stack topology; defaults to CF_MCP_STACK_MODE, then dataplane.
     #[arg(long, value_enum)]
-    pub topology: Option<CliTopology>,
+    pub(crate) topology: Option<CliTopology>,
 }
 
 /// Target selection for routed MCP workflows.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub struct RoutedWorkflowTargetArgs {
+pub(crate) struct RoutedWorkflowTargetArgs {
     /// Execution lane; defaults to CF_MCP_STACK_MODE, then dataplane.
-    #[arg(long, value_enum, visible_alias = "topology")]
-    pub lane: Option<CliTopology>,
+    #[arg(long, value_enum)]
+    pub(crate) lane: Option<CliTopology>,
 
-    /// MCP version; defaults to MCP_PROTOCOL_VERSION, then 2025-11-25.
+    /// MCP version; defaults to MCP_PROTOCOL_VERSION, then 2026-07-28.
     #[arg(long)]
-    pub protocol_version: Option<ProtocolVersion>,
+    pub(crate) protocol_version: Option<ProtocolVersion>,
 }
 
 /// Target selection for MCP workflows that support a direct fixture lane.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub struct WorkflowTargetArgs {
+pub(crate) struct WorkflowTargetArgs {
     /// Execution lane; defaults to CF_MCP_STACK_MODE, then dataplane.
-    #[arg(long, value_enum, visible_alias = "topology")]
-    pub lane: Option<CliLane>,
+    #[arg(long, value_enum)]
+    pub(crate) lane: Option<CliLane>,
 
-    /// MCP version; defaults to MCP_PROTOCOL_VERSION, then 2025-11-25.
+    /// MCP version; defaults to MCP_PROTOCOL_VERSION, then 2026-07-28.
     #[arg(long)]
-    pub protocol_version: Option<ProtocolVersion>,
+    pub(crate) protocol_version: Option<ProtocolVersion>,
 }
 
 /// Options for following stack logs.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub struct StackLogsArgs {
+pub(crate) struct StackLogsArgs {
     /// Stack topology; defaults to CF_MCP_STACK_MODE, then dataplane.
     #[arg(long, value_enum)]
-    pub topology: Option<CliTopology>,
+    pub(crate) topology: Option<CliTopology>,
 
     /// Services whose logs to follow; all services when omitted.
     #[arg(value_name = "SERVICE")]
-    pub services: Vec<OsString>,
+    pub(crate) services: Vec<OsString>,
 }
 
 /// A live stack topology.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum CliTopology {
+pub(crate) enum CliTopology {
     /// Python control plane only.
     Controlplane,
     /// Python control plane routed through the Rust dataplane.
     Dataplane,
 }
 
-impl From<CliTopology> for cf_integration_platform::StackMode {
+impl From<CliTopology> for crate::infrastructure::StackMode {
     fn from(topology: CliTopology) -> Self {
         match topology {
             CliTopology::Controlplane => Self::Controlplane,
@@ -213,7 +212,7 @@ impl From<CliTopology> for cf_integration_platform::StackMode {
 
 /// One or both stack topologies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum TopologySelection {
+pub(crate) enum TopologySelection {
     /// Python control plane only.
     Controlplane,
     /// Python control plane routed through the Rust dataplane.
@@ -224,47 +223,46 @@ pub enum TopologySelection {
 
 /// Load-test options.
 #[derive(Debug, Clone, PartialEq, Args)]
-pub struct LoadArgs {
+pub(crate) struct LoadArgs {
     /// Routed lane and protocol-version selection.
     #[command(flatten)]
-    pub target: RoutedWorkflowTargetArgs,
+    pub(crate) target: RoutedWorkflowTargetArgs,
 
     /// Use smoke-test settings.
     #[arg(long)]
-    pub smoke: bool,
+    pub(crate) smoke: bool,
 
     /// Concurrent users; must be greater than zero.
     #[arg(long, value_parser = parse_positive_usize)]
-    pub users: Option<usize>,
+    pub(crate) users: Option<usize>,
 
     /// Users spawned per second; must be finite and greater than zero.
     #[arg(long, value_parser = parse_positive_f64)]
-    pub spawn_rate: Option<f64>,
+    pub(crate) spawn_rate: Option<f64>,
 
     /// Locust duration using positive h, m, and s groups, such as 1h30m.
     #[arg(long, value_parser = parse_run_time)]
-    pub run_time: Option<String>,
+    pub(crate) run_time: Option<String>,
 }
 
 /// Upstream live-test options.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub struct LiveArgs {
+pub(crate) struct LiveArgs {
     /// Shared lane and protocol-version selection.
     #[command(flatten)]
-    pub target: WorkflowTargetArgs,
+    pub(crate) target: WorkflowTargetArgs,
 
     /// Upstream live-test group.
     #[arg(long, value_enum, default_value = "all")]
-    pub group: LiveGroup,
+    pub(crate) group: LiveGroup,
 }
 
 /// One MCP workflow execution lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum CliLane {
+pub(crate) enum CliLane {
     /// Run directly against the workflow's reference fixture.
-    #[value(alias = "fixture")]
     FixtureDirect,
-    /// Run the routed endpoint through the Python built-in data plane.
+    /// Run the routed endpoint through the Python built-in dataplane.
     BuiltInDataPlane,
     /// Run the routed endpoint through the external Rust data plane.
     ExternalDataPlane,
@@ -272,8 +270,8 @@ pub enum CliLane {
 
 /// Upstream live-test group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum LiveGroup {
-    /// MCP route tests backed by Fast Time and Fast Test.
+pub(crate) enum LiveGroup {
+    /// MCP route tests backed by Fast Time.
     Mcp,
     /// Authorization and multi-transport tests.
     Rbac,
@@ -285,12 +283,12 @@ pub enum LiveGroup {
 
 /// A syntactically valid date-based MCP protocol version shared by workflows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProtocolVersion(String);
+pub(crate) struct ProtocolVersion(String);
 
 impl ProtocolVersion {
     /// Returns the exact selected MCP protocol version.
     #[must_use]
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -329,15 +327,15 @@ impl FromStr for ProtocolVersion {
 
 /// Conformance command selection.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub struct ConformanceArgs {
+pub(crate) struct ConformanceArgs {
     /// Conformance operation to run.
     #[command(subcommand)]
-    pub command: ConformanceCommand,
+    pub(crate) command: ConformanceCommand,
 }
 
 /// Official MCP conformance workflows.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum ConformanceCommand {
+pub(crate) enum ConformanceCommand {
     /// Run the pinned official oracle and TypeScript fixture.
     Run(ConformanceRunArgs),
     /// Regenerate the three-lane comparison from existing artifacts.
@@ -346,84 +344,90 @@ pub enum ConformanceCommand {
 
 /// Official conformance run options.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub struct ConformanceRunArgs {
+pub(crate) struct ConformanceRunArgs {
     /// Lane to run; repeat to select multiple lanes, defaults to all three.
     #[arg(long, value_enum, action = ArgAction::Append)]
-    pub lane: Vec<CliLane>,
+    pub(crate) lane: Vec<CliLane>,
 
-    /// MCP protocol version used by the official client.
-    #[arg(
-        long = "protocol-version",
-        visible_aliases = ["client-version", "spec-version"],
-        default_value = DEFAULT_MCP_SPEC_VERSION
-    )]
-    pub protocol_version: ProtocolVersion,
+    /// Protocol era used by the official client; repeat for a matrix.
+    #[arg(long, value_enum, action = ArgAction::Append)]
+    pub(crate) client_era: Vec<CliConformanceEra>,
 
-    /// Protocol era exposed by the upstream fixture server.
-    #[arg(long, value_enum, default_value = "dual")]
-    pub server_era: CliConformanceServerEra,
+    /// Protocol era exposed by the fixture; repeat for a matrix.
+    #[arg(long, value_enum, action = ArgAction::Append)]
+    pub(crate) server_era: Vec<CliConformanceEra>,
 
     /// Result artifact root; defaults below CF_INTEGRATION_DIR.
     #[arg(long)]
-    pub results_dir: Option<PathBuf>,
+    pub(crate) results_dir: Option<PathBuf>,
+
+    /// Baseline root; defaults to tests/conformance/baselines.
+    #[arg(long)]
+    pub(crate) baseline_dir: Option<PathBuf>,
+
+    /// Replace selected baselines atomically after every run succeeds.
+    #[arg(long)]
+    pub(crate) bless: bool,
+
+    /// Report root; defaults to the repository reports directory.
+    #[arg(long)]
+    pub(crate) output_dir: Option<PathBuf>,
 }
 
-impl From<CliLane> for cf_integration_compliance::conformance::ConformanceTarget {
+impl From<CliLane> for crate::conformance::results::SemanticLane {
     fn from(lane: CliLane) -> Self {
         match lane {
-            CliLane::FixtureDirect => Self::Fixture,
+            CliLane::FixtureDirect => Self::FixtureDirect,
             CliLane::BuiltInDataPlane => Self::BuiltInDataPlane,
             CliLane::ExternalDataPlane => Self::ExternalDataPlane,
         }
     }
 }
 
-/// Protocol behavior exposed by the pinned upstream fixture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum CliConformanceServerEra {
-    /// Accept both initialization-based and per-request clients.
+/// Protocol behavior selected for one side of the conformance matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub(crate) enum CliConformanceEra {
+    /// Select initialization-based and per-request protocol revisions.
     Dual,
-    /// Accept only initialization-based clients.
+    /// Select only initialization-based protocol revisions.
     Legacy,
-    /// Accept only per-request clients.
+    /// Select only per-request protocol revisions.
     Modern,
 }
 
-impl From<CliConformanceServerEra>
-    for cf_integration_compliance::conformance::ConformanceServerEra
-{
-    fn from(era: CliConformanceServerEra) -> Self {
+impl From<CliConformanceEra> for crate::conformance::results::ConformanceServerEra {
+    fn from(era: CliConformanceEra) -> Self {
         match era {
-            CliConformanceServerEra::Dual => Self::Dual,
-            CliConformanceServerEra::Legacy => Self::Legacy,
-            CliConformanceServerEra::Modern => Self::Modern,
+            CliConformanceEra::Dual => Self::Dual,
+            CliConformanceEra::Legacy => Self::Legacy,
+            CliConformanceEra::Modern => Self::Modern,
         }
     }
 }
 
 /// Report-only options.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub struct ConformanceReportArgs {
+pub(crate) struct ConformanceReportArgs {
     /// Existing result artifact root.
     #[arg(long)]
-    pub results_dir: Option<PathBuf>,
+    pub(crate) results_dir: Option<PathBuf>,
 
     /// Markdown report directory; defaults to the repository reports directory.
     #[arg(long)]
-    pub output_dir: Option<PathBuf>,
+    pub(crate) output_dir: Option<PathBuf>,
 }
 
 /// Debug command selection.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub struct DebugArgs {
+pub(crate) struct DebugArgs {
     /// Debugging utility to run.
     #[command(subcommand)]
-    pub command: DebugCommand,
+    pub(crate) command: DebugCommand,
 }
 
 /// Manual debugging utilities that are not compliance gates.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
-pub enum DebugCommand {
+pub(crate) enum DebugCommand {
     /// Debug a live endpoint with the official MCP Inspector.
     Inspect(InspectArgs),
     /// Request and print a token from a running control plane.
@@ -432,35 +436,35 @@ pub enum DebugCommand {
 
 /// Official Inspector options.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub struct InspectArgs {
+pub(crate) struct InspectArgs {
     /// Routed lane and protocol-version selection.
     #[command(flatten)]
-    pub target: RoutedWorkflowTargetArgs,
+    pub(crate) target: RoutedWorkflowTargetArgs,
 
     /// Inspector method such as tools/list.
     #[arg(long, default_value = "tools/list")]
-    pub method: String,
+    pub(crate) method: String,
 
     /// Existing virtual server ID; uses the configured/default fixture when omitted.
     #[arg(long)]
-    pub server_id: Option<String>,
+    pub(crate) server_id: Option<String>,
 }
 
 /// Token generation options.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub struct TokenArgs {
+pub(crate) struct TokenArgs {
     /// Token privilege level.
     #[arg(long, value_enum)]
-    pub kind: TokenKind,
+    pub(crate) kind: TokenKind,
 
     /// Virtual server restriction for a scoped token.
     #[arg(long)]
-    pub server_id: Option<String>,
+    pub(crate) server_id: Option<String>,
 }
 
 /// Token privilege level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum TokenKind {
+pub(crate) enum TokenKind {
     /// Catalog token with the minimum scopes needed by public MCP tests.
     Scoped,
     /// Authenticated platform-admin session token.
