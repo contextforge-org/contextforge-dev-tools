@@ -39,8 +39,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 Activity::completed("Integration stack ready");
                 self.print_stack_summary(topology, &conformance_endpoint)
             }
-            StackAction::Down { topology, volumes } => self.cleanup(
-                topology,
+            StackAction::Down { lane, volumes } => self.cleanup(
+                lane,
                 if volumes {
                     CleanupKind::Reset
                 } else {
@@ -166,7 +166,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         if report_progress {
             println!(
                 "{}",
-                OutputStyle::stdout().success(&format!("{} stack started.", mode.topology_label()))
+                OutputStyle::stdout().success(&format!("{} stack started.", mode.lane_label()))
             );
         }
         Ok(())
@@ -184,7 +184,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 OutputStyle::stderr().info(&format!(
                     "Waiting up to {}s for the public {} MCP endpoint.",
                     STACK_READY_TIMEOUT.as_secs(),
-                    mode.topology_label()
+                    mode.lane_label()
                 ))
             );
         }
@@ -817,19 +817,19 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     &self.config.controlplane_project().value,
                     "CF_CONTROLPLANE_PROJECT",
                 )?,
-                StackMode::Controlplane.topology_label(),
+                StackMode::Controlplane.lane_label(),
             ),
             StackMode::Controlplane => (
                 required_text(
                     &self.config.integration_project().value,
                     "CF_INTEGRATION_PROJECT",
                 )?,
-                StackMode::Dataplane.topology_label(),
+                StackMode::Dataplane.lane_label(),
             ),
         };
         if self.project_has_running_containers(other)? {
             return Err(AppFailure::from(anyhow!(
-                "the {label} stack is running on the same host ports; run `cf-integration stack down --topology all` first"
+                "the {label} stack is running on the same host ports; run `cf-integration stack down --lane all` first"
             )));
         }
         Ok(())
@@ -846,13 +846,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .is_empty())
     }
 
-    pub(super) fn cleanup(&self, selection: TopologySelection, kind: CleanupKind) -> AppResult<()> {
+    pub(super) fn cleanup(&self, selection: LaneSelection, kind: CleanupKind) -> AppResult<()> {
         self.cleanup_with_output(selection, kind, true)
     }
 
     pub(super) fn cleanup_quiet(
         &self,
-        selection: TopologySelection,
+        selection: LaneSelection,
         kind: CleanupKind,
     ) -> AppResult<()> {
         self.cleanup_with_output(selection, kind, false)
@@ -860,7 +860,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 
     fn cleanup_with_output(
         &self,
-        selection: TopologySelection,
+        selection: LaneSelection,
         kind: CleanupKind,
         inherit_output: bool,
     ) -> AppResult<()> {

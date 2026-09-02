@@ -1,9 +1,9 @@
 use std::ffi::OsString;
 
 use cf_integration::cli::{
-    Cli, CliConformanceEra, CliLane, CliTopology, Command, ConformanceArgs, ConformanceCommand,
-    DebugArgs, DebugCommand, LiveGroup, LoadArgs, ProtocolVersion, RoutedWorkflowTargetArgs,
-    StackArgs, StackCommand, TokenKind, TopologySelection, WorkflowTargetArgs,
+    Cli, CliConformanceEra, CliLane, CliRoutedLane, Command, ConformanceArgs, ConformanceCommand,
+    DebugArgs, DebugCommand, LaneSelection, LiveGroup, LoadArgs, ProtocolVersion,
+    RoutedWorkflowTargetArgs, StackArgs, StackCommand, TokenKind, WorkflowTargetArgs,
 };
 use clap::{CommandFactory, Parser, error::ErrorKind};
 
@@ -101,6 +101,38 @@ fn every_public_command_renders_help() {
 }
 
 #[test]
+fn every_public_stack_or_workflow_selector_uses_lane_only() {
+    let paths: &[&[&str]] = &[
+        &["stack", "up"],
+        &["stack", "down"],
+        &["stack", "status"],
+        &["stack", "logs"],
+        &["stack", "config"],
+        &["probe"],
+        &["load"],
+        &["live"],
+        &["conformance", "run"],
+        &["debug", "inspect"],
+    ];
+
+    for path in paths {
+        let command = command_at(path);
+        let argument_ids = command
+            .get_arguments()
+            .map(|argument| argument.get_id().as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            argument_ids.contains(&"lane"),
+            "missing --lane for {path:?}"
+        );
+        assert!(
+            !argument_ids.contains(&"topology"),
+            "obsolete --topology remains on {path:?}"
+        );
+    }
+}
+
+#[test]
 fn obsolete_root_commands_and_combined_workflows_are_rejected() {
     for command in REMOVED_COMMANDS {
         rejected(&["cf-integration", command]);
@@ -118,15 +150,15 @@ fn stack_up_and_down_make_destructive_behavior_explicit() {
         "cf-integration",
         "stack",
         "up",
-        "--topology",
-        "dataplane",
+        "--lane",
+        "external",
         "--fresh",
     ])
     .command
     else {
         panic!("expected stack up")
     };
-    assert_eq!(up.topology, Some(CliTopology::Dataplane));
+    assert_eq!(up.lane, Some(CliRoutedLane::External));
     assert!(up.fresh);
 
     let Command::Stack(StackArgs {
@@ -135,7 +167,7 @@ fn stack_up_and_down_make_destructive_behavior_explicit() {
         "cf-integration",
         "stack",
         "down",
-        "--topology",
+        "--lane",
         "all",
         "--volumes",
     ])
@@ -143,7 +175,7 @@ fn stack_up_and_down_make_destructive_behavior_explicit() {
     else {
         panic!("expected stack down")
     };
-    assert_eq!(down.topology, Some(TopologySelection::All));
+    assert_eq!(down.lane, Some(LaneSelection::All));
     assert!(down.volumes);
 }
 
@@ -155,8 +187,8 @@ fn stack_logs_preserve_service_arguments() {
         "cf-integration",
         "stack",
         "logs",
-        "--topology",
-        "controlplane",
+        "--lane",
+        "builtin",
         "gateway",
         "worker",
     ])
@@ -164,7 +196,7 @@ fn stack_logs_preserve_service_arguments() {
     else {
         panic!("expected stack logs")
     };
-    assert_eq!(args.topology, Some(CliTopology::Controlplane));
+    assert_eq!(args.lane, Some(CliRoutedLane::Builtin));
     assert_eq!(
         args.services,
         [OsString::from("gateway"), OsString::from("worker")]
@@ -224,7 +256,7 @@ fn live_defaults_to_all_and_accepts_the_main_harness_groups() {
             "cf-integration",
             "live",
             "--lane",
-            "external-data-plane",
+            "external",
             "--group",
             name,
         ])
@@ -232,7 +264,7 @@ fn live_defaults_to_all_and_accepts_the_main_harness_groups() {
         else {
             panic!("expected live workflow")
         };
-        assert_eq!(args.target.lane, Some(CliLane::ExternalDataPlane));
+        assert_eq!(args.target.lane, Some(CliLane::External));
         assert_eq!(args.group, expected);
     }
 }
@@ -267,38 +299,58 @@ fn live_accepts_fixture_lane_and_explicit_protocol_mode() {
 }
 
 #[test]
-fn probe_rejects_removed_topology_alias() {
-    rejected(&["cf-integration", "probe", "--topology", "dataplane"]);
+fn every_public_selector_rejects_the_removed_topology_flag() {
+    for arguments in [
+        vec!["cf-integration", "stack", "up", "--topology", "dataplane"],
+        vec!["cf-integration", "probe", "--topology", "dataplane"],
+        vec!["cf-integration", "load", "--topology", "dataplane"],
+        vec!["cf-integration", "live", "--topology", "dataplane"],
+        vec![
+            "cf-integration",
+            "debug",
+            "inspect",
+            "--topology",
+            "dataplane",
+        ],
+    ] {
+        rejected(&arguments);
+    }
 }
 
 #[test]
-fn load_rejects_removed_topology_alias() {
-    rejected(&["cf-integration", "load", "--topology", "dataplane"]);
-}
-
-#[test]
-fn live_rejects_removed_topology_alias() {
-    rejected(&[
-        "cf-integration",
-        "live",
-        "--topology",
-        "external-data-plane",
-    ]);
+fn public_lane_values_reject_physical_and_obsolete_spellings() {
+    for arguments in [
+        vec!["cf-integration", "stack", "up", "--lane", "controlplane"],
+        vec!["cf-integration", "stack", "up", "--lane", "dataplane"],
+        vec!["cf-integration", "load", "--lane", "controlplane"],
+        vec!["cf-integration", "load", "--lane", "dataplane"],
+        vec!["cf-integration", "live", "--lane", "built-in-data-plane"],
+        vec!["cf-integration", "live", "--lane", "external-data-plane"],
+        vec![
+            "cf-integration",
+            "conformance",
+            "run",
+            "--lane",
+            "external-data-plane",
+        ],
+    ] {
+        rejected(&arguments);
+    }
 }
 
 #[test]
 fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
     fn assert_routed_target(target: &RoutedWorkflowTargetArgs) {
-        assert_eq!(target.lane, Some(CliTopology::Controlplane));
+        assert_eq!(target.lane, Some(CliRoutedLane::Builtin));
         assert_eq!(target.protocol_version, Some(ProtocolVersion::Legacy));
     }
 
     fn assert_fixture_target(target: &WorkflowTargetArgs) {
-        assert_eq!(target.lane, Some(CliLane::BuiltInDataPlane));
+        assert_eq!(target.lane, Some(CliLane::Builtin));
         assert_eq!(target.protocol_version, Some(ProtocolVersion::Legacy));
     }
 
-    let common = ["--lane", "controlplane", "--protocol-version", "legacy"];
+    let common = ["--lane", "builtin", "--protocol-version", "legacy"];
     let Command::Probe(probe) = parse(
         &["cf-integration", "probe"]
             .into_iter()
@@ -327,7 +379,7 @@ fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
         "cf-integration",
         "live",
         "--lane",
-        "built-in-data-plane",
+        "builtin",
         "--protocol-version",
         "legacy",
     ])
@@ -398,7 +450,7 @@ fn conformance_accepts_repeatable_exact_lanes_and_protocol_eras() {
         "--lane",
         "fixture-direct",
         "--lane",
-        "external-data-plane",
+        "external",
         "--client-era",
         "legacy",
         "--client-era",
@@ -417,10 +469,7 @@ fn conformance_accepts_repeatable_exact_lanes_and_protocol_eras() {
     else {
         panic!("expected conformance run")
     };
-    assert_eq!(
-        args.lane,
-        [CliLane::FixtureDirect, CliLane::ExternalDataPlane]
-    );
+    assert_eq!(args.lane, [CliLane::FixtureDirect, CliLane::External]);
     assert_eq!(
         args.client_era,
         [CliConformanceEra::Legacy, CliConformanceEra::Dual]

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use cf_integration::app::{
     Action, CiAction, ConformanceAction, DebugAction, ResolvedLoadArgs, StackAction, resolve_action,
 };
-use cf_integration::cli::{Cli, LiveGroup, ProtocolVersion, TokenKind, TopologySelection};
+use cf_integration::cli::{Cli, LaneSelection, LiveGroup, ProtocolVersion, TokenKind};
 use cf_integration::conformance::results::{ConformanceServerEra, SemanticLane};
 use cf_integration::infrastructure::StackMode;
 use cf_integration::infrastructure::config::Environment;
@@ -103,55 +103,46 @@ fn ci_image_preparation_rejects_nested_artifact_paths() {
 }
 
 #[test]
-fn every_subcommand_reports_its_resolved_topology_at_startup() {
+fn every_subcommand_reports_its_resolved_lane_at_startup() {
     let cases: &[(&[&str], &str)] = &[
         (
             &["cf-integration", "stack", "up"],
-            "Topology: external dataplane\nProtocol version: modern",
+            "Lane: external\nProtocol version: modern",
         ),
         (
             &["cf-integration", "stack", "down"],
-            "Topology: built-in dataplane, external dataplane",
+            "Lane: builtin, external",
         ),
-        (
-            &["cf-integration", "stack", "status"],
-            "Topology: external dataplane",
-        ),
-        (
-            &["cf-integration", "stack", "logs"],
-            "Topology: external dataplane",
-        ),
-        (
-            &["cf-integration", "stack", "config"],
-            "Topology: external dataplane",
-        ),
+        (&["cf-integration", "stack", "status"], "Lane: external"),
+        (&["cf-integration", "stack", "logs"], "Lane: external"),
+        (&["cf-integration", "stack", "config"], "Lane: external"),
         (
             &["cf-integration", "probe"],
-            "Topology: external dataplane\nProtocol version: modern",
+            "Lane: external\nProtocol version: modern",
         ),
         (
             &["cf-integration", "load"],
-            "Topology: external dataplane\nProtocol version: modern",
+            "Lane: external\nProtocol version: modern",
         ),
         (
             &["cf-integration", "live"],
-            "Topology: external dataplane\nProtocol version: modern",
+            "Lane: external\nProtocol version: modern",
         ),
         (
             &["cf-integration", "conformance", "run"],
-            "Topology: fixture direct, built-in dataplane, external dataplane\nClient era: modern [2026-07-28]\nServer era: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]; modern [2026-07-28]",
+            "Lane: fixture direct, builtin, external\nClient era: modern [2026-07-28]\nServer era: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]; modern [2026-07-28]",
         ),
         (
             &["cf-integration", "conformance", "report"],
-            "Topology: recorded conformance results\nClient era: recorded conformance results\nServer era: recorded conformance results",
+            "Lane: recorded conformance results\nClient era: recorded conformance results\nServer era: recorded conformance results",
         ),
         (
             &["cf-integration", "debug", "inspect"],
-            "Topology: external dataplane\nProtocol version: modern",
+            "Lane: external\nProtocol version: modern",
         ),
         (
             &["cf-integration", "debug", "token", "--kind", "admin"],
-            "Topology: not applicable (token only)",
+            "Lane: not applicable (token only)",
         ),
     ];
 
@@ -168,7 +159,7 @@ fn conformance_startup_reports_every_selected_client_and_server_protocol() {
             "conformance",
             "run",
             "--lane",
-            "built-in-data-plane",
+            "builtin",
             "--client-era",
             "legacy",
             "--client-era",
@@ -181,7 +172,7 @@ fn conformance_startup_reports_every_selected_client_and_server_protocol() {
 
     assert_eq!(
         resolved.startup_summary(),
-        "Topology: built-in dataplane\nClient era: legacy [2025-06-18, 2025-11-25]; modern [2026-07-28]\nServer era: dual [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25, 2026-07-28]"
+        "Lane: builtin\nClient era: legacy [2025-06-18, 2025-11-25]; modern [2026-07-28]\nServer era: dual [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25, 2026-07-28]"
     );
 }
 
@@ -202,7 +193,7 @@ fn conformance_startup_labels_both_legacy_era_selections() {
 
     assert_eq!(
         resolved.startup_summary(),
-        "Topology: fixture direct, built-in dataplane, external dataplane\nClient era: legacy [2025-06-18, 2025-11-25]\nServer era: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]"
+        "Lane: fixture direct, builtin, external\nClient era: legacy [2025-06-18, 2025-11-25]\nServer era: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]"
     );
 }
 
@@ -216,7 +207,7 @@ fn multi_phase_commands_own_detailed_progress_while_simple_commands_use_global_p
 }
 
 #[test]
-fn topology_precedence_is_cli_then_environment_then_dataplane() {
+fn lane_precedence_is_cli_then_environment_then_external() {
     assert_eq!(
         action(&["cf-integration", "probe"], &[]),
         Action::Probe {
@@ -225,10 +216,7 @@ fn topology_precedence_is_cli_then_environment_then_dataplane() {
         }
     );
     assert_eq!(
-        action(
-            &["cf-integration", "probe"],
-            &[("CF_MCP_STACK_MODE", "controlplane")],
-        ),
+        action(&["cf-integration", "probe"], &[("CF_MCP_LANE", "builtin")],),
         Action::Probe {
             topology: StackMode::Controlplane,
             protocol_version: ProtocolVersion::default(),
@@ -240,11 +228,11 @@ fn topology_precedence_is_cli_then_environment_then_dataplane() {
                 "cf-integration",
                 "probe",
                 "--lane",
-                "dataplane",
+                "external",
                 "--protocol-version",
                 "legacy",
             ],
-            &[("CF_MCP_STACK_MODE", "invalid")],
+            &[("CF_MCP_LANE", "invalid")],
         ),
         Action::Probe {
             topology: StackMode::Dataplane,
@@ -254,13 +242,13 @@ fn topology_precedence_is_cli_then_environment_then_dataplane() {
 }
 
 #[test]
-fn invalid_environment_topology_is_rejected_when_used() {
+fn invalid_environment_lane_is_rejected_when_used() {
     let cli = Cli::try_parse_from(["cf-integration", "probe"]).expect("CLI should parse");
-    let environment = [(OsString::from("CF_MCP_STACK_MODE"), OsString::from("bad"))]
+    let environment = [(OsString::from("CF_MCP_LANE"), OsString::from("bad"))]
         .into_iter()
         .collect();
-    let error = resolve_action(cli, &environment).expect_err("invalid topology must fail");
-    assert!(error.to_string().contains("invalid CF_MCP_STACK_MODE"));
+    let error = resolve_action(cli, &environment).expect_err("invalid lane must fail");
+    assert!(error.to_string().contains("invalid CF_MCP_LANE"));
 }
 
 #[test]
@@ -288,8 +276,8 @@ fn stack_actions_resolve_freshness_and_volume_cleanup() {
                 "cf-integration",
                 "stack",
                 "up",
-                "--topology",
-                "controlplane",
+                "--lane",
+                "builtin",
                 "--fresh",
             ],
             &[],
@@ -302,7 +290,7 @@ fn stack_actions_resolve_freshness_and_volume_cleanup() {
     assert_eq!(
         action(&["cf-integration", "stack", "down", "--volumes"], &[],),
         Action::Stack(StackAction::Down {
-            topology: TopologySelection::All,
+            lane: LaneSelection::All,
             volumes: true,
         })
     );
@@ -316,7 +304,7 @@ fn load_preserves_explicit_locust_settings() {
                 "cf-integration",
                 "load",
                 "--lane",
-                "controlplane",
+                "builtin",
                 "--protocol-version",
                 "legacy",
                 "--smoke",
@@ -348,7 +336,7 @@ fn live_resolves_lane_group_and_protocol_version() {
         action(
             &["cf-integration", "live", "--group", "mcp"],
             &[
-                ("CF_MCP_STACK_MODE", "controlplane"),
+                ("CF_MCP_LANE", "builtin"),
                 ("MCP_PROTOCOL_VERSION", "legacy"),
             ],
         ),
@@ -375,7 +363,7 @@ fn live_fixture_lane_bypasses_topology_and_cli_version_wins() {
                 "modern",
             ],
             &[
-                ("CF_MCP_STACK_MODE", "invalid"),
+                ("CF_MCP_LANE", "invalid"),
                 ("MCP_PROTOCOL_VERSION", "legacy"),
             ],
         ),
@@ -437,11 +425,11 @@ fn conformance_lanes_are_deduplicated_and_normalized() {
                 "conformance",
                 "run",
                 "--lane",
-                "external-data-plane",
+                "external",
                 "--lane",
                 "fixture-direct",
                 "--lane",
-                "external-data-plane",
+                "external",
                 "--client-era",
                 "legacy",
                 "--client-era",
@@ -509,13 +497,7 @@ fn only_report_and_token_actions_skip_runtime_assets() {
         &[],
     );
     let stack = action(
-        &[
-            "cf-integration",
-            "stack",
-            "status",
-            "--topology",
-            "dataplane",
-        ],
+        &["cf-integration", "stack", "status", "--lane", "external"],
         &[],
     );
 
@@ -551,7 +533,7 @@ fn debug_token_and_inspector_remain_explicit_non_gate_operations() {
                 "debug",
                 "inspect",
                 "--lane",
-                "controlplane",
+                "builtin",
                 "--protocol-version",
                 "legacy",
                 "--method",

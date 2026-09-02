@@ -75,7 +75,7 @@ fn parse_run_time(value: &str) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
-/// Orchestrates control-plane and dataplane integration workflows.
+/// Orchestrates built-in and external dataplane integration workflows.
 #[derive(Debug, Clone, PartialEq, Parser)]
 #[command(name = "cf-integration", version, arg_required_else_help = true)]
 pub(crate) struct Cli {
@@ -170,24 +170,24 @@ pub(crate) struct StackArgs {
 /// Operation on one or more Compose stacks.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub(crate) enum StackCommand {
-    /// Start one stack topology.
+    /// Start one execution lane.
     Up(StackUpArgs),
-    /// Stop one or both stack topologies.
+    /// Stop one or both execution lanes.
     Down(StackDownArgs),
-    /// Show services for one stack topology.
-    Status(TopologyArgs),
-    /// Follow logs for one stack topology.
+    /// Show services for one execution lane.
+    Status(StackLaneArgs),
+    /// Follow logs for one execution lane.
     Logs(StackLogsArgs),
-    /// Render the merged configuration for one stack topology.
-    Config(TopologyArgs),
+    /// Render the merged configuration for one execution lane.
+    Config(StackLaneArgs),
 }
 
 /// Options for starting one stack.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub(crate) struct StackUpArgs {
-    /// Stack topology; defaults to CF_MCP_STACK_MODE, then dataplane.
+    /// Execution lane; defaults to CF_MCP_LANE, then external.
     #[arg(long, value_enum)]
-    pub(crate) topology: Option<CliTopology>,
+    pub(crate) lane: Option<CliRoutedLane>,
 
     /// Remove existing stack volumes before starting.
     #[arg(long)]
@@ -197,29 +197,29 @@ pub(crate) struct StackUpArgs {
 /// Options for stopping stacks.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub(crate) struct StackDownArgs {
-    /// Stack topology; defaults to all.
+    /// Execution lane; defaults to all.
     #[arg(long, value_enum)]
-    pub(crate) topology: Option<TopologySelection>,
+    pub(crate) lane: Option<LaneSelection>,
 
     /// Remove persistent volumes as well as containers and networks.
     #[arg(long)]
     pub(crate) volumes: bool,
 }
 
-/// A command targeting one stack topology.
+/// A command targeting one stack lane.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
-pub(crate) struct TopologyArgs {
-    /// Stack topology; defaults to CF_MCP_STACK_MODE, then dataplane.
+pub(crate) struct StackLaneArgs {
+    /// Execution lane; defaults to CF_MCP_LANE, then external.
     #[arg(long, value_enum)]
-    pub(crate) topology: Option<CliTopology>,
+    pub(crate) lane: Option<CliRoutedLane>,
 }
 
 /// Target selection for routed MCP workflows.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub(crate) struct RoutedWorkflowTargetArgs {
-    /// Execution lane; defaults to CF_MCP_STACK_MODE, then dataplane.
+    /// Execution lane; defaults to CF_MCP_LANE, then external.
     #[arg(long, value_enum)]
-    pub(crate) lane: Option<CliTopology>,
+    pub(crate) lane: Option<CliRoutedLane>,
 
     /// MCP mode; defaults to MCP_PROTOCOL_VERSION, then modern.
     #[arg(long, value_enum)]
@@ -229,7 +229,7 @@ pub(crate) struct RoutedWorkflowTargetArgs {
 /// Target selection for MCP workflows that support a direct fixture lane.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub(crate) struct WorkflowTargetArgs {
-    /// Execution lane; defaults to CF_MCP_STACK_MODE, then dataplane.
+    /// Execution lane; defaults to CF_MCP_LANE, then external.
     #[arg(long, value_enum)]
     pub(crate) lane: Option<CliLane>,
 
@@ -241,41 +241,41 @@ pub(crate) struct WorkflowTargetArgs {
 /// Options for following stack logs.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub(crate) struct StackLogsArgs {
-    /// Stack topology; defaults to CF_MCP_STACK_MODE, then dataplane.
+    /// Execution lane; defaults to CF_MCP_LANE, then external.
     #[arg(long, value_enum)]
-    pub(crate) topology: Option<CliTopology>,
+    pub(crate) lane: Option<CliRoutedLane>,
 
     /// Services whose logs to follow; all services when omitted.
     #[arg(value_name = "SERVICE")]
     pub(crate) services: Vec<OsString>,
 }
 
-/// A live stack topology.
+/// A routed MCP execution lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub(crate) enum CliTopology {
-    /// Python control plane only.
-    Controlplane,
-    /// Python control plane routed through the Rust dataplane.
-    Dataplane,
+pub(crate) enum CliRoutedLane {
+    /// Route through the Python built-in dataplane.
+    Builtin,
+    /// Route through the external Rust dataplane.
+    External,
 }
 
-impl From<CliTopology> for crate::infrastructure::StackMode {
-    fn from(topology: CliTopology) -> Self {
-        match topology {
-            CliTopology::Controlplane => Self::Controlplane,
-            CliTopology::Dataplane => Self::Dataplane,
+impl From<CliRoutedLane> for crate::infrastructure::StackMode {
+    fn from(lane: CliRoutedLane) -> Self {
+        match lane {
+            CliRoutedLane::Builtin => Self::Controlplane,
+            CliRoutedLane::External => Self::Dataplane,
         }
     }
 }
 
-/// One or both stack topologies.
+/// One or both routed MCP execution lanes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub(crate) enum TopologySelection {
-    /// Python control plane only.
-    Controlplane,
-    /// Python control plane routed through the Rust dataplane.
-    Dataplane,
-    /// Run controlplane and dataplane sequentially.
+pub(crate) enum LaneSelection {
+    /// Route through the Python built-in dataplane.
+    Builtin,
+    /// Route through the external Rust dataplane.
+    External,
+    /// Run the built-in and external lanes sequentially.
     All,
 }
 
@@ -321,9 +321,9 @@ pub(crate) enum CliLane {
     /// Run directly against the workflow's reference fixture.
     FixtureDirect,
     /// Run the routed endpoint through the Python built-in dataplane.
-    BuiltInDataPlane,
+    Builtin,
     /// Run the routed endpoint through the external Rust data plane.
-    ExternalDataPlane,
+    External,
 }
 
 /// Upstream live-test group.
@@ -434,8 +434,8 @@ impl From<CliLane> for crate::conformance::results::SemanticLane {
     fn from(lane: CliLane) -> Self {
         match lane {
             CliLane::FixtureDirect => Self::FixtureDirect,
-            CliLane::BuiltInDataPlane => Self::BuiltInDataPlane,
-            CliLane::ExternalDataPlane => Self::ExternalDataPlane,
+            CliLane::Builtin => Self::BuiltInDataPlane,
+            CliLane::External => Self::ExternalDataPlane,
         }
     }
 }

@@ -52,7 +52,7 @@ use crate::app::{
     Action, CiAction, ConformanceAction, DebugAction, ResolvedLoadArgs, StackAction,
     selected_topologies, topology_selection,
 };
-use crate::cli::{LiveGroup, ProtocolVersion, TokenKind as CliTokenKind, TopologySelection};
+use crate::cli::{LaneSelection, LiveGroup, ProtocolVersion, TokenKind as CliTokenKind};
 use crate::error::AppFailure;
 use crate::{Activity, OutputStyle, TestStatus};
 
@@ -321,7 +321,7 @@ async fn wait_for_http_endpoint(
         if now >= deadline {
             return Err(AppFailure::from(anyhow!(
                 "{} public MCP endpoint {} was not ready within {:.3}s; last result: {last_failure}",
-                mode.topology_label(),
+                mode.lane_label(),
                 endpoint,
                 timeout.as_secs_f64()
             )));

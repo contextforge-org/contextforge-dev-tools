@@ -52,7 +52,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 "{}",
                 OutputStyle::stdout().test_result(
                     status,
-                    &format!("performance::{}", args.topology.topology_label()),
+                    &format!("performance::{}", args.topology.lane_label()),
                     Some(elapsed),
                     None,
                 )

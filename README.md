@@ -97,34 +97,34 @@ failure. Test results use aligned nextest-style labels: green `PASS`, yellow
 `CARGO_TERM_COLOR` control ANSI output. Command data such as tokens, Compose
 configuration, and report paths remains on standard output for scripting.
 
-Stack commands use physical `--topology controlplane|dataplane`:
+Every stack and workflow selector uses semantic `--lane` values. Stack
+commands accept `builtin`, `external`, or `all` where both lanes are valid:
 
 ```bash
-cf-integration stack up --topology dataplane
-cf-integration stack up --topology dataplane --fresh
-cf-integration stack status --topology dataplane
-cf-integration stack config --topology dataplane
-cf-integration stack down --topology all
-cf-integration stack down --topology all --volumes
+cf-integration stack up --lane external
+cf-integration stack up --lane external --fresh
+cf-integration stack status --lane external
+cf-integration stack config --lane external
+cf-integration stack down --lane all
+cf-integration stack down --lane all --volumes
 ```
 
 `stack down --volumes` is the explicit destructive reset. Managed workflows
 preserve the primary failure, attempt every token and stack cleanup, and report
 all cleanup failures.
 
-Probe, load, and Inspector use physical lanes:
+Probe, load, and Inspector use the same routed lanes:
 
 ```bash
-cf-integration probe --lane dataplane --protocol-version modern
-cf-integration load --lane dataplane --smoke
-cf-integration debug inspect --lane dataplane --method tools/list
+cf-integration probe --lane external --protocol-version modern
+cf-integration load --lane builtin --smoke
+cf-integration debug inspect --lane external --method tools/list
 ```
 
-Live and conformance share semantic lanes: `fixture-direct`,
-`built-in-data-plane`, and `external-data-plane`.
+Live and conformance additionally support the direct `fixture-direct` lane.
 
 ```bash
-cf-integration live --lane external-data-plane --group mcp
+cf-integration live --lane external --group mcp
 cf-integration live --lane fixture-direct --group protocol \
   --protocol-version legacy
 
@@ -139,10 +139,9 @@ cf-integration conformance report
 cf-integration --version
 ```
 
-Workflows accept only `--lane`; `--topology` is reserved for stack commands.
-The direct fixture spelling is only `fixture-direct`. Probe, load, live, and
-Inspector use `--protocol-version`; conformance uses the explicit
-`--client-era` and `--server-era` matrix axes.
+No command accepts `--topology`. The direct fixture spelling is only
+`fixture-direct`. Probe, load, live, and Inspector use `--protocol-version`;
+conformance uses the explicit `--client-era` and `--server-era` matrix axes.
 
 Operational protocol selection is semantic: `modern` maps to the latest
 per-request revision and `legacy` maps to the latest initialization-based
@@ -170,7 +169,7 @@ built-in and external dataplane routes. For protocol `2026-07-28`, the client
 suite also makes the external dataplane send requests to the official scenario
 servers. The four downstream scenarios are `tools_call`, `request-metadata`,
 `http-standard-headers`, and `http-custom-headers`; they run automatically
-whenever `external-data-plane` is selected. The workflow records raw official
+whenever the `external` lane is selected. The workflow records raw official
 results without suppression, writes deterministic comparisons, and continues
 through every expanded client-revision/server-era combination before returning
 one aggregated result. `dual` is supported only when selected explicitly.
@@ -231,7 +230,7 @@ Copy `.env.example` to `.env`. Process values override the file.
 ```bash
 CF_INTEGRATION_ROOT=/path/to/contextforge-dev-tools
 CF_INTEGRATION_DIR=.integration
-CF_MCP_STACK_MODE=dataplane
+CF_MCP_LANE=external
 
 CF_CONTROLPLANE_REPO=https://github.com/IBM/mcp-context-forge.git
 CF_CONTROLPLANE_REF=main

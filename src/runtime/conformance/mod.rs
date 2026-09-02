@@ -712,7 +712,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 
         if !topologies.is_empty() && !interrupted {
             let cleanup_progress = Activity::spinner("Clear prior integration stacks");
-            let cleanup_result = self.cleanup(TopologySelection::All, CleanupKind::Reset);
+            let cleanup_result = self.cleanup(LaneSelection::All, CleanupKind::Reset);
             cleanup_progress.finish(cleanup_result.is_ok());
             if let Err(error) = cleanup_result {
                 failures.push(ConformanceOperationalFailure::server(
@@ -729,8 +729,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             }
             let target = conformance_target(topology);
             let run_routed = lanes.contains(&target);
-            let stack_progress =
-                Activity::spinner(format!("Prepare {}", topology.topology_label()));
+            let stack_progress = Activity::spinner(format!("Prepare {}", topology.lane_label()));
             let mut topology_failure = self.stack_up_for_conformance(topology, true).await.err();
             let stack_started = topology_failure.is_none();
             stack_progress.finish(topology_failure.is_none());
@@ -742,7 +741,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             if topology_failure.is_none() {
                 let fixture_progress = Activity::spinner(format!(
                     "Start the official fixture for {}",
-                    topology.topology_label()
+                    topology.lane_label()
                 ));
                 let (start_result, start_interrupted) = finish_phase_after_interrupt(
                     self.start_conformance_service(topology, server_era),
@@ -783,7 +782,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     Ok(client) => {
                         let provision_progress = Activity::spinner(format!(
                             "Register the official fixture for {}",
-                            topology.topology_label()
+                            topology.lane_label()
                         ));
                         let (provision_result, provision_interrupted) =
                             finish_phase_after_interrupt(
@@ -916,7 +915,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 failures.push(ConformanceOperationalFailure::server(
                     Some(target),
                     "run",
-                    format!("{} topology: {error}", topology.topology_label()),
+                    format!("{} lane: {error}", topology.lane_label()),
                 ));
             }
             if interrupted {
@@ -1720,7 +1719,7 @@ fn combine_cleanup_results(first: AppResult<()>, second: AppResult<()>) -> AppRe
 fn fixture_registration_context(topology: StackMode, server_era: ConformanceServerEra) -> String {
     format!(
         "ContextForge could not register the official fixture for {} with server era {} [{}]; routed tests for this lane were skipped",
-        topology.topology_label(),
+        topology.lane_label(),
         server_era.label(),
         server_era.protocol_versions_label()
     )
@@ -1972,7 +1971,7 @@ mod tests {
 
         assert_eq!(
             context,
-            "ContextForge could not register the official fixture for built-in dataplane with server era modern [2026-07-28]; routed tests for this lane were skipped"
+            "ContextForge could not register the official fixture for builtin with server era modern [2026-07-28]; routed tests for this lane were skipped"
         );
     }
 
@@ -2040,7 +2039,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "────────────\n MCP server conformance results: external dataplane\n Client era: modern [2026-07-28]\n Server era: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]\n       XFAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 1 xfailed, 0 xpassed, 0 failed, 0 skipped, 0 unknown"
+            "────────────\n MCP server conformance results: external\n Client era: modern [2026-07-28]\n Server era: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]\n       XFAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 1 xfailed, 0 xpassed, 0 failed, 0 skipped, 0 unknown"
         );
     }
 
@@ -2103,7 +2102,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "────────────\n MCP server conformance results: external dataplane\n Client era: modern [2026-07-28]\n Server era: modern [2026-07-28]\n        FAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 0 xfailed, 0 xpassed, 1 failed, 0 skipped, 0 unknown"
+            "────────────\n MCP server conformance results: external\n Client era: modern [2026-07-28]\n Server era: modern [2026-07-28]\n        FAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 0 xfailed, 0 xpassed, 1 failed, 0 skipped, 0 unknown"
         );
     }
 
@@ -2118,7 +2117,7 @@ mod tests {
             OutputStyle::plain(),
         );
 
-        assert!(rendered.contains("MCP client conformance results: external dataplane"));
+        assert!(rendered.contains("MCP client conformance results: external"));
         assert!(rendered.contains("Client era: modern [2026-07-28]"));
         assert!(rendered.contains("Server era: modern [2026-07-28]"));
         assert!(rendered.contains("client::external-data-plane::failing"));
