@@ -238,7 +238,7 @@ fn live_defaults_to_all_and_accepts_the_main_harness_groups() {
 }
 
 #[test]
-fn live_accepts_fixture_lane_and_explicit_protocol_version() {
+fn live_accepts_fixture_lane_and_explicit_protocol_mode() {
     let Command::Live(args) = parse(&[
         "cf-integration",
         "live",
@@ -247,7 +247,7 @@ fn live_accepts_fixture_lane_and_explicit_protocol_version() {
         "--group",
         "protocol",
         "--protocol-version",
-        "2025-06-18",
+        "legacy",
     ])
     .command
     else {
@@ -256,16 +256,12 @@ fn live_accepts_fixture_lane_and_explicit_protocol_version() {
 
     assert_eq!(args.target.lane, Some(CliLane::FixtureDirect));
     assert_eq!(args.group, LiveGroup::Protocol);
-    assert_eq!(
-        args.target.protocol_version,
-        Some(
-            "2025-06-18"
-                .parse::<ProtocolVersion>()
-                .expect("valid protocol version")
-        )
-    );
+    assert_eq!(args.target.protocol_version, Some(ProtocolVersion::Legacy));
+    assert_eq!(ProtocolVersion::Legacy.wire_version(), "2025-11-25");
+    assert_eq!(ProtocolVersion::Modern.wire_version(), "2026-07-28");
 
     rejected(&["cf-integration", "live", "--protocol-version", "latest"]);
+    rejected(&["cf-integration", "live", "--protocol-version", "2026-07-28"]);
 
     rejected(&["cf-integration", "live", "--lane", "fixture"]);
 }
@@ -294,29 +290,15 @@ fn live_rejects_removed_topology_alias() {
 fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
     fn assert_routed_target(target: &RoutedWorkflowTargetArgs) {
         assert_eq!(target.lane, Some(CliTopology::Controlplane));
-        assert_eq!(
-            target.protocol_version,
-            Some(
-                "2025-06-18"
-                    .parse::<ProtocolVersion>()
-                    .expect("valid protocol version")
-            )
-        );
+        assert_eq!(target.protocol_version, Some(ProtocolVersion::Legacy));
     }
 
     fn assert_fixture_target(target: &WorkflowTargetArgs) {
         assert_eq!(target.lane, Some(CliLane::BuiltInDataPlane));
-        assert_eq!(
-            target.protocol_version,
-            Some(
-                "2025-06-18"
-                    .parse::<ProtocolVersion>()
-                    .expect("valid protocol version")
-            )
-        );
+        assert_eq!(target.protocol_version, Some(ProtocolVersion::Legacy));
     }
 
-    let common = ["--lane", "controlplane", "--protocol-version", "2025-06-18"];
+    let common = ["--lane", "controlplane", "--protocol-version", "legacy"];
     let Command::Probe(probe) = parse(
         &["cf-integration", "probe"]
             .into_iter()
@@ -347,7 +329,7 @@ fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
         "--lane",
         "built-in-data-plane",
         "--protocol-version",
-        "2025-06-18",
+        "legacy",
     ])
     .command
     else {

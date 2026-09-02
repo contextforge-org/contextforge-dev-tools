@@ -16,7 +16,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 &settings,
                 &token,
                 (args.topology == StackMode::Dataplane).then_some(operation_server_id.as_str()),
-                args.protocol_version.as_str(),
+                args.protocol_version.wire_version(),
             )
             .map_err(AppFailure::from)?;
             let command_spec =

@@ -6,6 +6,8 @@ use uuid::Uuid;
 
 /// Latest MCP protocol version used when a workflow does not select one explicitly.
 pub(crate) const PROTOCOL_VERSION: &str = "2026-07-28";
+/// Latest initialization-based MCP protocol version used by legacy workflows.
+pub(crate) const LEGACY_PROTOCOL_VERSION: &str = "2025-11-25";
 /// Stateless MCP protocol version used by the modern dataplane lane.
 pub(crate) const STATELESS_PROTOCOL_VERSION: &str = "2026-07-28";
 /// Accepted MCP streamable-HTTP response media types.
@@ -35,6 +37,19 @@ pub(crate) fn jsonrpc_with_id(method: &str, params: Option<Value>, id: Value) ->
 #[must_use]
 pub(crate) fn is_stateless_protocol(protocol_version: &str) -> bool {
     protocol_version >= STATELESS_PROTOCOL_VERSION
+}
+
+/// Returns whether a value has the date-based syntax used by MCP revisions.
+#[must_use]
+pub(crate) fn is_protocol_revision(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
 }
 
 /// Builds the mandatory per-request metadata for stateless MCP requests.
@@ -194,5 +209,17 @@ pub(crate) fn tool_call_args(tool_name: &str) -> Option<Value> {
         | "fast-time-get_system_time"
         | "fast-time-get-system-time" => Some(json!({"timezone": "UTC"})),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protocol_revision_requires_the_date_based_wire_syntax() {
+        assert!(is_protocol_revision("2026-07-28"));
+        assert!(!is_protocol_revision("modern"));
+        assert!(!is_protocol_revision("2026-7-28"));
     }
 }

@@ -5,7 +5,6 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Component, PathBuf};
 use std::str::FromStr;
 
-use crate::conformance::DEFAULT_MCP_SPEC_VERSION;
 use crate::conformance::profile::{
     DUAL_CLIENT_PROTOCOL_VERSIONS, LEGACY_CLIENT_PROTOCOL_VERSIONS, MODERN_CLIENT_PROTOCOL_VERSIONS,
 };
@@ -157,7 +156,10 @@ impl StackAction {
             },
         };
         if matches!(self, Self::Up { .. }) {
-            format!("Topology: {topology}\nProtocol version: {DEFAULT_MCP_SPEC_VERSION}")
+            format!(
+                "Topology: {topology}\nProtocol version: {}",
+                ProtocolVersion::default()
+            )
         } else {
             format!("Topology: {topology}")
         }

@@ -4,6 +4,8 @@ mod sources;
 
 use super::*;
 
+const COMPOSE_PROTOCOL_VERSION_ENV: &str = "MCP_PROTOCOL_VERSION";
+
 impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn execute_stack(&self, action: StackAction) -> AppResult<()> {
         match action {
@@ -261,6 +263,12 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             if !command_environment.contains_key(key) {
                 command = command.env(key.clone(), value.value.clone());
             }
+        }
+        if let Some(protocol_version) = compose_protocol_version(
+            &command_environment,
+            self.environment_text(COMPOSE_PROTOCOL_VERSION_ENV),
+        )? {
+            command = command.env(COMPOSE_PROTOCOL_VERSION_ENV, protocol_version);
         }
         let (controlplane_pull_policy, dataplane_pull_policy) = compose_pull_policies(
             mode,
@@ -1031,6 +1039,24 @@ fn require_preloaded_image(label: &str, image: &OsStr, local_exists: bool) -> Ap
     )))
 }
 
+fn compose_protocol_version(
+    command_environment: &BTreeMap<OsString, OsString>,
+    configured: Option<&str>,
+) -> AppResult<Option<&'static str>> {
+    if command_environment.contains_key(OsStr::new(COMPOSE_PROTOCOL_VERSION_ENV)) {
+        return Ok(None);
+    }
+    let mode = configured
+        .filter(|value| !value.is_empty())
+        .map(str::parse::<ProtocolVersion>)
+        .transpose()
+        .map_err(|error| {
+            AppFailure::from(anyhow!("invalid {COMPOSE_PROTOCOL_VERSION_ENV}: {error}"))
+        })?
+        .unwrap_or_default();
+    Ok(Some(mode.wire_version()))
+}
+
 fn compose_pull_policies(
     mode: StackMode,
     build: bool,
@@ -1225,6 +1251,36 @@ mod tests {
                 .environment()
                 .get(OsStr::new(CONFORMANCE_SERVER_ERA_ENV)),
             Some(&OsString::from("modern"))
+        );
+    }
+
+    #[test]
+    fn compose_translates_semantic_protocol_modes_to_wire_revisions() {
+        let command_environment = BTreeMap::new();
+
+        assert_eq!(
+            compose_protocol_version(&command_environment, None)
+                .expect("default protocol mode should resolve"),
+            Some("2026-07-28")
+        );
+        assert_eq!(
+            compose_protocol_version(&command_environment, Some("legacy"))
+                .expect("legacy protocol mode should resolve"),
+            Some("2025-11-25")
+        );
+    }
+
+    #[test]
+    fn compose_preserves_an_explicit_internal_wire_revision() {
+        let command_environment = BTreeMap::from([(
+            OsString::from(COMPOSE_PROTOCOL_VERSION_ENV),
+            OsString::from("2025-11-25"),
+        )]);
+
+        assert_eq!(
+            compose_protocol_version(&command_environment, Some("modern"))
+                .expect("explicit command environment should be preserved"),
+            None
         );
     }
 

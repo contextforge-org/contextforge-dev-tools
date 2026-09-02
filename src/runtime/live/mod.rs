@@ -131,7 +131,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 .join("scripts")
                 .join("live_protocol"),
             inherited_python_path,
-            protocol_version.as_str(),
+            protocol_version.wire_version(),
         )
     }
 }

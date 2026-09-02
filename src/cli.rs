@@ -5,12 +5,12 @@ use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-use crate::mcp::protocol::PROTOCOL_VERSION;
+use crate::mcp::protocol::{LEGACY_PROTOCOL_VERSION, PROTOCOL_VERSION};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
 const RUN_TIME_ERROR: &str =
     "must be a positive Locust duration using h, m, and s at most once in that order";
-const PROTOCOL_VERSION_ERROR: &str = "must use the MCP YYYY-MM-DD version format";
+const PROTOCOL_VERSION_ERROR: &str = "must be modern or legacy";
 
 fn parse_positive_usize(value: &str) -> Result<usize, String> {
     let parsed = value
@@ -221,8 +221,8 @@ pub(crate) struct RoutedWorkflowTargetArgs {
     #[arg(long, value_enum)]
     pub(crate) lane: Option<CliTopology>,
 
-    /// MCP version; defaults to MCP_PROTOCOL_VERSION, then 2026-07-28.
-    #[arg(long)]
+    /// MCP mode; defaults to MCP_PROTOCOL_VERSION, then modern.
+    #[arg(long, value_enum)]
     pub(crate) protocol_version: Option<ProtocolVersion>,
 }
 
@@ -233,8 +233,8 @@ pub(crate) struct WorkflowTargetArgs {
     #[arg(long, value_enum)]
     pub(crate) lane: Option<CliLane>,
 
-    /// MCP version; defaults to MCP_PROTOCOL_VERSION, then 2026-07-28.
-    #[arg(long)]
+    /// MCP mode; defaults to MCP_PROTOCOL_VERSION, then modern.
+    #[arg(long, value_enum)]
     pub(crate) protocol_version: Option<ProtocolVersion>,
 }
 
@@ -339,27 +339,33 @@ pub(crate) enum LiveGroup {
     All,
 }
 
-/// A syntactically valid date-based MCP protocol version shared by workflows.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProtocolVersion(String);
-
-impl ProtocolVersion {
-    /// Returns the exact selected MCP protocol version.
-    #[must_use]
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
+/// Semantic MCP protocol mode shared by operational workflows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ProtocolVersion {
+    /// Use the latest per-request, stateless MCP revision.
+    #[default]
+    Modern,
+    /// Use the latest initialization-based MCP revision.
+    Legacy,
 }
 
-impl Default for ProtocolVersion {
-    fn default() -> Self {
-        Self(PROTOCOL_VERSION.to_owned())
+impl ProtocolVersion {
+    /// Returns the exact MCP wire revision selected by this mode.
+    #[must_use]
+    pub(crate) const fn wire_version(self) -> &'static str {
+        match self {
+            Self::Modern => PROTOCOL_VERSION,
+            Self::Legacy => LEGACY_PROTOCOL_VERSION,
+        }
     }
 }
 
 impl fmt::Display for ProtocolVersion {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(match self {
+            Self::Modern => "modern",
+            Self::Legacy => "legacy",
+        })
     }
 }
 
@@ -367,18 +373,10 @@ impl FromStr for ProtocolVersion {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let bytes = value.as_bytes();
-        let valid = bytes.len() == 10
-            && bytes[4] == b'-'
-            && bytes[7] == b'-'
-            && bytes
-                .iter()
-                .enumerate()
-                .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit());
-        if valid {
-            Ok(Self(value.to_owned()))
-        } else {
-            Err(String::from(PROTOCOL_VERSION_ERROR))
+        match value {
+            "modern" => Ok(Self::Modern),
+            "legacy" => Ok(Self::Legacy),
+            _ => Err(String::from(PROTOCOL_VERSION_ERROR)),
         }
     }
 }

@@ -115,7 +115,7 @@ all cleanup failures.
 Probe, load, and Inspector use physical lanes:
 
 ```bash
-cf-integration probe --lane dataplane --protocol-version 2026-07-28
+cf-integration probe --lane dataplane --protocol-version modern
 cf-integration load --lane dataplane --smoke
 cf-integration debug inspect --lane dataplane --method tools/list
 ```
@@ -126,7 +126,7 @@ Live and conformance share semantic lanes: `fixture-direct`,
 ```bash
 cf-integration live --lane external-data-plane --group mcp
 cf-integration live --lane fixture-direct --group protocol \
-  --protocol-version 2025-06-18
+  --protocol-version legacy
 
 cf-integration conformance run
 cf-integration conformance run \
@@ -143,6 +143,11 @@ Workflows accept only `--lane`; `--topology` is reserved for stack commands.
 The direct fixture spelling is only `fixture-direct`. Probe, load, live, and
 Inspector use `--protocol-version`; conformance uses the explicit
 `--client-era` and `--server-era` matrix axes.
+
+Operational protocol selection is semantic: `modern` maps to the latest
+per-request revision and `legacy` maps to the latest initialization-based
+revision. Exact date revisions remain internal wire values and conformance
+matrix dimensions.
 
 ## MCP and conformance behavior
 
@@ -242,7 +247,7 @@ CF_FAST_TIME_EXPECTED_IMAGE=ghcr.io/ibm/cfex-mcp-fast-time-server:latest
 CF_FAST_TIME_SERVER_ID=9779b6698cbd4b4995ee04a4fab38737
 
 MCP_CLI_BASE_URL=http://127.0.0.1:8080
-MCP_PROTOCOL_VERSION=2026-07-28
+MCP_PROTOCOL_VERSION=modern
 MCP_SERVER_ID=9779b6698cbd4b4995ee04a4fab38737
 
 PLATFORM_ADMIN_EMAIL=admin@example.com

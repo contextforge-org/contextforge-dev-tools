@@ -22,7 +22,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 request_timeout: Duration::from_secs(
                     self.environment_u64("CF_PROBE_REQUEST_TIMEOUT", 30)?,
                 ),
-                protocol_version: protocol_version.to_string(),
+                protocol_version: protocol_version.wire_version().to_owned(),
                 output_style: OutputStyle::stdout(),
             };
             let transport = GatewayClient::builder(

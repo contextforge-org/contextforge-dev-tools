@@ -107,7 +107,7 @@ fn every_subcommand_reports_its_resolved_topology_at_startup() {
     let cases: &[(&[&str], &str)] = &[
         (
             &["cf-integration", "stack", "up"],
-            "Topology: external dataplane\nProtocol version: 2026-07-28",
+            "Topology: external dataplane\nProtocol version: modern",
         ),
         (
             &["cf-integration", "stack", "down"],
@@ -127,15 +127,15 @@ fn every_subcommand_reports_its_resolved_topology_at_startup() {
         ),
         (
             &["cf-integration", "probe"],
-            "Topology: external dataplane\nProtocol version: 2026-07-28",
+            "Topology: external dataplane\nProtocol version: modern",
         ),
         (
             &["cf-integration", "load"],
-            "Topology: external dataplane\nProtocol version: 2026-07-28",
+            "Topology: external dataplane\nProtocol version: modern",
         ),
         (
             &["cf-integration", "live"],
-            "Topology: external dataplane\nProtocol version: 2026-07-28",
+            "Topology: external dataplane\nProtocol version: modern",
         ),
         (
             &["cf-integration", "conformance", "run"],
@@ -147,7 +147,7 @@ fn every_subcommand_reports_its_resolved_topology_at_startup() {
         ),
         (
             &["cf-integration", "debug", "inspect"],
-            "Topology: external dataplane\nProtocol version: 2026-07-28",
+            "Topology: external dataplane\nProtocol version: modern",
         ),
         (
             &["cf-integration", "debug", "token", "--kind", "admin"],
@@ -242,15 +242,13 @@ fn topology_precedence_is_cli_then_environment_then_dataplane() {
                 "--lane",
                 "dataplane",
                 "--protocol-version",
-                "2025-06-18",
+                "legacy",
             ],
             &[("CF_MCP_STACK_MODE", "invalid")],
         ),
         Action::Probe {
             topology: StackMode::Dataplane,
-            protocol_version: "2025-06-18"
-                .parse::<ProtocolVersion>()
-                .expect("valid protocol version"),
+            protocol_version: ProtocolVersion::Legacy,
         }
     );
 }
@@ -263,6 +261,23 @@ fn invalid_environment_topology_is_rejected_when_used() {
         .collect();
     let error = resolve_action(cli, &environment).expect_err("invalid topology must fail");
     assert!(error.to_string().contains("invalid CF_MCP_STACK_MODE"));
+}
+
+#[test]
+fn date_based_protocol_environment_is_rejected() {
+    let cli = Cli::try_parse_from(["cf-integration", "probe"]).expect("CLI should parse");
+    let environment = [(
+        OsString::from("MCP_PROTOCOL_VERSION"),
+        OsString::from("2026-07-28"),
+    )]
+    .into_iter()
+    .collect();
+    let error = resolve_action(cli, &environment).expect_err("wire revisions must remain internal");
+
+    assert_eq!(
+        error.to_string(),
+        "invalid MCP_PROTOCOL_VERSION: must be modern or legacy"
+    );
 }
 
 #[test]
@@ -303,7 +318,7 @@ fn load_preserves_explicit_locust_settings() {
                 "--lane",
                 "controlplane",
                 "--protocol-version",
-                "2025-06-18",
+                "legacy",
                 "--smoke",
                 "--users",
                 "2",
@@ -316,9 +331,7 @@ fn load_preserves_explicit_locust_settings() {
         ),
         Action::Load(ResolvedLoadArgs {
             topology: StackMode::Controlplane,
-            protocol_version: "2025-06-18"
-                .parse::<ProtocolVersion>()
-                .expect("valid protocol version"),
+            protocol_version: ProtocolVersion::Legacy,
             request: LoadRequest {
                 smoke: true,
                 users: Some(2),
@@ -336,15 +349,13 @@ fn live_resolves_lane_group_and_protocol_version() {
             &["cf-integration", "live", "--group", "mcp"],
             &[
                 ("CF_MCP_STACK_MODE", "controlplane"),
-                ("MCP_PROTOCOL_VERSION", "2025-06-18"),
+                ("MCP_PROTOCOL_VERSION", "legacy"),
             ],
         ),
         Action::Live {
             lane: SemanticLane::BuiltInDataPlane,
             group: LiveGroup::Mcp,
-            protocol_version: "2025-06-18"
-                .parse::<ProtocolVersion>()
-                .expect("valid protocol version"),
+            protocol_version: ProtocolVersion::Legacy,
         }
     );
 }
@@ -361,19 +372,17 @@ fn live_fixture_lane_bypasses_topology_and_cli_version_wins() {
                 "--group",
                 "protocol",
                 "--protocol-version",
-                "2025-03-26",
+                "modern",
             ],
             &[
                 ("CF_MCP_STACK_MODE", "invalid"),
-                ("MCP_PROTOCOL_VERSION", "2025-06-18"),
+                ("MCP_PROTOCOL_VERSION", "legacy"),
             ],
         ),
         Action::Live {
             lane: SemanticLane::FixtureDirect,
             group: LiveGroup::Protocol,
-            protocol_version: "2025-03-26"
-                .parse::<ProtocolVersion>()
-                .expect("valid protocol version"),
+            protocol_version: ProtocolVersion::Modern,
         }
     );
 }
@@ -544,7 +553,7 @@ fn debug_token_and_inspector_remain_explicit_non_gate_operations() {
                 "--lane",
                 "controlplane",
                 "--protocol-version",
-                "2025-06-18",
+                "legacy",
                 "--method",
                 "prompts/list",
             ],
@@ -552,9 +561,7 @@ fn debug_token_and_inspector_remain_explicit_non_gate_operations() {
         ),
         Action::Debug(DebugAction::Inspect {
             topology: StackMode::Controlplane,
-            protocol_version: "2025-06-18"
-                .parse::<ProtocolVersion>()
-                .expect("valid protocol version"),
+            protocol_version: ProtocolVersion::Legacy,
             method: "prompts/list".to_owned(),
             server_id: None,
         })

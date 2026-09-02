@@ -43,7 +43,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             let proxy = AuthProxy::start_with_protocol_version(
                 endpoint,
                 &token,
-                Some(protocol_version.as_str()),
+                Some(protocol_version.wire_version()),
             )
             .await
             .context("failed to start the Inspector authentication proxy")
