@@ -290,6 +290,10 @@ pub(crate) struct LoadArgs {
     #[arg(long)]
     pub(crate) standalone: bool,
 
+    /// Enable the ClickStack observability UI during the load test.
+    #[arg(long)]
+    pub(crate) observability: bool,
+
     /// Use smoke-test settings.
     #[arg(long)]
     pub(crate) smoke: bool,

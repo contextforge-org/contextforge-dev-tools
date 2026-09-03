@@ -82,6 +82,9 @@ impl Action {
                 if args.standalone {
                     summary.push_str("\nControl plane: disabled during load");
                 }
+                if args.observability {
+                    summary.push_str("\nObservability: ClickStack enabled during load");
+                }
                 summary
             }
             Self::Live {
@@ -233,6 +236,7 @@ pub(crate) struct ResolvedLoadArgs {
     pub(crate) topology: StackMode,
     pub(crate) protocol_version: ProtocolVersion,
     pub(crate) standalone: bool,
+    pub(crate) observability: bool,
     pub(crate) request: LoadRequest,
 }
 
@@ -320,6 +324,7 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
                     ProtocolVersion::default(),
                 )?,
                 standalone: args.standalone,
+                observability: args.observability,
                 request: LoadRequest {
                     smoke: args.smoke,
                     users: args.users,

@@ -94,13 +94,60 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         F: FnOnce(String, Vec<String>) -> Fut,
         Fut: Future<Output = AppResult<()>>,
     {
+        self.with_managed_authenticated_target_project(
+            topology,
+            server_id,
+            standalone,
+            self.compose_project(topology),
+            operation,
+        )
+        .await
+    }
+
+    pub(super) async fn with_managed_performance_target<F, Fut>(
+        &self,
+        topology: StackMode,
+        server_id: &str,
+        standalone: bool,
+        observability: bool,
+        operation: F,
+    ) -> AppResult<()>
+    where
+        F: FnOnce(String, Vec<String>) -> Fut,
+        Fut: Future<Output = AppResult<()>>,
+    {
+        self.with_managed_authenticated_target_project(
+            topology,
+            server_id,
+            standalone,
+            self.performance_compose_project(topology, observability),
+            operation,
+        )
+        .await
+    }
+
+    async fn with_managed_authenticated_target_project<F, Fut>(
+        &self,
+        topology: StackMode,
+        server_id: &str,
+        standalone: bool,
+        project: ComposeProject,
+        operation: F,
+    ) -> AppResult<()>
+    where
+        F: FnOnce(String, Vec<String>) -> Fut,
+        Fut: Future<Output = AppResult<()>>,
+    {
         if standalone && topology != StackMode::Dataplane {
             return Err(AppFailure::from(anyhow!(
                 "standalone mode requires the external lane"
             )));
         }
         let mut scope = ManagedSessionScope::new(self, topology, standalone);
-        let primary = match self.stack_up(topology, false).await {
+        let primary = match self
+            .stack_up_with_project(topology, false, project, false)
+            .await
+        {
             Ok(()) => match self
                 .prepare_authenticated_target(topology, server_id, standalone)
                 .await

@@ -99,7 +99,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .await
     }
 
-    async fn stack_up_with_project(
+    pub(super) async fn stack_up_with_project(
         &self,
         mode: StackMode,
         fresh: bool,
@@ -209,16 +209,41 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         mode: StackMode,
         conformance_endpoint: &url::Url,
     ) -> AppResult<()> {
+        let observability_ui = format!(
+            "http://127.0.0.1:{}",
+            self.environment_text("CF_OBSERVABILITY_UI_PORT")
+                .filter(|port| !port.is_empty())
+                .unwrap_or("3000")
+        );
         let summary = format_stack_endpoint_summary(
             self.base_url()?,
             &self.public_mcp_endpoint(mode)?,
             conformance_endpoint,
+            &observability_ui,
         );
         println!("{}", OutputStyle::stdout().info(&summary));
         Ok(())
     }
 
     pub(super) fn compose_project(&self, mode: StackMode) -> ComposeProject {
+        self.routed_compose_project(mode)
+            .with_observability(self.config.asset_root(), mode == StackMode::Dataplane)
+    }
+
+    pub(super) fn performance_compose_project(
+        &self,
+        mode: StackMode,
+        observability: bool,
+    ) -> ComposeProject {
+        let project = self.routed_compose_project(mode);
+        if observability {
+            project.with_observability(self.config.asset_root(), mode == StackMode::Dataplane)
+        } else {
+            project
+        }
+    }
+
+    fn routed_compose_project(&self, mode: StackMode) -> ComposeProject {
         let project = match mode {
             StackMode::Dataplane => ComposeProject::dataplane(
                 self.config.asset_root(),
@@ -665,6 +690,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         for service in [
             "gateway",
             "dataplane",
+            "clickstack",
             "nginx",
             "postgres",
             "pgbouncer",
@@ -1114,9 +1140,10 @@ fn format_stack_endpoint_summary(
     public_origin: &str,
     public_mcp_endpoint: &url::Url,
     conformance_endpoint: &url::Url,
+    observability_ui: &str,
 ) -> String {
     format!(
-        "Gateway/API: {public_origin}\nPublic MCP: {public_mcp_endpoint}\nConformance MCP (direct): {conformance_endpoint}"
+        "Gateway/API: {public_origin}\nPublic MCP: {public_mcp_endpoint}\nConformance MCP (direct): {conformance_endpoint}\nObservability: {observability_ui}"
     )
 }
 
@@ -1304,12 +1331,16 @@ mod tests {
             url::Url::parse("http://127.0.0.1:8080/servers/server-id/mcp").expect("public URL");
         let conformance = url::Url::parse("http://127.0.0.1:49152/mcp").expect("conformance URL");
 
-        let summary =
-            format_stack_endpoint_summary("http://127.0.0.1:8080", &public_mcp, &conformance);
+        let summary = format_stack_endpoint_summary(
+            "http://127.0.0.1:8080",
+            &public_mcp,
+            &conformance,
+            "http://127.0.0.1:3000",
+        );
 
         assert_eq!(
             summary,
-            "Gateway/API: http://127.0.0.1:8080\nPublic MCP: http://127.0.0.1:8080/servers/server-id/mcp\nConformance MCP (direct): http://127.0.0.1:49152/mcp"
+            "Gateway/API: http://127.0.0.1:8080\nPublic MCP: http://127.0.0.1:8080/servers/server-id/mcp\nConformance MCP (direct): http://127.0.0.1:49152/mcp\nObservability: http://127.0.0.1:3000"
         );
     }
 

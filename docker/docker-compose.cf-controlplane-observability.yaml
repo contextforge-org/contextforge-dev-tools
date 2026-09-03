@@ -1,0 +1,15 @@
+# OpenTelemetry trace export for the control plane.
+
+services:
+  gateway:
+    environment:
+      OTEL_ENABLE_OBSERVABILITY: "true"
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://clickstack:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+      OTEL_EXPORTER_OTLP_INSECURE: "true"
+      OTEL_SERVICE_NAME: cf-controlplane
+      OTEL_RESOURCE_ATTRIBUTES: deployment.environment=integration,service.namespace=contextforge
+    depends_on:
+      clickstack:
+        condition: service_healthy

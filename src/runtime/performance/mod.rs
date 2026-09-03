@@ -9,10 +9,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let server_id = self.default_server_id().to_owned();
         let operation_server_id = server_id.clone();
         let preparation = Activity::spinner("Preparing performance stack");
-        self.with_managed_authenticated_target(
+        self.with_managed_performance_target(
             args.topology,
             &server_id,
             args.standalone,
+            args.observability,
             |token, standalone_tool_names| async move {
                 let command = LocustCommand::new_with_protocol_version(
                     &self.config,

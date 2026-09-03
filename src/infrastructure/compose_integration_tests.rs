@@ -188,6 +188,11 @@ fn compose_overlays_assign_short_container_display_names() {
     .expect("read standalone conformance fixture Compose file");
     let fixture: yaml_serde::Value =
         yaml_serde::from_str(&fixture).expect("parse standalone conformance fixture Compose file");
+    let observability =
+        fs::read_to_string(workspace_root().join("docker/docker-compose.cf-telemetry.yaml"))
+            .expect("read observability Compose overlay");
+    let observability: yaml_serde::Value =
+        yaml_serde::from_str(&observability).expect("parse observability Compose overlay");
 
     for (service, expected_name) in [
         ("gateway", "cf-controlplane"),
@@ -224,6 +229,10 @@ fn compose_overlays_assign_short_container_display_names() {
     assert_eq!(
         conformance["services"]["mcp_conformance_proxy"]["labels"]["name"].as_str(),
         Some("cf-conformance-proxy")
+    );
+    assert_eq!(
+        observability["services"]["clickstack"]["labels"]["name"].as_str(),
+        Some("cf-clickstack")
     );
 }
 
@@ -413,11 +422,135 @@ fn conformance_fixture_is_an_explicit_overlay_and_profile() {
         ComposeProject::conformance_fixture(Path::new("/repo"), OsString::from("fixture"));
     assert_eq!(
         standalone.files(),
-        [PathBuf::from(
-            "/repo/docker/docker-compose.cf-conformance-fixture.yaml"
-        )]
+        [
+            PathBuf::from("/repo/docker/docker-compose.cf-conformance-fixture.yaml"),
+            PathBuf::from("/repo/docker/docker-compose.cf-telemetry.yaml"),
+        ]
     );
     assert_eq!(standalone.profiles(), ["conformance"]);
+}
+
+#[test]
+fn observability_overlays_are_explicit_and_include_the_selected_lane() {
+    let root = Path::new("/repo");
+    let checkout = Path::new("/checkout");
+    let built_in = ComposeProject::controlplane(root, checkout, OsString::from("built-in"), false)
+        .with_observability(root, false);
+    let external = ComposeProject::dataplane(root, checkout, OsString::from("external"), false)
+        .with_observability(root, true);
+
+    assert!(built_in.files().ends_with(&[
+        PathBuf::from("/repo/docker/docker-compose.cf-telemetry.yaml"),
+        PathBuf::from("/repo/docker/docker-compose.cf-controlplane-observability.yaml"),
+    ]));
+    assert!(external.files().ends_with(&[
+        PathBuf::from("/repo/docker/docker-compose.cf-telemetry.yaml"),
+        PathBuf::from("/repo/docker/docker-compose.cf-controlplane-observability.yaml"),
+        PathBuf::from("/repo/docker/docker-compose.cf-dataplane-observability.yaml"),
+    ]));
+}
+
+#[test]
+fn observability_is_ephemeral_and_exports_both_routed_services() {
+    let root = workspace_root();
+    let compose = fs::read_to_string(root.join("docker/docker-compose.cf-telemetry.yaml"))
+        .expect("read observability Compose overlay");
+    let compose: yaml_serde::Value =
+        yaml_serde::from_str(&compose).expect("parse observability Compose overlay");
+    let services = compose["services"]
+        .as_mapping()
+        .expect("telemetry services must be a mapping");
+    let clickstack = &compose["services"]["clickstack"];
+
+    assert_eq!(services.len(), 1);
+    assert!(
+        clickstack["image"]
+            .as_str()
+            .expect("ClickStack image must be text")
+            .contains("clickstack-all-in-one:2.37.0@sha256:")
+    );
+    assert_eq!(
+        clickstack["ports"][0].as_str(),
+        Some("127.0.0.1:${CF_OBSERVABILITY_UI_PORT:-3000}:8080")
+    );
+    assert_eq!(
+        clickstack["tmpfs"]
+            .as_sequence()
+            .expect("ClickStack storage must use tmpfs")
+            .iter()
+            .filter_map(yaml_serde::Value::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "/data/db",
+            "/var/lib/clickhouse",
+            "/var/log/clickhouse-server"
+        ]
+    );
+    assert_eq!(
+        clickstack["environment"]["CUSTOM_OTELCOL_CONFIG_FILE"].as_str(),
+        Some("/etc/otelcol-contrib/custom.config.yaml")
+    );
+    assert_eq!(
+        clickstack["volumes"][0].as_str(),
+        Some(
+            "${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/docker/clickstack/collector.yaml:/etc/otelcol-contrib/custom.config.yaml:ro"
+        )
+    );
+
+    let collector = fs::read_to_string(root.join("docker/clickstack/collector.yaml"))
+        .expect("read ClickStack collector extension");
+    let collector: yaml_serde::Value =
+        yaml_serde::from_str(&collector).expect("parse ClickStack collector extension");
+    for pipeline in ["traces/integration", "metrics/integration"] {
+        assert_eq!(
+            collector["service"]["pipelines"][pipeline]["receivers"][0].as_str(),
+            Some("otlp/hyperdx")
+        );
+        assert_eq!(
+            collector["service"]["pipelines"][pipeline]["exporters"][0].as_str(),
+            Some("clickhouse")
+        );
+    }
+
+    let gateway =
+        fs::read_to_string(root.join("docker/docker-compose.cf-controlplane-observability.yaml"))
+            .expect("read gateway observability overlay");
+    let gateway: yaml_serde::Value =
+        yaml_serde::from_str(&gateway).expect("parse gateway observability overlay");
+    assert_eq!(
+        gateway["services"]["gateway"]["environment"]["OTEL_EXPORTER_OTLP_ENDPOINT"].as_str(),
+        Some("http://clickstack:4317")
+    );
+
+    let dataplane =
+        fs::read_to_string(root.join("docker/docker-compose.cf-dataplane-observability.yaml"))
+            .expect("read dataplane observability overlay");
+    let dataplane: yaml_serde::Value =
+        yaml_serde::from_str(&dataplane).expect("parse dataplane observability overlay");
+    assert_eq!(
+        dataplane["services"]["dataplane"]["environment"]
+            ["CONTEXTFORGE_DATA_PLANE_OTEL_EXPORTER_OTLP_ENDPOINT"]
+            .as_str(),
+        Some("http://clickstack:4318/v1/traces")
+    );
+    assert_eq!(
+        dataplane["services"]["dataplane"]["environment"]
+            ["CONTEXTFORGE_DATA_PLANE_ENABLE_OTEL_METRICS"]
+            .as_str(),
+        Some("true")
+    );
+    assert_eq!(
+        dataplane["services"]["dataplane"]["environment"]
+            ["CONTEXTFORGE_DATA_PLANE_OTEL_EXPORTER_OTLP_METRICS_ENDPOINT"]
+            .as_str(),
+        Some("http://clickstack:4318/v1/metrics")
+    );
+    assert_eq!(
+        dataplane["services"]["dataplane"]["environment"]
+            ["CONTEXTFORGE_DATA_PLANE_OTEL_EXPORTER_OTLP_PROTOCOL"]
+            .as_str(),
+        Some("http-protobuf")
+    );
 }
 
 #[test]

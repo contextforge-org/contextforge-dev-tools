@@ -321,6 +321,7 @@ fn load_preserves_explicit_locust_settings() {
             topology: StackMode::Controlplane,
             protocol_version: ProtocolVersion::Legacy,
             standalone: false,
+            observability: false,
             request: LoadRequest {
                 smoke: true,
                 users: Some(2),
@@ -349,6 +350,7 @@ fn standalone_load_is_external_only() {
             topology: StackMode::Dataplane,
             protocol_version: ProtocolVersion::default(),
             standalone: true,
+            observability: false,
             request: LoadRequest {
                 smoke: false,
                 users: None,
@@ -373,6 +375,20 @@ fn standalone_load_is_external_only() {
     let error = resolve_action(cli, &Environment::new())
         .expect_err("standalone mode must reject the built-in lane");
     assert_eq!(error.to_string(), "--standalone requires --lane external");
+}
+
+#[test]
+fn load_enables_observability_only_when_requested() {
+    let enabled = action(&["cf-integration", "load", "--observability"], &[]);
+    let Action::Load(args) = &enabled else {
+        panic!("expected load action")
+    };
+
+    assert!(args.observability);
+    assert_eq!(
+        enabled.startup_summary(),
+        "Lane: external\nProtocol version: modern\nObservability: ClickStack enabled during load"
+    );
 }
 
 #[test]

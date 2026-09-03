@@ -85,6 +85,15 @@ cf-integration stack down --lane all --volumes
 services unless service names are supplied. `config` prints merged Compose
 configuration. `down --volumes` also removes persistent volumes.
 
+ClickStack starts by default for `stack`, `probe`, `live`, `conformance`, and
+`debug inspect`. While the stack or test is running, open the HyperDX UI at
+<http://127.0.0.1:3000> to inspect traces and metrics. On first access, create
+a temporary local user; its sources are configured automatically. The external
+dataplane exports the exact
+HTTP counters, latency histograms, in-flight gauge, and body sizes recorded by
+its `HttpMetricsLayer`; allow 30 seconds for its first export. All telemetry
+storage is ephemeral and disappears with the stack.
+
 ### `probe`
 
 Probe one public MCP route, including discovery or initialization,
@@ -102,7 +111,7 @@ Run Locust against one public MCP route:
 ```bash
 cf-integration load [--lane builtin|external] \
   [--protocol-version modern|legacy] [--standalone] [--smoke] \
-  [--users N] [--spawn-rate N] [--run-time DURATION]
+  [--observability] [--users N] [--spawn-rate N] [--run-time DURATION]
 
 # Compare both lanes for two minutes
 cf-integration load --lane builtin --protocol-version legacy \
@@ -113,11 +122,18 @@ cf-integration load --lane external --protocol-version legacy \
 # Measure only the external dataplane request path
 cargo run -- load --lane external --protocol-version legacy --standalone \
   --users 10 --spawn-rate 2 --run-time 2m
+
+# Inspect traces and native HTTP metrics while using the mocked Redis snapshot
+cargo run -- load --lane external --protocol-version legacy --standalone \
+  --observability --users 10 --spawn-rate 2 --run-time 2m
 ```
 
 `--smoke` selects a short smoke workload. Duration accepts positive `h`,
 `m`, and `s` groups such as `2m30s` or `1h30m`. Defaults come from
 `LOCUST_USERS`, `LOCUST_SPAWN_RATE`, and `LOCUST_RUN_TIME`.
+Observability is disabled for load tests by default to avoid skewing
+performance results; pass `--observability` when diagnostics are more important
+than an uncontaminated benchmark.
 
 `--standalone` is valid only with `--lane external`. Each run starts the full
 stack to issue a scoped token, starts an isolated current-protocol MCP fixture,

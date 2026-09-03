@@ -166,10 +166,11 @@ impl StackCommandPlan {
         start_locust_ui: bool,
         locust_workers: usize,
     ) -> Self {
-        let mut arguments = vec![OsString::from("up"), OsString::from("-d")];
-        if mode == StackMode::Dataplane {
-            arguments.push(OsString::from("--remove-orphans"));
-        }
+        let mut arguments = vec![
+            OsString::from("up"),
+            OsString::from("-d"),
+            OsString::from("--remove-orphans"),
+        ];
         if build {
             arguments.push(OsString::from("--build"));
         }
@@ -320,6 +321,7 @@ impl FreshnessSnapshot {
         for service in [
             "gateway",
             "dataplane",
+            "clickstack",
             "nginx",
             "postgres",
             "pgbouncer",

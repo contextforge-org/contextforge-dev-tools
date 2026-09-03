@@ -1,0 +1,14 @@
+# OpenTelemetry trace export for the external Rust dataplane.
+
+services:
+  dataplane:
+    environment:
+      CONTEXTFORGE_DATA_PLANE_ENABLE_OPEN_TELEMETRY: "true"
+      CONTEXTFORGE_DATA_PLANE_OTEL_EXPORTER_OTLP_ENDPOINT: http://clickstack:4318/v1/traces
+      CONTEXTFORGE_DATA_PLANE_OTEL_EXPORTER_OTLP_PROTOCOL: http-protobuf
+      CONTEXTFORGE_DATA_PLANE_OTEL_SERVICE_NAME: cf-dataplane
+      CONTEXTFORGE_DATA_PLANE_ENABLE_OTEL_METRICS: "true"
+      CONTEXTFORGE_DATA_PLANE_OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: http://clickstack:4318/v1/metrics
+    depends_on:
+      clickstack:
+        condition: service_healthy

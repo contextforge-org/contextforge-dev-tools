@@ -1,0 +1,12 @@
+# Accept harness telemetry immediately, without depending on HyperDX onboarding.
+
+service:
+  pipelines:
+    traces/integration:
+      receivers: [otlp/hyperdx]
+      processors: [memory_limiter, batch]
+      exporters: [clickhouse]
+    metrics/integration:
+      receivers: [otlp/hyperdx]
+      processors: [memory_limiter, batch]
+      exporters: [clickhouse]

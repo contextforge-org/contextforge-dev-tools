@@ -130,7 +130,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         self.runner.run_async(&build).await?;
 
         let up = self.standalone_conformance_environment(
-            project.command(["up", "-d", "--wait", OFFICIAL_CONFORMANCE_SERVICE]),
+            project.command([
+                "up",
+                "-d",
+                "--wait",
+                OFFICIAL_CONFORMANCE_SERVICE,
+                "clickstack",
+            ]),
             server_era,
         );
         self.runner.run_async(&up).await.map_err(AppFailure::from)

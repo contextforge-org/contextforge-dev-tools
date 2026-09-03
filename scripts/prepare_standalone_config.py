@@ -37,6 +37,10 @@ def token_subject(token: str) -> str:
 def prepare_config(server_id: str, protocol_version: str) -> dict:
     if not server_id:
         raise SystemExit("virtual-host-id must not be empty")
+    routes = {
+        name: {"backend_name": BACKEND_NAME, "upstream_name": name}
+        for name in TOOL_NAMES
+    }
     return {
         "virtual_hosts": {
             server_id: {
@@ -60,7 +64,14 @@ def prepare_config(server_id: str, protocol_version: str) -> dict:
                         "completion": {},
                         "tool_schemas": {name: {} for name in TOOL_NAMES},
                     }
-                }
+                },
+                # Published dataplane images can trail the control-plane schema.
+                # The dataplane serializer ignores fields it does not understand,
+                # so publish both routing shapes while the two releases overlap.
+                "tools": routes,
+                "resources": {},
+                "resource_templates": {},
+                "prompts": {},
             }
         }
     }

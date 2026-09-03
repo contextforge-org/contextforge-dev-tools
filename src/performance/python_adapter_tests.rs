@@ -62,6 +62,11 @@ assert backend["url"] == "http://mcp_conformance_server:3000/mcp"
 assert backend["mcp_protocol_version"] == "2026-07-28"
 assert backend["tool_name_aliases"] == [{"downstream_prefixed_name": "test_simple_text", "upstream_name": "test_simple_text"}]
 assert backend["tool_schemas"] == {"test_simple_text": {}}
+virtual_host = prepared["virtual_hosts"]["server-123"]
+assert virtual_host["tools"] == {"test_simple_text": {"backend_name": "standalone-load", "upstream_name": "test_simple_text"}}
+assert virtual_host["resources"] == {}
+assert virtual_host["resource_templates"] == {}
+assert virtual_host["prompts"] == {}
 "#;
     let output = Command::new(python())
         .arg("-c")
