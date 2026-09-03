@@ -18,6 +18,7 @@ include = [
     "/src/**",
     "/docker/**",
     "/scripts/locustfile_mcp.py",
+    "/scripts/prepare_standalone_config.py",
     "/scripts/live_protocol/sitecustomize.py",
     "/scripts/conformance/write_client_config.py",
     "/tests/conformance/baselines/**",

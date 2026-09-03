@@ -77,7 +77,13 @@ impl Action {
                 protocol_version,
                 ..
             }) => lane_and_protocol(*topology, protocol_version),
-            Self::Load(args) => lane_and_protocol(args.topology, &args.protocol_version),
+            Self::Load(args) => {
+                let mut summary = lane_and_protocol(args.topology, &args.protocol_version);
+                if args.standalone {
+                    summary.push_str("\nControl plane: disabled during load");
+                }
+                summary
+            }
             Self::Live {
                 lane,
                 protocol_version,
@@ -226,6 +232,7 @@ pub(crate) enum StackAction {
 pub(crate) struct ResolvedLoadArgs {
     pub(crate) topology: StackMode,
     pub(crate) protocol_version: ProtocolVersion,
+    pub(crate) standalone: bool,
     pub(crate) request: LoadRequest,
 }
 
@@ -302,6 +309,9 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
         }
         Command::Load(args) => {
             let topology = resolve_lane(args.target.lane, environment)?;
+            if args.standalone && topology != StackMode::Dataplane {
+                bail!("--standalone requires --lane external");
+            }
             Ok(Action::Load(ResolvedLoadArgs {
                 topology,
                 protocol_version: resolve_protocol_version(
@@ -309,6 +319,7 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
                     environment,
                     ProtocolVersion::default(),
                 )?,
+                standalone: args.standalone,
                 request: LoadRequest {
                     smoke: args.smoke,
                     users: args.users,

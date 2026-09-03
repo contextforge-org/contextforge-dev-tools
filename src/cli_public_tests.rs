@@ -207,6 +207,7 @@ fn stack_logs_preserve_service_arguments() {
 fn load_keeps_validated_locust_settings() {
     let Command::Load(LoadArgs {
         target,
+        standalone,
         users,
         spawn_rate,
         run_time,
@@ -227,6 +228,7 @@ fn load_keeps_validated_locust_settings() {
     };
     assert_eq!(target.lane, None);
     assert_eq!(target.protocol_version, None);
+    assert!(!standalone);
     assert_eq!(users, Some(2));
     assert_eq!(spawn_rate, Some(0.5));
     assert_eq!(run_time.as_deref(), Some("1m30s"));
@@ -235,6 +237,24 @@ fn load_keeps_validated_locust_settings() {
     rejected(&["cf-integration", "load", "--run-time", "1ms"]);
     rejected(&["cf-integration", "load", "--run-time", "zero"]);
     rejected(&["cf-integration", "load", "--engine", "locust"]);
+}
+
+#[test]
+fn load_accepts_standalone_external_dataplane_mode() {
+    let Command::Load(args) = parse(&[
+        "cf-integration",
+        "load",
+        "--lane",
+        "external",
+        "--standalone",
+    ])
+    .command
+    else {
+        panic!("expected load")
+    };
+
+    assert_eq!(args.target.lane, Some(CliRoutedLane::External));
+    assert!(args.standalone);
 }
 
 #[test]

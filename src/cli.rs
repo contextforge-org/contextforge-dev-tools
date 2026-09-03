@@ -286,6 +286,10 @@ pub(crate) struct LoadArgs {
     #[command(flatten)]
     pub(crate) target: RoutedWorkflowTargetArgs,
 
+    /// Stop the control plane during an external-dataplane load test.
+    #[arg(long)]
+    pub(crate) standalone: bool,
+
     /// Use smoke-test settings.
     #[arg(long)]
     pub(crate) smoke: bool,

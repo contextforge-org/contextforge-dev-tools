@@ -37,6 +37,7 @@ const ASSETS: &[EmbeddedAsset] = &[
     asset!("scripts/live_protocol/sitecustomize.py"),
     asset!("scripts/conformance/write_client_config.py"),
     asset!("scripts/locustfile_mcp.py"),
+    asset!("scripts/prepare_standalone_config.py"),
     asset!("tests/conformance/baselines/2026-07-28/legacy/built-in-data-plane.yml"),
     asset!("tests/conformance/baselines/2026-07-28/legacy/client/external-data-plane.yml"),
     asset!("tests/conformance/baselines/2026-07-28/legacy/external-data-plane.yml"),

@@ -176,6 +176,27 @@ fn controlplane_up_does_not_activate_locust_profile_when_ui_is_disabled() {
 #[test]
 fn cleanup_status_logs_and_config_use_typed_compose_commands() {
     let dataplane_project = project(StackMode::Dataplane);
+    assert!(ends_with(
+        &args(StackCommandPlan::stop_service(
+            dataplane_project.clone(),
+            "gateway"
+        )),
+        &["stop", "--timeout", "5", "gateway"]
+    ));
+    assert!(ends_with(
+        &args(StackCommandPlan::start_service(
+            dataplane_project.clone(),
+            "gateway"
+        )),
+        &["start", "gateway"]
+    ));
+    assert!(ends_with(
+        &args(StackCommandPlan::restart_service(
+            dataplane_project.clone(),
+            "dataplane"
+        )),
+        &["restart", "--timeout", "5", "dataplane"]
+    ));
     let down = StackCommandPlan::cleanup(dataplane_project.clone(), CleanupKind::Down);
     assert!(ends_with(
         &args(down.clone()),

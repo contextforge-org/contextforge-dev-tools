@@ -237,6 +237,16 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
     let environment = compose["services"]["dataplane"]["environment"]
         .as_mapping()
         .expect("dataplane environment must be a mapping");
+    let gateway_volumes = compose["services"]["gateway"]["volumes"]
+        .as_sequence()
+        .expect("gateway volumes must be a sequence");
+    assert!(gateway_volumes.iter().any(|volume| {
+        volume.as_str().is_some_and(|volume| {
+            volume.ends_with(
+                "/scripts/prepare_standalone_config.py:/opt/contextforge-integration/prepare_standalone_config.py:ro",
+            )
+        })
+    }));
 
     for key in [
         "CONTEXTFORGE_DATA_PLANE_ADDRESS",

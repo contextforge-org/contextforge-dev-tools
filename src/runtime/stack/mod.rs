@@ -172,7 +172,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         Ok(())
     }
 
-    async fn wait_for_public_endpoint(
+    pub(super) async fn wait_for_public_endpoint(
         &self,
         mode: StackMode,
         report_progress: bool,

@@ -9,7 +9,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         protocol_version: &ProtocolVersion,
     ) -> AppResult<()> {
         let server_id = self.default_server_id().to_owned();
-        self.with_managed_authenticated_target(topology, &server_id, |token| async {
+        self.with_managed_authenticated_target(topology, &server_id, false, |token, _| async {
             let config = ProbeConfig {
                 mode: gateway_topology(topology),
                 base_url: self.base_url()?.to_owned(),

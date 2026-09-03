@@ -320,6 +320,7 @@ fn load_preserves_explicit_locust_settings() {
         Action::Load(ResolvedLoadArgs {
             topology: StackMode::Controlplane,
             protocol_version: ProtocolVersion::Legacy,
+            standalone: false,
             request: LoadRequest {
                 smoke: true,
                 users: Some(2),
@@ -328,6 +329,50 @@ fn load_preserves_explicit_locust_settings() {
             },
         })
     );
+}
+
+#[test]
+fn standalone_load_is_external_only() {
+    let standalone = action(
+        &[
+            "cf-integration",
+            "load",
+            "--lane",
+            "external",
+            "--standalone",
+        ],
+        &[],
+    );
+    assert_eq!(
+        standalone,
+        Action::Load(ResolvedLoadArgs {
+            topology: StackMode::Dataplane,
+            protocol_version: ProtocolVersion::default(),
+            standalone: true,
+            request: LoadRequest {
+                smoke: false,
+                users: None,
+                spawn_rate: None,
+                run_time: None,
+            },
+        })
+    );
+    assert_eq!(
+        standalone.startup_summary(),
+        "Lane: external\nProtocol version: modern\nControl plane: disabled during load"
+    );
+
+    let cli = Cli::try_parse_from([
+        "cf-integration",
+        "load",
+        "--lane",
+        "builtin",
+        "--standalone",
+    ])
+    .expect("CLI syntax should parse before lane validation");
+    let error = resolve_action(cli, &Environment::new())
+        .expect_err("standalone mode must reject the built-in lane");
+    assert_eq!(error.to_string(), "--standalone requires --lane external");
 }
 
 #[test]

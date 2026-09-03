@@ -10,6 +10,7 @@ Env:
   MCP_SERVER_ID                         virtual server id (dataplane only)
   MCPGATEWAY_BEARER_TOKEN                bearer token (required)
   MCP_TOOL_NAMES                         optional comma-separated tools to call
+  MCP_SKIP_TOOL_LIST                     true when direct tool aliases are supplied
   LOCUST_REQUEST_TIMEOUT_SECONDS         positive finite per-request timeout (default 60)
 """
 from __future__ import annotations
@@ -44,6 +45,7 @@ def _request_timeout_seconds() -> float:
 REQUEST_TIMEOUT_SECONDS = _request_timeout_seconds()
 
 _TOOL_ARGUMENTS = {
+    "test_simple_text": {},
     "echo": {"message": "cf-integration"},
     "fast_time_echo": {"message": "cf-integration"},
     "fast-time-echo": {"message": "cf-integration"},
@@ -182,6 +184,7 @@ MCP_SERVER_ID = os.environ.get("MCP_SERVER_ID", "")
 MCP_STACK_MODE = os.environ.get("MCP_STACK_MODE", "dataplane")
 BEARER_TOKEN = os.environ.get("MCPGATEWAY_BEARER_TOKEN", "")
 TOOL_NAMES = [name.strip() for name in os.environ.get("MCP_TOOL_NAMES", "").split(",") if name.strip()]
+SKIP_TOOL_LIST = os.environ.get("MCP_SKIP_TOOL_LIST", "false").lower() == "true"
 
 
 def safe_diagnostic(value) -> str:
@@ -248,7 +251,7 @@ class MCPGatewayUser(HttpUser):
             raise RuntimeError("initialize response did not include Mcp-Session-Id")
         if not STATELESS:
             self._mcp_notification("notifications/initialized", None, name="MCP initialized")
-        if not self._tool_names:
+        if not self._tool_names and not SKIP_TOOL_LIST:
             listed = self._mcp_request("tools/list", {}, name="MCP tools/list")
             if listed:
                 self._tool_names = [
@@ -409,6 +412,8 @@ class MCPGatewayUser(HttpUser):
 
     @task(5)
     def tools_list(self):
+        if SKIP_TOOL_LIST:
+            return
         self._mcp_request("tools/list", {}, name="MCP tools/list")
 
     @task(10)

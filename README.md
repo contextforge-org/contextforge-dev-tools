@@ -101,7 +101,7 @@ Run Locust against one public MCP route:
 
 ```bash
 cf-integration load [--lane builtin|external] \
-  [--protocol-version modern|legacy] [--smoke] \
+  [--protocol-version modern|legacy] [--standalone] [--smoke] \
   [--users N] [--spawn-rate N] [--run-time DURATION]
 
 # Compare both lanes for two minutes
@@ -109,11 +109,23 @@ cf-integration load --lane builtin --protocol-version legacy \
   --users 10 --spawn-rate 2 --run-time 2m
 cf-integration load --lane external --protocol-version legacy \
   --users 10 --spawn-rate 2 --run-time 2m
+
+# Measure only the external dataplane request path
+cargo run -- load --lane external --protocol-version legacy --standalone \
+  --users 10 --spawn-rate 2 --run-time 2m
 ```
 
 `--smoke` selects a short smoke workload. Duration accepts positive `h`,
 `m`, and `s` groups such as `2m30s` or `1h30m`. Defaults come from
 `LOCUST_USERS`, `LOCUST_SPAWN_RATE`, and `LOCUST_RUN_TIME`.
+
+`--standalone` is valid only with `--lane external`. Each run starts the full
+stack to issue a scoped token, starts an isolated current-protocol MCP fixture,
+then stops the control-plane gateway before Locust begins. A fresh mock config
+for the token subject is written through the running dataplane's own serializer
+on every run, so Redis receives the dataplane's current MessagePack schema. The
+snapshot is non-expiring for the load duration; traffic does not depend on the
+control-plane publisher or its schema-sync timing.
 
 ### `live`
 

@@ -29,7 +29,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .unwrap_or_else(|| self.default_server_id())
             .to_owned();
         let operation_server_id = server_id.clone();
-        self.with_managed_authenticated_target(mode, &server_id, |token| async move {
+        self.with_managed_authenticated_target(mode, &server_id, false, |token, _| async move {
             let endpoint = GatewayClient::new(
                 gateway_topology(mode),
                 self.base_url()?,

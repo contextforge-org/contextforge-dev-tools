@@ -21,20 +21,31 @@ return 0
 struct ManagedSessionScope<'a, R> {
     runtime: &'a RuntimeContext<R>,
     topology: StackMode,
+    standalone: bool,
     token: Option<ManagedBearerToken>,
 }
 
 impl<'a, R: ProcessRunner> ManagedSessionScope<'a, R> {
-    fn new(runtime: &'a RuntimeContext<R>, topology: StackMode) -> Self {
+    fn new(runtime: &'a RuntimeContext<R>, topology: StackMode, standalone: bool) -> Self {
         Self {
             runtime,
             topology,
+            standalone,
             token: None,
         }
     }
 
     async fn finish(self, primary: AppResult<()>) -> AppResult<()> {
         let mut cleanup_failures = Vec::new();
+        if self.standalone
+            && self
+                .token
+                .as_ref()
+                .is_some_and(|token| token.catalog_id.is_some())
+            && let Err(error) = self.runtime.restore_control_plane_gateway().await
+        {
+            cleanup_failures.push(error);
+        }
         if let Some(token) = self.token.as_ref()
             && let Err(error) = self.runtime.revoke_managed_token(token).await
         {
@@ -61,7 +72,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         F: FnOnce() -> Fut,
         Fut: Future<Output = AppResult<()>>,
     {
-        let scope = ManagedSessionScope::new(self, topology);
+        let scope = ManagedSessionScope::new(self, topology, false);
         let primary = match self.stack_up(topology, false).await {
             Ok(()) => match self.prepare_test_target(topology, server_id).await {
                 Ok(()) => operation().await,
@@ -76,20 +87,37 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         &self,
         topology: StackMode,
         server_id: &str,
+        standalone: bool,
         operation: F,
     ) -> AppResult<()>
     where
-        F: FnOnce(String) -> Fut,
+        F: FnOnce(String, Vec<String>) -> Fut,
         Fut: Future<Output = AppResult<()>>,
     {
-        let mut scope = ManagedSessionScope::new(self, topology);
+        if standalone && topology != StackMode::Dataplane {
+            return Err(AppFailure::from(anyhow!(
+                "standalone mode requires the external lane"
+            )));
+        }
+        let mut scope = ManagedSessionScope::new(self, topology, standalone);
         let primary = match self.stack_up(topology, false).await {
-            Ok(()) => match self.prepare_test_target(topology, server_id).await {
+            Ok(()) => match self
+                .prepare_authenticated_target(topology, server_id, standalone)
+                .await
+            {
                 Ok(()) => match self.managed_bearer_token(topology, server_id).await {
                     Ok(token) => {
                         let value = token.value.clone();
                         scope.token = Some(token);
-                        operation(value).await
+                        let tool_names = if standalone {
+                            self.isolate_external_dataplane(server_id, &value).await
+                        } else {
+                            Ok(Vec::new())
+                        };
+                        match tool_names {
+                            Ok(tool_names) => operation(value, tool_names).await,
+                            Err(error) => Err(error),
+                        }
                     }
                     Err(error) => Err(error),
                 },
@@ -98,6 +126,19 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             Err(error) => Err(error),
         };
         scope.finish(primary).await
+    }
+
+    async fn prepare_authenticated_target(
+        &self,
+        topology: StackMode,
+        server_id: &str,
+        standalone: bool,
+    ) -> AppResult<()> {
+        if standalone {
+            self.ensure_other_stack_stopped(topology)?;
+            return Ok(());
+        }
+        self.prepare_test_target(topology, server_id).await
     }
 
     pub(super) async fn prepare_test_target(
@@ -114,15 +155,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 
     pub(super) async fn wait_for_publisher_snapshot(&self, server_id: &str) -> AppResult<()> {
         let timeout_seconds = self.environment_u64("CF_PUBLISHER_WAIT_SECONDS", 90)?;
-        let project = required_text(
-            &self.config.integration_project().value,
-            "CF_INTEGRATION_PROJECT",
-        )?;
-        let redis = self.container_id(project, "redis", false)?.ok_or_else(|| {
-            AppFailure::from(anyhow!(
-                "cannot wait for publisher snapshot: the dataplane Redis container is not running"
-            ))
-        })?;
+        let redis = self.dataplane_redis_container()?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_seconds);
         loop {
             let command = CommandSpec::new("docker").args([
@@ -150,6 +183,80 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             )
             .await;
         }
+    }
+
+    async fn isolate_external_dataplane(
+        &self,
+        server_id: &str,
+        token: &str,
+    ) -> AppResult<Vec<String>> {
+        let project = self.compose_project(StackMode::Dataplane);
+        let command = project.command([
+            "--profile",
+            "standalone-load",
+            "up",
+            "--detach",
+            "--wait",
+            "standalone_load_backend",
+        ]);
+        let command = self.compose_environment(command, StackMode::Dataplane, true)?;
+        self.runner.run(&command)?;
+        let command = StackCommandPlan::stop_service(project.clone(), "gateway");
+        let command =
+            self.compose_environment(command.command().clone(), StackMode::Dataplane, true)?;
+        self.runner.run(&command)?;
+        let command = project.command([
+            "run",
+            "--rm",
+            "--no-deps",
+            "-e",
+            "MCPGATEWAY_BEARER_TOKEN",
+            "--entrypoint",
+            "python3",
+            "gateway",
+            "/opt/contextforge-integration/prepare_standalone_config.py",
+            server_id,
+            ProtocolVersion::Modern.wire_version(),
+        ]);
+        let command = self
+            .compose_environment(command, StackMode::Dataplane, true)?
+            .env("MCPGATEWAY_BEARER_TOKEN", token);
+        let tool_names = self.capture_text(&command)?;
+        let tool_names = serde_json::from_str::<Vec<String>>(&tool_names)
+            .context("standalone config helper returned invalid tool names")
+            .map_err(AppFailure::from)?;
+        if tool_names.is_empty() {
+            return Err(AppFailure::from(anyhow!(
+                "standalone Redis config for server {server_id} contains no tools"
+            )));
+        }
+        let command = StackCommandPlan::restart_service(project, "dataplane");
+        let command =
+            self.compose_environment(command.command().clone(), StackMode::Dataplane, true)?;
+        self.runner.run(&command)?;
+        self.wait_for_public_endpoint(StackMode::Dataplane, false)
+            .await?;
+        Ok(tool_names)
+    }
+
+    async fn restore_control_plane_gateway(&self) -> AppResult<()> {
+        let project = self.compose_project(StackMode::Dataplane);
+        let command = StackCommandPlan::start_service(project, "gateway");
+        let command =
+            self.compose_environment(command.command().clone(), StackMode::Dataplane, true)?;
+        self.runner.run(&command)?;
+        self.wait_for_public_endpoint(StackMode::Controlplane, false)
+            .await
+    }
+
+    fn dataplane_redis_container(&self) -> AppResult<String> {
+        let project = required_text(
+            &self.config.integration_project().value,
+            "CF_INTEGRATION_PROJECT",
+        )?;
+        self.container_id(project, "redis", false)?.ok_or_else(|| {
+            AppFailure::from(anyhow!("the external lane Redis container is not running"))
+        })
     }
 
     pub(super) fn environment_u64(&self, key: &str, default: u64) -> AppResult<u64> {
