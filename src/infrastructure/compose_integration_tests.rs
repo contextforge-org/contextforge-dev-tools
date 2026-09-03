@@ -481,6 +481,10 @@ fn observability_is_ephemeral_and_exports_both_routed_services() {
         Some("127.0.0.1:${CF_OBSERVABILITY_UI_PORT:-3000}:8080")
     );
     assert_eq!(
+        clickstack["ports"][1].as_str(),
+        Some("127.0.0.1:${CF_OBSERVABILITY_LOG_PORT:-24224}:24224")
+    );
+    assert_eq!(
         clickstack["tmpfs"]
             .as_sequence()
             .expect("ClickStack storage must use tmpfs")
@@ -504,16 +508,26 @@ fn observability_is_ephemeral_and_exports_both_routed_services() {
         .expect("read ClickStack collector extension");
     let collector: yaml_serde::Value =
         yaml_serde::from_str(&collector).expect("parse ClickStack collector extension");
-    for pipeline in ["traces/integration", "metrics/integration"] {
-        assert_eq!(
-            collector["service"]["pipelines"][pipeline]["receivers"][0].as_str(),
-            Some("otlp/hyperdx")
-        );
-        assert_eq!(
-            collector["service"]["pipelines"][pipeline]["exporters"][0].as_str(),
-            Some("clickhouse")
-        );
-    }
+    assert_eq!(
+        collector["receivers"]["fluent_forward/docker"]["endpoint"].as_str(),
+        Some("0.0.0.0:24224")
+    );
+    assert_eq!(
+        collector["service"]["pipelines"]["logs/docker"]["receivers"][0].as_str(),
+        Some("fluent_forward/docker")
+    );
+    assert_eq!(
+        collector["service"]["pipelines"]
+            .as_mapping()
+            .expect("collector pipelines must be a mapping")
+            .len(),
+        1,
+        "the extension must not duplicate ClickStack's built-in OTLP pipelines"
+    );
+    assert_eq!(
+        collector["service"]["pipelines"]["logs/docker"]["exporters"][0].as_str(),
+        Some("clickhouse")
+    );
 
     let gateway =
         fs::read_to_string(root.join("docker/docker-compose.cf-controlplane-observability.yaml"))
@@ -523,6 +537,10 @@ fn observability_is_ephemeral_and_exports_both_routed_services() {
     assert_eq!(
         gateway["services"]["gateway"]["environment"]["OTEL_EXPORTER_OTLP_ENDPOINT"].as_str(),
         Some("http://clickstack:4317")
+    );
+    assert_eq!(
+        gateway["services"]["gateway"]["logging"]["driver"].as_str(),
+        Some("fluentd")
     );
     assert_eq!(
         gateway["networks"]["observability"]["external"].as_bool(),
@@ -557,6 +575,10 @@ fn observability_is_ephemeral_and_exports_both_routed_services() {
             ["CONTEXTFORGE_DATA_PLANE_OTEL_EXPORTER_OTLP_PROTOCOL"]
             .as_str(),
         Some("http-protobuf")
+    );
+    assert_eq!(
+        dataplane["services"]["dataplane"]["logging"]["driver"].as_str(),
+        Some("fluentd")
     );
     assert_eq!(
         dataplane["networks"]["observability"]["external"].as_bool(),

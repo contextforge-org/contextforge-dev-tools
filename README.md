@@ -91,8 +91,11 @@ inspect traces and metrics. Managed test cleanup leaves ClickStack running, so
 the UI remains available after a command finishes; `stack down --lane all`
 removes it. The external dataplane exports the exact
 HTTP counters, latency histograms, in-flight gauge, and body sizes recorded by
-its `HttpMetricsLayer`; allow 30 seconds for its first export. All telemetry
-storage is ephemeral and disappears when ClickStack is removed.
+its `HttpMetricsLayer`. HyperDX opens on live application logs. For metrics,
+open **Chart Explorer**, select the **Metrics** data source and a metric, then
+click **Run**. Run a load for at least 60 seconds so its 30-second cumulative
+export interval produces the two samples needed for a non-zero chart. All
+telemetry storage is ephemeral and disappears when ClickStack is removed.
 
 ### `probe`
 

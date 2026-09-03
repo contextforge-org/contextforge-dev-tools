@@ -11,6 +11,13 @@ services:
       CONTEXTFORGE_DATA_PLANE_OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: http://clickstack:4318/v1/metrics
     networks:
       observability:
+    logging:
+      driver: fluentd
+      options:
+        fluentd-address: tcp://127.0.0.1:${CF_OBSERVABILITY_LOG_PORT:-24224}
+        fluentd-async: "true"
+        fluentd-sub-second-precision: "true"
+        tag: "{{.Name}}"
 
 networks:
   observability:

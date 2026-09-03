@@ -1,12 +1,20 @@
-# Accept harness telemetry immediately, without depending on HyperDX onboarding.
+# Add Docker stdout/stderr logs to ClickStack's built-in OTLP pipelines.
+
+receivers:
+  fluent_forward/docker:
+    endpoint: 0.0.0.0:24224
+
+processors:
+  transform/docker_logs:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(resource.attributes["service.name"], attributes["fluent.tag"])
 
 service:
   pipelines:
-    traces/integration:
-      receivers: [otlp/hyperdx]
-      processors: [memory_limiter, batch]
-      exporters: [clickhouse]
-    metrics/integration:
-      receivers: [otlp/hyperdx]
-      processors: [memory_limiter, batch]
+    logs/docker:
+      receivers: [fluent_forward/docker]
+      processors: [transform/docker_logs, memory_limiter, batch]
       exporters: [clickhouse]

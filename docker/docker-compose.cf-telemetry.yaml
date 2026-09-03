@@ -12,6 +12,7 @@ services:
       - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/docker/clickstack/collector.yaml:/etc/otelcol-contrib/custom.config.yaml:ro
     ports:
       - "127.0.0.1:${CF_OBSERVABILITY_UI_PORT:-3000}:8080"
+      - "127.0.0.1:${CF_OBSERVABILITY_LOG_PORT:-24224}:24224"
     expose:
       - "4317"
       - "4318"
