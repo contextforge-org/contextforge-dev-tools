@@ -306,7 +306,6 @@ fn current_snapshot() -> FreshnessSnapshot {
     let running = [
         ("gateway", "cp-image", Some("cp-head")),
         ("dataplane", "dp-image", Some("dp-head")),
-        ("clickstack", "clickstack", None),
         ("nginx", "nginx", None),
         ("postgres", "postgres", None),
         ("pgbouncer", "pgbouncer", None),

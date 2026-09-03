@@ -422,12 +422,21 @@ fn conformance_fixture_is_an_explicit_overlay_and_profile() {
         ComposeProject::conformance_fixture(Path::new("/repo"), OsString::from("fixture"));
     assert_eq!(
         standalone.files(),
-        [
-            PathBuf::from("/repo/docker/docker-compose.cf-conformance-fixture.yaml"),
-            PathBuf::from("/repo/docker/docker-compose.cf-telemetry.yaml"),
-        ]
+        [PathBuf::from(
+            "/repo/docker/docker-compose.cf-conformance-fixture.yaml"
+        )]
     );
     assert_eq!(standalone.profiles(), ["conformance"]);
+
+    let observability =
+        ComposeProject::observability(Path::new("/repo"), OsString::from("observability"));
+    assert_eq!(
+        observability.files(),
+        [PathBuf::from(
+            "/repo/docker/docker-compose.cf-telemetry.yaml"
+        )]
+    );
+    assert!(observability.profiles().is_empty());
 }
 
 #[test]
@@ -439,12 +448,10 @@ fn observability_overlays_are_explicit_and_include_the_selected_lane() {
     let external = ComposeProject::dataplane(root, checkout, OsString::from("external"), false)
         .with_observability(root, true);
 
-    assert!(built_in.files().ends_with(&[
-        PathBuf::from("/repo/docker/docker-compose.cf-telemetry.yaml"),
-        PathBuf::from("/repo/docker/docker-compose.cf-controlplane-observability.yaml"),
-    ]));
+    assert!(built_in.files().ends_with(&[PathBuf::from(
+        "/repo/docker/docker-compose.cf-controlplane-observability.yaml"
+    )]));
     assert!(external.files().ends_with(&[
-        PathBuf::from("/repo/docker/docker-compose.cf-telemetry.yaml"),
         PathBuf::from("/repo/docker/docker-compose.cf-controlplane-observability.yaml"),
         PathBuf::from("/repo/docker/docker-compose.cf-dataplane-observability.yaml"),
     ]));
@@ -467,7 +474,7 @@ fn observability_is_ephemeral_and_exports_both_routed_services() {
         clickstack["image"]
             .as_str()
             .expect("ClickStack image must be text")
-            .contains("clickstack-all-in-one:2.37.0@sha256:")
+            .contains("clickstack-local:2.37.0@sha256:")
     );
     assert_eq!(
         clickstack["ports"][0].as_str(),
@@ -480,11 +487,7 @@ fn observability_is_ephemeral_and_exports_both_routed_services() {
             .iter()
             .filter_map(yaml_serde::Value::as_str)
             .collect::<Vec<_>>(),
-        [
-            "/data/db",
-            "/var/lib/clickhouse",
-            "/var/log/clickhouse-server"
-        ]
+        ["/var/lib/clickhouse", "/var/log/clickhouse-server"]
     );
     assert_eq!(
         clickstack["environment"]["CUSTOM_OTELCOL_CONFIG_FILE"].as_str(),
@@ -521,6 +524,10 @@ fn observability_is_ephemeral_and_exports_both_routed_services() {
         gateway["services"]["gateway"]["environment"]["OTEL_EXPORTER_OTLP_ENDPOINT"].as_str(),
         Some("http://clickstack:4317")
     );
+    assert_eq!(
+        gateway["networks"]["observability"]["external"].as_bool(),
+        Some(true)
+    );
 
     let dataplane =
         fs::read_to_string(root.join("docker/docker-compose.cf-dataplane-observability.yaml"))
@@ -550,6 +557,10 @@ fn observability_is_ephemeral_and_exports_both_routed_services() {
             ["CONTEXTFORGE_DATA_PLANE_OTEL_EXPORTER_OTLP_PROTOCOL"]
             .as_str(),
         Some("http-protobuf")
+    );
+    assert_eq!(
+        dataplane["networks"]["observability"]["external"].as_bool(),
+        Some(true)
     );
 }
 

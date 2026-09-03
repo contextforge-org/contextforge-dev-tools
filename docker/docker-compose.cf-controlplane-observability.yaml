@@ -10,6 +10,10 @@ services:
       OTEL_EXPORTER_OTLP_INSECURE: "true"
       OTEL_SERVICE_NAME: cf-controlplane
       OTEL_RESOURCE_ATTRIBUTES: deployment.environment=integration,service.namespace=contextforge
-    depends_on:
-      clickstack:
-        condition: service_healthy
+    networks:
+      observability:
+
+networks:
+  observability:
+    name: ${CF_OBSERVABILITY_NETWORK:-cf-observability}
+    external: true

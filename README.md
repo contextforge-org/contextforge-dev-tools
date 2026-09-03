@@ -86,13 +86,13 @@ services unless service names are supplied. `config` prints merged Compose
 configuration. `down --volumes` also removes persistent volumes.
 
 ClickStack starts by default for `stack`, `probe`, `live`, `conformance`, and
-`debug inspect`. While the stack or test is running, open the HyperDX UI at
-<http://127.0.0.1:3000> to inspect traces and metrics. On first access, create
-a temporary local user; its sources are configured automatically. The external
-dataplane exports the exact
+`debug inspect`. Open the no-login HyperDX UI at <http://127.0.0.1:3000> to
+inspect traces and metrics. Managed test cleanup leaves ClickStack running, so
+the UI remains available after a command finishes; `stack down --lane all`
+removes it. The external dataplane exports the exact
 HTTP counters, latency histograms, in-flight gauge, and body sizes recorded by
 its `HttpMetricsLayer`; allow 30 seconds for its first export. All telemetry
-storage is ephemeral and disappears with the stack.
+storage is ephemeral and disappears when ClickStack is removed.
 
 ### `probe`
 

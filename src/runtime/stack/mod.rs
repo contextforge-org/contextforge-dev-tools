@@ -39,14 +39,15 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 Activity::completed("Integration stack ready");
                 self.print_stack_summary(topology, &conformance_endpoint)
             }
-            StackAction::Down { lane, volumes } => self.cleanup(
-                lane,
-                if volumes {
+            StackAction::Down { lane, volumes } => {
+                let kind = if volumes {
                     CleanupKind::Reset
                 } else {
                     CleanupKind::Down
-                },
-            ),
+                };
+                let primary = self.cleanup(lane, kind).err();
+                finish_with_cleanup(primary, self.cleanup_observability(kind, true))
+            }
             StackAction::Status(mode) => {
                 self.require_mode_sources(mode)?;
                 let command = StackCommandPlan::status(self.conformance_compose_project(mode));
@@ -86,7 +87,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     }
 
     pub(super) async fn stack_up(&self, mode: StackMode, fresh: bool) -> AppResult<()> {
-        self.stack_up_with_project(mode, fresh, self.compose_project(mode), false)
+        self.stack_up_with_project(mode, fresh, self.compose_project(mode), false, true)
             .await
     }
 
@@ -95,8 +96,14 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         mode: StackMode,
         fresh: bool,
     ) -> AppResult<()> {
-        self.stack_up_with_project(mode, fresh, self.conformance_runtime_project(mode), false)
-            .await
+        self.stack_up_with_project(
+            mode,
+            fresh,
+            self.conformance_runtime_project(mode),
+            false,
+            true,
+        )
+        .await
     }
 
     pub(super) async fn stack_up_with_project(
@@ -105,6 +112,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         fresh: bool,
         project: ComposeProject,
         report_progress: bool,
+        observability: bool,
     ) -> AppResult<()> {
         self.ensure_mode_sources(mode)?;
         if mode == StackMode::Dataplane {
@@ -114,6 +122,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let build = self.resolve_build(mode, report_progress)?;
         self.pull_images(mode, build, report_progress)?;
         if mode == StackMode::Dataplane
+            && !observability
             && !fresh
             && !self.environment_flag("CF_FORCE_STACK_RESTART", false)
             && !build
@@ -133,6 +142,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             self.cleanup(topology_selection(mode), CleanupKind::Reset)?;
         }
         self.ensure_other_stack_stopped(mode)?;
+        if observability {
+            self.start_observability()?;
+        }
         if mode == StackMode::Controlplane {
             fs::create_dir_all(self.config.controlplane_dir().join("reports"))
                 .context("failed to create control-plane report directory")
@@ -271,6 +283,55 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .with_conformance_runtime(self.config.asset_root())
     }
 
+    pub(super) fn start_observability(&self) -> AppResult<()> {
+        let command = self.observability_compose_project().command([
+            "up",
+            "-d",
+            "--wait",
+            "--remove-orphans",
+        ]);
+        Ok(self.runner.run(&self.observability_environment(command))?)
+    }
+
+    fn observability_compose_project(&self) -> ComposeProject {
+        ComposeProject::observability(
+            self.config.asset_root(),
+            format!(
+                "{}-observability",
+                self.config.integration_project().value.to_string_lossy()
+            )
+            .into(),
+        )
+    }
+
+    fn observability_environment(&self, command: CommandSpec) -> CommandSpec {
+        let command_environment = command.environment().clone();
+        let mut command = command.cwd(self.config.root());
+        for (key, value) in self.config.environment().iter() {
+            if !command_environment.contains_key(key) {
+                command = command.env(key.clone(), value.value.clone());
+            }
+        }
+        command
+            .env("CF_INTEGRATION_ROOT", self.config.asset_root().as_os_str())
+            .env("CF_OBSERVABILITY_NETWORK", self.observability_network())
+    }
+
+    fn observability_network(&self) -> OsString {
+        self.environment_text("CF_OBSERVABILITY_NETWORK")
+            .filter(|name| !name.is_empty())
+            .map_or_else(
+                || {
+                    format!(
+                        "{}-observability",
+                        self.config.integration_project().value.to_string_lossy()
+                    )
+                    .into()
+                },
+                OsString::from,
+            )
+    }
+
     pub(super) fn compose_environment(
         &self,
         command: CommandSpec,
@@ -304,6 +365,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         );
         command = command
             .env("CF_INTEGRATION_ROOT", self.config.asset_root().as_os_str())
+            .env("CF_OBSERVABILITY_NETWORK", self.observability_network())
             .env(
                 "CF_INTEGRATION_DIR",
                 self.config.integration_dir().as_os_str(),
@@ -690,7 +752,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         for service in [
             "gateway",
             "dataplane",
-            "clickstack",
             "nginx",
             "postgres",
             "pgbouncer",
@@ -925,6 +986,24 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             }
         }
         finish_with_cleanup_failures(None, cleanup_failures)
+    }
+
+    fn cleanup_observability(&self, kind: CleanupKind, inherit_output: bool) -> AppResult<()> {
+        let project = self.observability_compose_project();
+        let command = StackCommandPlan::cleanup(project, kind);
+        let command = self.observability_environment(command.command().clone());
+        let primary = self
+            .run_cleanup_command(&command, inherit_output)
+            .map_err(AppFailure::from)
+            .err();
+        let project = format!(
+            "{}-observability",
+            self.config.integration_project().value.to_string_lossy()
+        );
+        finish_with_cleanup(
+            primary,
+            self.remove_project_by_label(&project, kind, inherit_output),
+        )
     }
 
     fn remove_project_by_label(

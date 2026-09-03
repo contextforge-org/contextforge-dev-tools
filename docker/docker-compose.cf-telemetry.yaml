@@ -2,7 +2,7 @@
 
 services:
   clickstack:
-    image: ${CF_CLICKSTACK_IMAGE:-clickhouse/clickstack-all-in-one:2.37.0@sha256:16650781330f42fea6b02b15144a2233383077c799ab5bc06b131abe23e89f47}
+    image: ${CF_CLICKSTACK_IMAGE:-clickhouse/clickstack-local:2.37.0@sha256:1b67e1a3667be097c704913d18b96e388eb4d85c1e8aa8eec805dc9fdad98426}
     labels:
       name: cf-clickstack
     restart: unless-stopped
@@ -16,11 +16,12 @@ services:
       - "4317"
       - "4318"
     tmpfs:
-      - /data/db
       - /var/lib/clickhouse
       - /var/log/clickhouse-server
     networks:
-      - mcpnet
+      observability:
+        aliases:
+          - clickstack
     healthcheck:
       test:
         - CMD-SHELL
@@ -31,4 +32,5 @@ services:
       start_period: 20s
 
 networks:
-  mcpnet:
+  observability:
+    name: ${CF_OBSERVABILITY_NETWORK:-cf-observability}

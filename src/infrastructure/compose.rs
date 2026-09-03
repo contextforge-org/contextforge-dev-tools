@@ -55,11 +55,22 @@ impl ComposeProject {
                 repository_root
                     .join("docker")
                     .join("docker-compose.cf-conformance-fixture.yaml"),
+            ],
+            profiles: vec![OsString::from("conformance")],
+        }
+    }
+
+    /// Builds the independently managed local ClickStack project.
+    #[must_use]
+    pub(crate) fn observability(repository_root: &Path, project_name: OsString) -> Self {
+        Self {
+            project_name,
+            files: vec![
                 repository_root
                     .join("docker")
                     .join("docker-compose.cf-telemetry.yaml"),
             ],
-            profiles: vec![OsString::from("conformance")],
+            profiles: Vec::new(),
         }
     }
 
@@ -187,14 +198,11 @@ impl ComposeProject {
         repository_root: &Path,
         include_dataplane: bool,
     ) -> Self {
-        for name in [
-            "docker-compose.cf-telemetry.yaml",
-            "docker-compose.cf-controlplane-observability.yaml",
-        ] {
-            let overlay = repository_root.join("docker").join(name);
-            if !self.files.contains(&overlay) {
-                self.files.push(overlay);
-            }
+        let controlplane = repository_root
+            .join("docker")
+            .join("docker-compose.cf-controlplane-observability.yaml");
+        if !self.files.contains(&controlplane) {
+            self.files.push(controlplane);
         }
         if include_dataplane {
             let overlay = repository_root

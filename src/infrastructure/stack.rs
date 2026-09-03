@@ -321,7 +321,6 @@ impl FreshnessSnapshot {
         for service in [
             "gateway",
             "dataplane",
-            "clickstack",
             "nginx",
             "postgres",
             "pgbouncer",

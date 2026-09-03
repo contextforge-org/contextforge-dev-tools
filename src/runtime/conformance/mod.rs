@@ -122,6 +122,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         &self,
         server_era: ConformanceServerEra,
     ) -> AppResult<()> {
+        self.start_observability()?;
         let project = self.standalone_conformance_project();
         let build = self.standalone_conformance_environment(
             project.command(["build", OFFICIAL_CONFORMANCE_SERVICE]),
@@ -130,13 +131,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         self.runner.run_async(&build).await?;
 
         let up = self.standalone_conformance_environment(
-            project.command([
-                "up",
-                "-d",
-                "--wait",
-                OFFICIAL_CONFORMANCE_SERVICE,
-                "clickstack",
-            ]),
+            project.command(["up", "-d", "--wait", OFFICIAL_CONFORMANCE_SERVICE]),
             server_era,
         );
         self.runner.run_async(&up).await.map_err(AppFailure::from)

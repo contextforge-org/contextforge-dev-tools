@@ -99,6 +99,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             server_id,
             standalone,
             self.compose_project(topology),
+            true,
             operation,
         )
         .await
@@ -121,6 +122,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             server_id,
             standalone,
             self.performance_compose_project(topology, observability),
+            observability,
             operation,
         )
         .await
@@ -132,6 +134,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         server_id: &str,
         standalone: bool,
         project: ComposeProject,
+        observability: bool,
         operation: F,
     ) -> AppResult<()>
     where
@@ -145,7 +148,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         }
         let mut scope = ManagedSessionScope::new(self, topology, standalone);
         let primary = match self
-            .stack_up_with_project(topology, false, project, false)
+            .stack_up_with_project(topology, false, project, false, observability)
             .await
         {
             Ok(()) => match self
