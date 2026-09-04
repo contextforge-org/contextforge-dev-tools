@@ -580,9 +580,10 @@ assert response.successes == 1 and not response.failures
 fn standalone_fixture_catalog_preserves_discovered_routes_and_schemas() {
     let script = r#"
 import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
 const scriptPath = process.argv[1];
 process.argv[1] = undefined;
-const { fixtureCatalog } = await import(scriptPath);
+const { fixtureCatalog } = await import(pathToFileURL(scriptPath).href);
 const schema = { type: 'object', properties: { value: { type: 'string', 'x-mcp-header': 'Value' } } };
 const calls = [];
 globalThis.fetch = async (_, options) => {
