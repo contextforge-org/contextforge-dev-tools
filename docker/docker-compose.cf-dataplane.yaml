@@ -4,7 +4,7 @@
 #   export CF_INTEGRATION_ROOT="$PWD"
 #   export CF_DATAPLANE_IMAGE="ghcr.io/contextforge-org/contextforge-data-plane:latest"
 #   export CF_DATAPLANE_PLATFORM="linux/amd64"
-#   # Or let `cf-integration stack up --topology dataplane` resolve `auto`.
+#   # Or let `cf-integration stack up --lane external` resolve `auto`.
 #   docker compose \
 #     -f /path/to/cf-controlplane/docker-compose.yml \
 #     -f "$CF_INTEGRATION_ROOT/docker/docker-compose.cf-dataplane.yaml" \
@@ -27,6 +27,8 @@ services:
       # Requires a control-plane image with configurable publisher interval;
       # older images ignore the variable (60s behavior).
       DATAPLANE_PUBLISHER_INTERVAL_SECONDS: ${CF_DATAPLANE_PUBLISHER_INTERVAL_SECONDS:-2}
+    volumes:
+      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/prepare_standalone_config.py:/opt/contextforge-integration/prepare_standalone_config.py:ro
 
   dataplane:
     image: ${CF_DATAPLANE_IMAGE:?Set CF_DATAPLANE_IMAGE to the cf-dataplane image tag}
@@ -51,8 +53,8 @@ services:
       CONTEXTFORGE_DATA_PLANE_TOKEN_SECRET: ${JWT_SECRET_KEY:-my-test-key-but-now-longer-than-32-bytes}
       # The published image currently includes its non-production `with_tools`
       # bootstrap routes, whose clap model requires an RSA signing-key path.
-      # This harness never exposes or calls those routes and uses control-plane
-      # catalog tokens, so satisfy the unused path without adding a test key.
+      # The standalone load helper calls only the internal user-config route;
+      # token creation stays disabled, so satisfy the unused path without a key.
       CONTEXTFORGE_DATA_PLANE_TOKEN_VERIFICATION_PRIVATE_KEY: /dev/null
       CONTEXTFORGE_DATA_PLANE_UPSTREAM_CONNECTION_MODE: plain-text-or-tls
       # These two MCP transport settings intentionally retain the historical

@@ -153,7 +153,7 @@ fn controlplane_up_does_not_activate_locust_profile_when_ui_is_disabled() {
         false,
         3,
     ));
-    assert!(ends_with(&disabled, &["up", "-d"]));
+    assert!(ends_with(&disabled, &["up", "-d", "--remove-orphans"]));
     assert!(
         disabled
             .iter()
@@ -169,13 +169,41 @@ fn controlplane_up_does_not_activate_locust_profile_when_ui_is_disabled() {
     ));
     assert!(ends_with(
         &enabled,
-        &["up", "-d", "--build", "--scale", "locust_worker=3"]
+        &[
+            "up",
+            "-d",
+            "--remove-orphans",
+            "--build",
+            "--scale",
+            "locust_worker=3"
+        ]
     ));
 }
 
 #[test]
 fn cleanup_status_logs_and_config_use_typed_compose_commands() {
     let dataplane_project = project(StackMode::Dataplane);
+    assert!(ends_with(
+        &args(StackCommandPlan::stop_service(
+            dataplane_project.clone(),
+            "gateway"
+        )),
+        &["stop", "--timeout", "5", "gateway"]
+    ));
+    assert!(ends_with(
+        &args(StackCommandPlan::start_service(
+            dataplane_project.clone(),
+            "gateway"
+        )),
+        &["start", "gateway"]
+    ));
+    assert!(ends_with(
+        &args(StackCommandPlan::restart_service(
+            dataplane_project.clone(),
+            "dataplane"
+        )),
+        &["restart", "--timeout", "5", "dataplane"]
+    ));
     let down = StackCommandPlan::cleanup(dataplane_project.clone(), CleanupKind::Down);
     assert!(ends_with(
         &args(down.clone()),
@@ -222,6 +250,7 @@ fn cleanup_status_logs_and_config_use_typed_compose_commands() {
                 OsString::from("cf-keycloak"),
                 OsString::from("cf-conformance-server"),
                 OsString::from("cf-conformance-proxy"),
+                OsString::from("cf-clickstack"),
                 OsString::from("custom-service"),
             ]
         )),
@@ -247,6 +276,7 @@ fn cleanup_status_logs_and_config_use_typed_compose_commands() {
             "keycloak",
             "mcp_conformance_server",
             "mcp_conformance_proxy",
+            "clickstack",
             "custom-service",
         ]
     ));

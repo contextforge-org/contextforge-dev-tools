@@ -166,10 +166,11 @@ impl StackCommandPlan {
         start_locust_ui: bool,
         locust_workers: usize,
     ) -> Self {
-        let mut arguments = vec![OsString::from("up"), OsString::from("-d")];
-        if mode == StackMode::Dataplane {
-            arguments.push(OsString::from("--remove-orphans"));
-        }
+        let mut arguments = vec![
+            OsString::from("up"),
+            OsString::from("-d"),
+            OsString::from("--remove-orphans"),
+        ];
         if build {
             arguments.push(OsString::from("--build"));
         }
@@ -179,6 +180,30 @@ impl StackCommandPlan {
         }
         Self {
             command: project.command(arguments),
+        }
+    }
+
+    /// Builds a Compose command that stops one service without removing it.
+    #[must_use]
+    pub(crate) fn stop_service(project: ComposeProject, service: &str) -> Self {
+        Self {
+            command: project.command(["stop", "--timeout", "5", service]),
+        }
+    }
+
+    /// Builds a Compose command that restarts one previously stopped service.
+    #[must_use]
+    pub(crate) fn start_service(project: ComposeProject, service: &str) -> Self {
+        Self {
+            command: project.command(["start", service]),
+        }
+    }
+
+    /// Builds a Compose command that restarts one service without its dependencies.
+    #[must_use]
+    pub(crate) fn restart_service(project: ComposeProject, service: &str) -> Self {
+        Self {
+            command: project.command(["restart", "--timeout", "5", service]),
         }
     }
 

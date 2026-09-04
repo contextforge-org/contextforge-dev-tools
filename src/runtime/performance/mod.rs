@@ -9,71 +9,82 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let server_id = self.default_server_id().to_owned();
         let operation_server_id = server_id.clone();
         let preparation = Activity::spinner("Preparing performance stack");
-        self.with_managed_authenticated_target(args.topology, &server_id, |token| async move {
-            let command = LocustCommand::new_with_protocol_version(
-                &self.config,
-                args.topology,
-                &settings,
-                &token,
-                (args.topology == StackMode::Dataplane).then_some(operation_server_id.as_str()),
-                args.protocol_version.as_str(),
-            )
-            .map_err(AppFailure::from)?;
-            let command_spec =
-                self.compose_environment(command.command().clone(), args.topology, true)?;
-            let output_log = command.report_dir().join("locust.log");
-            fs::write(&output_log, [])
-                .with_context(|| format!("failed to clear Locust output log {output_log:?}"))
-                .map_err(AppFailure::from)?;
-            preparation.finish(true);
-
-            let description = format!(
-                "Running load test ({} users, {}/s, {})",
-                settings.users(),
-                settings.spawn_rate(),
-                settings.run_time(),
-            );
-            let activity = Activity::spinner(description);
-            let started = std::time::Instant::now();
-            let process_result = self
-                .runner
-                .run_to_log(&command_spec, &output_log)
-                .map_err(AppFailure::from);
-            let result = finalize_locust_run(process_result, command.report_dir(), &token);
-            let elapsed = started.elapsed();
-            activity.finish(result.is_ok());
-
-            let status = if result.is_ok() {
-                TestStatus::Pass
-            } else {
-                TestStatus::Fail
-            };
-            println!(
-                "{}",
-                OutputStyle::stdout().test_result(
-                    status,
-                    &format!("performance::{}", args.topology.topology_label()),
-                    Some(elapsed),
-                    None,
+        self.with_managed_performance_target(
+            args.topology,
+            &server_id,
+            args.standalone,
+            args.observability,
+            |token, standalone_tool_names| async move {
+                let command = LocustCommand::new_with_protocol_version(
+                    &self.config,
+                    args.topology,
+                    &settings,
+                    &token,
+                    (args.topology == StackMode::Dataplane).then_some(operation_server_id.as_str()),
+                    args.protocol_version.wire_version(),
                 )
-            );
-            if result.is_ok() {
+                .map_err(AppFailure::from)?;
+                let mut command_spec =
+                    self.compose_environment(command.command().clone(), args.topology, true)?;
+                if args.standalone {
+                    command_spec = command_spec
+                        .env("MCP_TOOL_NAMES", standalone_tool_names.join(","))
+                        .env("MCP_SKIP_TOOL_LIST", "true");
+                }
+                let output_log = command.report_dir().join("locust.log");
+                fs::write(&output_log, [])
+                    .with_context(|| format!("failed to clear Locust output log {output_log:?}"))
+                    .map_err(AppFailure::from)?;
+                preparation.finish(true);
+
+                let description = format!(
+                    "Running load test ({} users, {}/s, {})",
+                    settings.users(),
+                    settings.spawn_rate(),
+                    settings.run_time(),
+                );
+                let activity = Activity::spinner(description);
+                let started = std::time::Instant::now();
+                let process_result = self
+                    .runner
+                    .run_to_log(&command_spec, &output_log)
+                    .map_err(AppFailure::from);
+                let result = finalize_locust_run(process_result, command.report_dir(), &token);
+                let elapsed = started.elapsed();
+                activity.finish(result.is_ok());
+
+                let status = if result.is_ok() {
+                    TestStatus::Pass
+                } else {
+                    TestStatus::Fail
+                };
                 println!(
                     "{}",
-                    OutputStyle::stdout().info(&format!(
-                        "Report: {}",
-                        command.report_dir().join("locust_report.html").display()
-                    ))
+                    OutputStyle::stdout().test_result(
+                        status,
+                        &format!("performance::{}", args.topology.lane_label()),
+                        Some(elapsed),
+                        None,
+                    )
                 );
-            } else if output_log.is_file() {
-                eprintln!(
-                    "{}",
-                    OutputStyle::stderr()
-                        .failure(&format!("Load output: {}", output_log.display()))
-                );
-            }
-            result
-        })
+                if result.is_ok() {
+                    println!(
+                        "{}",
+                        OutputStyle::stdout().info(&format!(
+                            "Report: {}",
+                            command.report_dir().join("locust_report.html").display()
+                        ))
+                    );
+                } else if output_log.is_file() {
+                    eprintln!(
+                        "{}",
+                        OutputStyle::stderr()
+                            .failure(&format!("Load output: {}", output_log.display()))
+                    );
+                }
+                result
+            },
+        )
         .await
     }
 }

@@ -165,8 +165,8 @@ impl SemanticLane {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::FixtureDirect => "fixture direct",
-            Self::BuiltInDataPlane => "built-in dataplane",
-            Self::ExternalDataPlane => "external dataplane",
+            Self::BuiltInDataPlane => "builtin",
+            Self::ExternalDataPlane => "external",
         }
     }
 

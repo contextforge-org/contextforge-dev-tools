@@ -1,0 +1,37 @@
+# Ephemeral all-in-one ClickStack observability for integration tests.
+
+services:
+  clickstack:
+    image: ${CF_CLICKSTACK_IMAGE:-clickhouse/clickstack-local:2.37.0@sha256:1b67e1a3667be097c704913d18b96e388eb4d85c1e8aa8eec805dc9fdad98426}
+    labels:
+      name: cf-clickstack
+    restart: unless-stopped
+    environment:
+      CUSTOM_OTELCOL_CONFIG_FILE: /etc/otelcol-contrib/custom.config.yaml
+    volumes:
+      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/docker/clickstack/collector.yaml:/etc/otelcol-contrib/custom.config.yaml:ro
+    ports:
+      - "127.0.0.1:${CF_OBSERVABILITY_UI_PORT:-3000}:8080"
+      - "127.0.0.1:${CF_OBSERVABILITY_LOG_PORT:-24224}:24224"
+    expose:
+      - "4317"
+      - "4318"
+    tmpfs:
+      - /var/lib/clickhouse
+      - /var/log/clickhouse-server
+    networks:
+      observability:
+        aliases:
+          - clickstack
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl -fsS http://127.0.0.1:8080/api/health >/dev/null && curl -fsS http://127.0.0.1:13133/ >/dev/null
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 20s
+
+networks:
+  observability:
+    name: ${CF_OBSERVABILITY_NETWORK:-cf-observability}

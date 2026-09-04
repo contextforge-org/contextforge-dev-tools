@@ -9,7 +9,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         protocol_version: &ProtocolVersion,
     ) -> AppResult<()> {
         let server_id = self.default_server_id().to_owned();
-        self.with_managed_authenticated_target(topology, &server_id, |token| async {
+        self.with_managed_authenticated_target(topology, &server_id, false, |token, _| async {
             let config = ProbeConfig {
                 mode: gateway_topology(topology),
                 base_url: self.base_url()?.to_owned(),
@@ -22,7 +22,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 request_timeout: Duration::from_secs(
                     self.environment_u64("CF_PROBE_REQUEST_TIMEOUT", 30)?,
                 ),
-                protocol_version: protocol_version.to_string(),
+                protocol_version: protocol_version.wire_version().to_owned(),
                 output_style: OutputStyle::stdout(),
             };
             let transport = GatewayClient::builder(

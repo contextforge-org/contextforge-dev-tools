@@ -5,7 +5,6 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Component, PathBuf};
 use std::str::FromStr;
 
-use crate::conformance::DEFAULT_MCP_SPEC_VERSION;
 use crate::conformance::profile::{
     DUAL_CLIENT_PROTOCOL_VERSIONS, LEGACY_CLIENT_PROTOCOL_VERSIONS, MODERN_CLIENT_PROTOCOL_VERSIONS,
 };
@@ -16,10 +15,10 @@ use crate::performance::LoadRequest;
 use anyhow::{Result, bail};
 
 use crate::cli::{
-    CiCommand, Cli, CliLane, CliTopology, Command, ConformanceCommand, DebugCommand, LiveGroup,
-    ProtocolVersion, StackCommand, TokenKind, TopologySelection,
+    CiCommand, Cli, CliLane, CliRoutedLane, Command, ConformanceCommand, DebugCommand,
+    LaneSelection, LiveGroup, ProtocolVersion, StackCommand, TokenKind,
 };
-const STACK_MODE_ENV: &str = "CF_MCP_STACK_MODE";
+const LANE_ENV: &str = "CF_MCP_LANE";
 const PROTOCOL_VERSION_ENV: &str = "MCP_PROTOCOL_VERSION";
 
 /// Fully resolved application operation.
@@ -77,14 +76,23 @@ impl Action {
                 topology,
                 protocol_version,
                 ..
-            }) => topology_and_protocol(*topology, protocol_version),
-            Self::Load(args) => topology_and_protocol(args.topology, &args.protocol_version),
+            }) => lane_and_protocol(*topology, protocol_version),
+            Self::Load(args) => {
+                let mut summary = lane_and_protocol(args.topology, &args.protocol_version);
+                if args.standalone {
+                    summary.push_str("\nControl plane: disabled during load");
+                }
+                if args.observability {
+                    summary.push_str("\nObservability: ClickStack enabled during load");
+                }
+                summary
+            }
             Self::Live {
                 lane,
                 protocol_version,
                 ..
             } => format!(
-                "Topology: {}\nProtocol version: {protocol_version}",
+                "Lane: {}\nProtocol version: {protocol_version}",
                 lane.label()
             ),
             Self::Conformance(ConformanceAction::Run {
@@ -93,16 +101,16 @@ impl Action {
                 server_eras,
                 ..
             }) => format!(
-                "Topology: {}\nClient era: {}\nServer era: {}",
+                "Lane: {}\nClient era: {}\nServer era: {}",
                 join_lane_labels(lanes),
                 join_client_eras(client_eras),
                 join_server_eras(server_eras),
             ),
             Self::Conformance(ConformanceAction::Report { .. }) => String::from(
-                "Topology: recorded conformance results\nClient era: recorded conformance results\nServer era: recorded conformance results",
+                "Lane: recorded conformance results\nClient era: recorded conformance results\nServer era: recorded conformance results",
             ),
             Self::Debug(DebugAction::Token { .. }) => {
-                String::from("Topology: not applicable (token only)")
+                String::from("Lane: not applicable (token only)")
             }
             Self::Ci(CiAction::PrepareImage { .. }) => {
                 String::from("CI operation: prepare prebuilt image")
@@ -139,35 +147,36 @@ impl Action {
 
 impl StackAction {
     fn startup_summary(&self) -> String {
-        let topology = match self {
+        let lane = match self {
             Self::Up { topology, .. }
             | Self::Status(topology)
             | Self::Logs { topology, .. }
-            | Self::Config(topology) => topology.topology_label().to_owned(),
-            Self::Down { topology, .. } => match topology {
-                TopologySelection::Controlplane => {
-                    StackMode::Controlplane.topology_label().to_owned()
-                }
-                TopologySelection::Dataplane => StackMode::Dataplane.topology_label().to_owned(),
-                TopologySelection::All => format!(
+            | Self::Config(topology) => topology.lane_label().to_owned(),
+            Self::Down { lane, .. } => match lane {
+                LaneSelection::Builtin => StackMode::Controlplane.lane_label().to_owned(),
+                LaneSelection::External => StackMode::Dataplane.lane_label().to_owned(),
+                LaneSelection::All => format!(
                     "{}, {}",
-                    StackMode::Controlplane.topology_label(),
-                    StackMode::Dataplane.topology_label()
+                    StackMode::Controlplane.lane_label(),
+                    StackMode::Dataplane.lane_label()
                 ),
             },
         };
         if matches!(self, Self::Up { .. }) {
-            format!("Topology: {topology}\nProtocol version: {DEFAULT_MCP_SPEC_VERSION}")
+            format!(
+                "Lane: {lane}\nProtocol version: {}",
+                ProtocolVersion::default()
+            )
         } else {
-            format!("Topology: {topology}")
+            format!("Lane: {lane}")
         }
     }
 }
 
-fn topology_and_protocol(topology: StackMode, protocol_version: &ProtocolVersion) -> String {
+fn lane_and_protocol(topology: StackMode, protocol_version: &ProtocolVersion) -> String {
     format!(
-        "Topology: {}\nProtocol version: {protocol_version}",
-        topology.topology_label()
+        "Lane: {}\nProtocol version: {protocol_version}",
+        topology.lane_label()
     )
 }
 
@@ -210,7 +219,7 @@ pub(crate) enum StackAction {
         fresh: bool,
     },
     Down {
-        topology: TopologySelection,
+        lane: LaneSelection,
         volumes: bool,
     },
     Status(StackMode),
@@ -226,6 +235,8 @@ pub(crate) enum StackAction {
 pub(crate) struct ResolvedLoadArgs {
     pub(crate) topology: StackMode,
     pub(crate) protocol_version: ProtocolVersion,
+    pub(crate) standalone: bool,
+    pub(crate) observability: bool,
     pub(crate) request: LoadRequest,
 }
 
@@ -284,13 +295,13 @@ pub(crate) enum CiAction {
 ///
 /// # Errors
 ///
-/// Returns an error when a command needs `CF_MCP_STACK_MODE` and its value is
-/// neither `controlplane` nor `dataplane`.
+/// Returns an error when a command needs `CF_MCP_LANE` and its value is neither
+/// `builtin` nor `external`.
 pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
     match cli.command {
         Command::Stack(args) => resolve_stack(args.command, environment).map(Action::Stack),
         Command::Probe(args) => {
-            let topology = resolve_topology(args.lane, environment)?;
+            let topology = resolve_lane(args.lane, environment)?;
             Ok(Action::Probe {
                 topology,
                 protocol_version: resolve_protocol_version(
@@ -301,7 +312,10 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
             })
         }
         Command::Load(args) => {
-            let topology = resolve_topology(args.target.lane, environment)?;
+            let topology = resolve_lane(args.target.lane, environment)?;
+            if args.standalone && topology != StackMode::Dataplane {
+                bail!("--standalone requires --lane external");
+            }
             Ok(Action::Load(ResolvedLoadArgs {
                 topology,
                 protocol_version: resolve_protocol_version(
@@ -309,6 +323,8 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
                     environment,
                     ProtocolVersion::default(),
                 )?,
+                standalone: args.standalone,
+                observability: args.observability,
                 request: LoadRequest {
                     smoke: args.smoke,
                     users: args.users,
@@ -353,7 +369,7 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
         })),
         Command::Debug(args) => Ok(Action::Debug(match args.command {
             DebugCommand::Inspect(args) => {
-                let topology = resolve_topology(args.target.lane, environment)?;
+                let topology = resolve_lane(args.target.lane, environment)?;
                 DebugAction::Inspect {
                     topology,
                     protocol_version: resolve_protocol_version(
@@ -415,9 +431,9 @@ fn environment_utf8(environment: &Environment, key: &str) -> Option<String> {
 fn resolve_live_lane(lane: Option<CliLane>, environment: &Environment) -> Result<SemanticLane> {
     Ok(match lane {
         Some(CliLane::FixtureDirect) => SemanticLane::FixtureDirect,
-        Some(CliLane::BuiltInDataPlane) => SemanticLane::BuiltInDataPlane,
-        Some(CliLane::ExternalDataPlane) => SemanticLane::ExternalDataPlane,
-        None => match resolve_topology(None, environment)? {
+        Some(CliLane::Builtin) => SemanticLane::BuiltInDataPlane,
+        Some(CliLane::External) => SemanticLane::ExternalDataPlane,
+        None => match resolve_lane(None, environment)? {
             StackMode::Controlplane => SemanticLane::BuiltInDataPlane,
             StackMode::Dataplane => SemanticLane::ExternalDataPlane,
         },
@@ -448,25 +464,23 @@ fn resolve_protocol_version(
 fn resolve_stack(command: StackCommand, environment: &Environment) -> Result<StackAction> {
     match command {
         StackCommand::Up(args) => Ok(StackAction::Up {
-            topology: resolve_topology(args.topology, environment)?,
+            topology: resolve_lane(args.lane, environment)?,
             fresh: args.fresh,
         }),
         StackCommand::Down(args) => Ok(StackAction::Down {
-            topology: args.topology.unwrap_or(TopologySelection::All),
+            lane: args.lane.unwrap_or(LaneSelection::All),
             volumes: args.volumes,
         }),
-        StackCommand::Status(args) => Ok(StackAction::Status(resolve_topology(
-            args.topology,
-            environment,
-        )?)),
+        StackCommand::Status(args) => {
+            Ok(StackAction::Status(resolve_lane(args.lane, environment)?))
+        }
         StackCommand::Logs(args) => Ok(StackAction::Logs {
-            topology: resolve_topology(args.topology, environment)?,
+            topology: resolve_lane(args.lane, environment)?,
             services: args.services,
         }),
-        StackCommand::Config(args) => Ok(StackAction::Config(resolve_topology(
-            args.topology,
-            environment,
-        )?)),
+        StackCommand::Config(args) => {
+            Ok(StackAction::Config(resolve_lane(args.lane, environment)?))
+        }
     }
 }
 
@@ -530,40 +544,40 @@ fn resolve_server_eras(eras: Vec<crate::cli::CliConformanceEra>) -> Vec<Conforma
         .collect()
 }
 
-fn resolve_topology(explicit: Option<CliTopology>, environment: &Environment) -> Result<StackMode> {
-    if let Some(topology) = explicit {
-        return Ok(topology.into());
+fn resolve_lane(explicit: Option<CliRoutedLane>, environment: &Environment) -> Result<StackMode> {
+    if let Some(lane) = explicit {
+        return Ok(lane.into());
     }
-    Ok(environment_topology(environment)?.unwrap_or(StackMode::Dataplane))
+    Ok(environment_lane(environment)?.unwrap_or(StackMode::Dataplane))
 }
 
-fn environment_topology(environment: &Environment) -> Result<Option<StackMode>> {
-    let Some(value) = environment.get(OsStr::new(STACK_MODE_ENV)) else {
+fn environment_lane(environment: &Environment) -> Result<Option<StackMode>> {
+    let Some(value) = environment.get(OsStr::new(LANE_ENV)) else {
         return Ok(None);
     };
     match value.to_str() {
-        Some("controlplane") => Ok(Some(StackMode::Controlplane)),
-        Some("dataplane") => Ok(Some(StackMode::Dataplane)),
+        Some("builtin") => Ok(Some(StackMode::Controlplane)),
+        Some("external") => Ok(Some(StackMode::Dataplane)),
         _ => bail!(
-            "invalid {STACK_MODE_ENV}; expected controlplane or dataplane (got {:?})",
+            "invalid {LANE_ENV}; expected builtin or external (got {:?})",
             value
         ),
     }
 }
 
-/// Converts a CLI topology selection into its ordered stack modes.
-pub(crate) fn selected_topologies(selection: TopologySelection) -> Vec<StackMode> {
+/// Converts a CLI lane selection into its ordered stack modes.
+pub(crate) fn selected_topologies(selection: LaneSelection) -> Vec<StackMode> {
     match selection {
-        TopologySelection::Controlplane => vec![StackMode::Controlplane],
-        TopologySelection::Dataplane => vec![StackMode::Dataplane],
-        TopologySelection::All => vec![StackMode::Controlplane, StackMode::Dataplane],
+        LaneSelection::Builtin => vec![StackMode::Controlplane],
+        LaneSelection::External => vec![StackMode::Dataplane],
+        LaneSelection::All => vec![StackMode::Controlplane, StackMode::Dataplane],
     }
 }
 
-/// Converts one concrete stack mode into a CLI topology selection.
-pub(crate) const fn topology_selection(topology: StackMode) -> TopologySelection {
+/// Converts one concrete stack mode into a CLI lane selection.
+pub(crate) const fn topology_selection(topology: StackMode) -> LaneSelection {
     match topology {
-        StackMode::Controlplane => TopologySelection::Controlplane,
-        StackMode::Dataplane => TopologySelection::Dataplane,
+        StackMode::Controlplane => LaneSelection::Builtin,
+        StackMode::Dataplane => LaneSelection::External,
     }
 }

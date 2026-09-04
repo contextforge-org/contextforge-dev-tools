@@ -24,11 +24,8 @@ const SPEC_REFERENCE: &str =
 #[test]
 fn semantic_lanes_have_one_shared_stable_vocabulary() {
     assert_eq!(SemanticLane::FixtureDirect.label(), "fixture direct");
-    assert_eq!(SemanticLane::BuiltInDataPlane.label(), "built-in dataplane");
-    assert_eq!(
-        SemanticLane::ExternalDataPlane.label(),
-        "external dataplane"
-    );
+    assert_eq!(SemanticLane::BuiltInDataPlane.label(), "builtin");
+    assert_eq!(SemanticLane::ExternalDataPlane.label(), "external");
 }
 
 #[test]

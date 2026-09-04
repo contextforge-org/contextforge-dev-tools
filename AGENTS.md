@@ -10,3 +10,4 @@ Scope:
 - Keep generated checkout/build/runtime state under `.integration/` or `CF_INTEGRATION_DIR`.
 - Preserve the public routing contract: `/servers/{virtual_host_id}/mcp` goes to `cf-dataplane`; raw `/mcp` and UI/API traffic go to `cf-controlplane`.
 - Use published `cf-dataplane` images by default. Local builds should be explicit overrides.
+- Keep `CHANGELOG.md` current for user-visible behavior, CLI, workflow, and packaging changes. Add normal changes under `Unreleased`; when bumping the package version, move those entries into a dated version section.

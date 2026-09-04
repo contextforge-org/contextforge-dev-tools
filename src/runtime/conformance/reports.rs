@@ -367,11 +367,11 @@ fn discover_conformance_runs(
             .file_name()
             .into_string()
             .map_err(|_| AppFailure::from(anyhow!("client-version directory is not UTF-8")))?;
-        ProtocolVersion::from_str(&client_version).map_err(|error| {
-            AppFailure::from(anyhow!(
-                "invalid conformance client-version directory {client_version:?}: {error}"
-            ))
-        })?;
+        if !crate::mcp::protocol::is_protocol_revision(&client_version) {
+            return Err(AppFailure::from(anyhow!(
+                "invalid conformance client-version directory {client_version:?}: must use the MCP YYYY-MM-DD version format"
+            )));
+        }
         for era_entry in strict_directories(&version_entry.path(), "server-era")? {
             let label = era_entry
                 .file_name()

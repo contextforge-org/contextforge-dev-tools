@@ -122,6 +122,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         &self,
         server_era: ConformanceServerEra,
     ) -> AppResult<()> {
+        self.start_observability()?;
         let project = self.standalone_conformance_project();
         let build = self.standalone_conformance_environment(
             project.command(["build", OFFICIAL_CONFORMANCE_SERVICE]),
@@ -625,6 +626,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         }
         expected_server_scenarios(DEFAULT_CONFORMANCE_SUITE, spec_version)
             .map_err(AppFailure::from)?;
+        let run_external_client = spec_version == DEFAULT_MCP_SPEC_VERSION
+            && lanes.contains(&SemanticLane::ExternalDataPlane);
+        if run_external_client {
+            expected_client_scenarios(spec_version).map_err(AppFailure::from)?;
+        }
         paths.clear_conformance()?;
 
         let topologies = conformance_topologies(lanes);
@@ -633,6 +639,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         }
         let mut failures = Vec::new();
         let mut interrupted = false;
+        let mut external_stack_retained = false;
         tokio::pin!(interrupt);
         let (cancellation_sender, cancellation_receiver) = tokio::sync::watch::channel(false);
 
@@ -706,7 +713,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 
         if !topologies.is_empty() && !interrupted {
             let cleanup_progress = Activity::spinner("Clear prior integration stacks");
-            let cleanup_result = self.cleanup(TopologySelection::All, CleanupKind::Reset);
+            let cleanup_result = self.cleanup(LaneSelection::All, CleanupKind::Reset);
             cleanup_progress.finish(cleanup_result.is_ok());
             if let Err(error) = cleanup_result {
                 failures.push(ConformanceOperationalFailure::server(
@@ -723,9 +730,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             }
             let target = conformance_target(topology);
             let run_routed = lanes.contains(&target);
-            let stack_progress =
-                Activity::spinner(format!("Prepare {}", topology.topology_label()));
+            let stack_progress = Activity::spinner(format!("Prepare {}", topology.lane_label()));
             let mut topology_failure = self.stack_up_for_conformance(topology, true).await.err();
+            let stack_started = topology_failure.is_none();
             stack_progress.finish(topology_failure.is_none());
             let mut fixture_state = None;
             let mut fixture_metadata = None;
@@ -735,7 +742,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             if topology_failure.is_none() {
                 let fixture_progress = Activity::spinner(format!(
                     "Start the official fixture for {}",
-                    topology.topology_label()
+                    topology.lane_label()
                 ));
                 let (start_result, start_interrupted) = finish_phase_after_interrupt(
                     self.start_conformance_service(topology, server_era),
@@ -776,7 +783,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     Ok(client) => {
                         let provision_progress = Activity::spinner(format!(
                             "Register the official fixture for {}",
-                            topology.topology_label()
+                            topology.lane_label()
                         ));
                         let (provision_result, provision_interrupted) =
                             finish_phase_after_interrupt(
@@ -896,16 +903,20 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 .err();
             }
 
-            topology_failure = finish_with_cleanup(
-                topology_failure,
-                self.cleanup(topology_selection(topology), CleanupKind::Down),
-            )
-            .err();
+            if can_reuse_external_stack(topology, stack_started, interrupted, run_external_client) {
+                external_stack_retained = true;
+            } else {
+                topology_failure = finish_with_cleanup(
+                    topology_failure,
+                    self.cleanup(topology_selection(topology), CleanupKind::Down),
+                )
+                .err();
+            }
             if let Some(error) = topology_failure {
                 failures.push(ConformanceOperationalFailure::server(
                     Some(target),
                     "run",
-                    format!("{} topology: {error}", topology.topology_label()),
+                    format!("{} lane: {error}", topology.lane_label()),
                 ));
             }
             if interrupted {
@@ -914,15 +925,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             }
         }
 
-        if !interrupted
-            && spec_version == DEFAULT_MCP_SPEC_VERSION
-            && lanes.contains(&SemanticLane::ExternalDataPlane)
-        {
+        if !interrupted && run_external_client {
             let client = self.run_external_client_conformance(
                 spec_version,
                 server_era,
                 paths,
                 cancellation_receiver.clone(),
+                external_stack_retained,
             );
             tokio::pin!(client);
             tokio::select! {
@@ -1039,11 +1048,16 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         server_era: ConformanceServerEra,
         paths: &ConformancePaths,
         cancellation: tokio::sync::watch::Receiver<bool>,
+        reuse_stack: bool,
     ) -> AppResult<()> {
-        expected_client_scenarios(spec_version).map_err(AppFailure::from)?;
-        let stack_progress = Activity::spinner("Prepare external dataplane client conformance");
+        let progress = if reuse_stack {
+            "Reuse external dataplane for client conformance"
+        } else {
+            "Prepare external dataplane client conformance"
+        };
+        let stack_progress = Activity::spinner(progress);
         let stack_result = self
-            .stack_up_for_conformance(StackMode::Dataplane, true)
+            .stack_up_for_conformance(StackMode::Dataplane, !reuse_stack)
             .await;
         stack_progress.finish(stack_result.is_ok());
         let mut failure = stack_result.err();
@@ -1638,6 +1652,15 @@ fn conformance_topologies(lanes: &[SemanticLane]) -> Vec<StackMode> {
     topologies
 }
 
+fn can_reuse_external_stack(
+    topology: StackMode,
+    stack_started: bool,
+    interrupted: bool,
+    run_external_client: bool,
+) -> bool {
+    topology == StackMode::Dataplane && stack_started && !interrupted && run_external_client
+}
+
 fn parse_conformance_fixture_endpoint(output: &[u8]) -> anyhow::Result<url::Url> {
     let output = std::str::from_utf8(output).context("Compose fixture port output is not UTF-8")?;
     let address = output
@@ -1697,7 +1720,7 @@ fn combine_cleanup_results(first: AppResult<()>, second: AppResult<()>) -> AppRe
 fn fixture_registration_context(topology: StackMode, server_era: ConformanceServerEra) -> String {
     format!(
         "ContextForge could not register the official fixture for {} with server era {} [{}]; routed tests for this lane were skipped",
-        topology.topology_label(),
+        topology.lane_label(),
         server_era.label(),
         server_era.protocol_versions_label()
     )
@@ -1876,6 +1899,24 @@ mod tests {
     }
 
     #[test]
+    fn external_stack_is_reused_only_for_a_started_uninterrupted_client_run() {
+        let cases = [
+            (StackMode::Dataplane, true, false, true, true),
+            (StackMode::Controlplane, true, false, true, false),
+            (StackMode::Dataplane, false, false, true, false),
+            (StackMode::Dataplane, true, true, true, false),
+            (StackMode::Dataplane, true, false, false, false),
+        ];
+
+        for (topology, stack_started, interrupted, run_client, expected) in cases {
+            assert_eq!(
+                can_reuse_external_stack(topology, stack_started, interrupted, run_client),
+                expected,
+            );
+        }
+    }
+
+    #[test]
     fn direct_fixture_endpoint_accepts_only_loopback_bindings() {
         assert_eq!(
             parse_conformance_fixture_endpoint(b"127.0.0.1:49152\n")
@@ -1931,7 +1972,7 @@ mod tests {
 
         assert_eq!(
             context,
-            "ContextForge could not register the official fixture for built-in dataplane with server era modern [2026-07-28]; routed tests for this lane were skipped"
+            "ContextForge could not register the official fixture for builtin with server era modern [2026-07-28]; routed tests for this lane were skipped"
         );
     }
 
@@ -1999,7 +2040,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "────────────\n MCP server conformance results: external dataplane\n Client era: modern [2026-07-28]\n Server era: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]\n       XFAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 1 xfailed, 0 xpassed, 0 failed, 0 skipped, 0 unknown"
+            "────────────\n MCP server conformance results: external\n Client era: modern [2026-07-28]\n Server era: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]\n       XFAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 1 xfailed, 0 xpassed, 0 failed, 0 skipped, 0 unknown"
         );
     }
 
@@ -2062,7 +2103,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "────────────\n MCP server conformance results: external dataplane\n Client era: modern [2026-07-28]\n Server era: modern [2026-07-28]\n        FAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 0 xfailed, 0 xpassed, 1 failed, 0 skipped, 0 unknown"
+            "────────────\n MCP server conformance results: external\n Client era: modern [2026-07-28]\n Server era: modern [2026-07-28]\n        FAIL (1/2) server::external-data-plane::failing\n        PASS (2/2) server::external-data-plane::passing\n────────────\n     Summary [   1.250s] 1 passed, 0 xfailed, 0 xpassed, 1 failed, 0 skipped, 0 unknown"
         );
     }
 
@@ -2077,7 +2118,7 @@ mod tests {
             OutputStyle::plain(),
         );
 
-        assert!(rendered.contains("MCP client conformance results: external dataplane"));
+        assert!(rendered.contains("MCP client conformance results: external"));
         assert!(rendered.contains("Client era: modern [2026-07-28]"));
         assert!(rendered.contains("Server era: modern [2026-07-28]"));
         assert!(rendered.contains("client::external-data-plane::failing"));

@@ -7,9 +7,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let controlplane_compose = self.config.controlplane_dir().join("docker-compose.yml");
         if !controlplane_compose.is_file() {
             return Err(AppFailure::from(anyhow!(
-                "control-plane checkout is unavailable at {}; run `cf-integration stack up --topology {}` first",
+                "control-plane checkout is unavailable at {}; run `cf-integration stack up --lane {}` first",
                 self.config.controlplane_dir().display(),
-                mode.cli_value()
+                mode.lane_value()
             )));
         }
         if mode == StackMode::Dataplane
@@ -17,7 +17,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             && !self.config.dataplane_dir().is_dir()
         {
             return Err(AppFailure::from(anyhow!(
-                "dataplane source checkout is unavailable at {}; run `cf-integration stack up --topology dataplane` first",
+                "dataplane source checkout is unavailable at {}; run `cf-integration stack up --lane external` first",
                 self.config.dataplane_dir().display()
             )));
         }

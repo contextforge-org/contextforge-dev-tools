@@ -4,6 +4,8 @@ mod sources;
 
 use super::*;
 
+const COMPOSE_PROTOCOL_VERSION_ENV: &str = "MCP_PROTOCOL_VERSION";
+
 impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn execute_stack(&self, action: StackAction) -> AppResult<()> {
         match action {
@@ -37,14 +39,15 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 Activity::completed("Integration stack ready");
                 self.print_stack_summary(topology, &conformance_endpoint)
             }
-            StackAction::Down { topology, volumes } => self.cleanup(
-                topology,
-                if volumes {
+            StackAction::Down { lane, volumes } => {
+                let kind = if volumes {
                     CleanupKind::Reset
                 } else {
                     CleanupKind::Down
-                },
-            ),
+                };
+                let primary = self.cleanup(lane, kind).err();
+                finish_with_cleanup(primary, self.cleanup_observability(kind, true))
+            }
             StackAction::Status(mode) => {
                 self.require_mode_sources(mode)?;
                 let command = StackCommandPlan::status(self.conformance_compose_project(mode));
@@ -84,7 +87,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     }
 
     pub(super) async fn stack_up(&self, mode: StackMode, fresh: bool) -> AppResult<()> {
-        self.stack_up_with_project(mode, fresh, self.compose_project(mode), false)
+        self.stack_up_with_project(mode, fresh, self.compose_project(mode), false, true)
             .await
     }
 
@@ -93,16 +96,23 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         mode: StackMode,
         fresh: bool,
     ) -> AppResult<()> {
-        self.stack_up_with_project(mode, fresh, self.conformance_runtime_project(mode), false)
-            .await
+        self.stack_up_with_project(
+            mode,
+            fresh,
+            self.conformance_runtime_project(mode),
+            false,
+            true,
+        )
+        .await
     }
 
-    async fn stack_up_with_project(
+    pub(super) async fn stack_up_with_project(
         &self,
         mode: StackMode,
         fresh: bool,
         project: ComposeProject,
         report_progress: bool,
+        observability: bool,
     ) -> AppResult<()> {
         self.ensure_mode_sources(mode)?;
         if mode == StackMode::Dataplane {
@@ -112,6 +122,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let build = self.resolve_build(mode, report_progress)?;
         self.pull_images(mode, build, report_progress)?;
         if mode == StackMode::Dataplane
+            && !observability
             && !fresh
             && !self.environment_flag("CF_FORCE_STACK_RESTART", false)
             && !build
@@ -131,6 +142,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             self.cleanup(topology_selection(mode), CleanupKind::Reset)?;
         }
         self.ensure_other_stack_stopped(mode)?;
+        if observability {
+            self.start_observability()?;
+        }
         if mode == StackMode::Controlplane {
             fs::create_dir_all(self.config.controlplane_dir().join("reports"))
                 .context("failed to create control-plane report directory")
@@ -164,13 +178,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         if report_progress {
             println!(
                 "{}",
-                OutputStyle::stdout().success(&format!("{} stack started.", mode.topology_label()))
+                OutputStyle::stdout().success(&format!("{} stack started.", mode.lane_label()))
             );
         }
         Ok(())
     }
 
-    async fn wait_for_public_endpoint(
+    pub(super) async fn wait_for_public_endpoint(
         &self,
         mode: StackMode,
         report_progress: bool,
@@ -182,7 +196,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 OutputStyle::stderr().info(&format!(
                     "Waiting up to {}s for the public {} MCP endpoint.",
                     STACK_READY_TIMEOUT.as_secs(),
-                    mode.topology_label()
+                    mode.lane_label()
                 ))
             );
         }
@@ -207,16 +221,41 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         mode: StackMode,
         conformance_endpoint: &url::Url,
     ) -> AppResult<()> {
+        let observability_ui = format!(
+            "http://127.0.0.1:{}",
+            self.environment_text("CF_OBSERVABILITY_UI_PORT")
+                .filter(|port| !port.is_empty())
+                .unwrap_or("3000")
+        );
         let summary = format_stack_endpoint_summary(
             self.base_url()?,
             &self.public_mcp_endpoint(mode)?,
             conformance_endpoint,
+            &observability_ui,
         );
         println!("{}", OutputStyle::stdout().info(&summary));
         Ok(())
     }
 
     pub(super) fn compose_project(&self, mode: StackMode) -> ComposeProject {
+        self.routed_compose_project(mode)
+            .with_observability(self.config.asset_root(), mode == StackMode::Dataplane)
+    }
+
+    pub(super) fn performance_compose_project(
+        &self,
+        mode: StackMode,
+        observability: bool,
+    ) -> ComposeProject {
+        let project = self.routed_compose_project(mode);
+        if observability {
+            project.with_observability(self.config.asset_root(), mode == StackMode::Dataplane)
+        } else {
+            project
+        }
+    }
+
+    fn routed_compose_project(&self, mode: StackMode) -> ComposeProject {
         let project = match mode {
             StackMode::Dataplane => ComposeProject::dataplane(
                 self.config.asset_root(),
@@ -244,6 +283,55 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .with_conformance_runtime(self.config.asset_root())
     }
 
+    pub(super) fn start_observability(&self) -> AppResult<()> {
+        let command = self.observability_compose_project().command([
+            "up",
+            "-d",
+            "--wait",
+            "--remove-orphans",
+        ]);
+        Ok(self.runner.run(&self.observability_environment(command))?)
+    }
+
+    fn observability_compose_project(&self) -> ComposeProject {
+        ComposeProject::observability(
+            self.config.asset_root(),
+            format!(
+                "{}-observability",
+                self.config.integration_project().value.to_string_lossy()
+            )
+            .into(),
+        )
+    }
+
+    fn observability_environment(&self, command: CommandSpec) -> CommandSpec {
+        let command_environment = command.environment().clone();
+        let mut command = command.cwd(self.config.root());
+        for (key, value) in self.config.environment().iter() {
+            if !command_environment.contains_key(key) {
+                command = command.env(key.clone(), value.value.clone());
+            }
+        }
+        command
+            .env("CF_INTEGRATION_ROOT", self.config.asset_root().as_os_str())
+            .env("CF_OBSERVABILITY_NETWORK", self.observability_network())
+    }
+
+    fn observability_network(&self) -> OsString {
+        self.environment_text("CF_OBSERVABILITY_NETWORK")
+            .filter(|name| !name.is_empty())
+            .map_or_else(
+                || {
+                    format!(
+                        "{}-observability",
+                        self.config.integration_project().value.to_string_lossy()
+                    )
+                    .into()
+                },
+                OsString::from,
+            )
+    }
+
     pub(super) fn compose_environment(
         &self,
         command: CommandSpec,
@@ -262,6 +350,12 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 command = command.env(key.clone(), value.value.clone());
             }
         }
+        if let Some(protocol_version) = compose_protocol_version(
+            &command_environment,
+            self.environment_text(COMPOSE_PROTOCOL_VERSION_ENV),
+        )? {
+            command = command.env(COMPOSE_PROTOCOL_VERSION_ENV, protocol_version);
+        }
         let (controlplane_pull_policy, dataplane_pull_policy) = compose_pull_policies(
             mode,
             false,
@@ -271,6 +365,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         );
         command = command
             .env("CF_INTEGRATION_ROOT", self.config.asset_root().as_os_str())
+            .env("CF_OBSERVABILITY_NETWORK", self.observability_network())
             .env(
                 "CF_INTEGRATION_DIR",
                 self.config.integration_dir().as_os_str(),
@@ -809,19 +904,19 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     &self.config.controlplane_project().value,
                     "CF_CONTROLPLANE_PROJECT",
                 )?,
-                StackMode::Controlplane.topology_label(),
+                StackMode::Controlplane.lane_label(),
             ),
             StackMode::Controlplane => (
                 required_text(
                     &self.config.integration_project().value,
                     "CF_INTEGRATION_PROJECT",
                 )?,
-                StackMode::Dataplane.topology_label(),
+                StackMode::Dataplane.lane_label(),
             ),
         };
         if self.project_has_running_containers(other)? {
             return Err(AppFailure::from(anyhow!(
-                "the {label} stack is running on the same host ports; run `cf-integration stack down --topology all` first"
+                "the {label} stack is running on the same host ports; run `cf-integration stack down --lane all` first"
             )));
         }
         Ok(())
@@ -838,13 +933,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .is_empty())
     }
 
-    pub(super) fn cleanup(&self, selection: TopologySelection, kind: CleanupKind) -> AppResult<()> {
+    pub(super) fn cleanup(&self, selection: LaneSelection, kind: CleanupKind) -> AppResult<()> {
         self.cleanup_with_output(selection, kind, true)
     }
 
     pub(super) fn cleanup_quiet(
         &self,
-        selection: TopologySelection,
+        selection: LaneSelection,
         kind: CleanupKind,
     ) -> AppResult<()> {
         self.cleanup_with_output(selection, kind, false)
@@ -852,7 +947,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 
     fn cleanup_with_output(
         &self,
-        selection: TopologySelection,
+        selection: LaneSelection,
         kind: CleanupKind,
         inherit_output: bool,
     ) -> AppResult<()> {
@@ -891,6 +986,24 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             }
         }
         finish_with_cleanup_failures(None, cleanup_failures)
+    }
+
+    fn cleanup_observability(&self, kind: CleanupKind, inherit_output: bool) -> AppResult<()> {
+        let project = self.observability_compose_project();
+        let command = StackCommandPlan::cleanup(project, kind);
+        let command = self.observability_environment(command.command().clone());
+        let primary = self
+            .run_cleanup_command(&command, inherit_output)
+            .map_err(AppFailure::from)
+            .err();
+        let project = format!(
+            "{}-observability",
+            self.config.integration_project().value.to_string_lossy()
+        );
+        finish_with_cleanup(
+            primary,
+            self.remove_project_by_label(&project, kind, inherit_output),
+        )
     }
 
     fn remove_project_by_label(
@@ -1031,6 +1144,24 @@ fn require_preloaded_image(label: &str, image: &OsStr, local_exists: bool) -> Ap
     )))
 }
 
+fn compose_protocol_version(
+    command_environment: &BTreeMap<OsString, OsString>,
+    configured: Option<&str>,
+) -> AppResult<Option<&'static str>> {
+    if command_environment.contains_key(OsStr::new(COMPOSE_PROTOCOL_VERSION_ENV)) {
+        return Ok(None);
+    }
+    let mode = configured
+        .filter(|value| !value.is_empty())
+        .map(str::parse::<ProtocolVersion>)
+        .transpose()
+        .map_err(|error| {
+            AppFailure::from(anyhow!("invalid {COMPOSE_PROTOCOL_VERSION_ENV}: {error}"))
+        })?
+        .unwrap_or_default();
+    Ok(Some(mode.wire_version()))
+}
+
 fn compose_pull_policies(
     mode: StackMode,
     build: bool,
@@ -1088,9 +1219,10 @@ fn format_stack_endpoint_summary(
     public_origin: &str,
     public_mcp_endpoint: &url::Url,
     conformance_endpoint: &url::Url,
+    observability_ui: &str,
 ) -> String {
     format!(
-        "Gateway/API: {public_origin}\nPublic MCP: {public_mcp_endpoint}\nConformance MCP (direct): {conformance_endpoint}"
+        "Gateway/API: {public_origin}\nPublic MCP: {public_mcp_endpoint}\nConformance MCP (direct): {conformance_endpoint}\nObservability: {observability_ui}"
     )
 }
 
@@ -1229,6 +1361,36 @@ mod tests {
     }
 
     #[test]
+    fn compose_translates_semantic_protocol_modes_to_wire_revisions() {
+        let command_environment = BTreeMap::new();
+
+        assert_eq!(
+            compose_protocol_version(&command_environment, None)
+                .expect("default protocol mode should resolve"),
+            Some("2026-07-28")
+        );
+        assert_eq!(
+            compose_protocol_version(&command_environment, Some("legacy"))
+                .expect("legacy protocol mode should resolve"),
+            Some("2025-11-25")
+        );
+    }
+
+    #[test]
+    fn compose_preserves_an_explicit_internal_wire_revision() {
+        let command_environment = BTreeMap::from([(
+            OsString::from(COMPOSE_PROTOCOL_VERSION_ENV),
+            OsString::from("2025-11-25"),
+        )]);
+
+        assert_eq!(
+            compose_protocol_version(&command_environment, Some("modern"))
+                .expect("explicit command environment should be preserved"),
+            None
+        );
+    }
+
+    #[test]
     fn explicit_conformance_era_is_not_replaced_by_the_stack_default() {
         let command = with_default_conformance_server_era(
             CommandSpec::new("docker").env(CONFORMANCE_SERVER_ERA_ENV, "legacy"),
@@ -1248,12 +1410,16 @@ mod tests {
             url::Url::parse("http://127.0.0.1:8080/servers/server-id/mcp").expect("public URL");
         let conformance = url::Url::parse("http://127.0.0.1:49152/mcp").expect("conformance URL");
 
-        let summary =
-            format_stack_endpoint_summary("http://127.0.0.1:8080", &public_mcp, &conformance);
+        let summary = format_stack_endpoint_summary(
+            "http://127.0.0.1:8080",
+            &public_mcp,
+            &conformance,
+            "http://127.0.0.1:3000",
+        );
 
         assert_eq!(
             summary,
-            "Gateway/API: http://127.0.0.1:8080\nPublic MCP: http://127.0.0.1:8080/servers/server-id/mcp\nConformance MCP (direct): http://127.0.0.1:49152/mcp"
+            "Gateway/API: http://127.0.0.1:8080\nPublic MCP: http://127.0.0.1:8080/servers/server-id/mcp\nConformance MCP (direct): http://127.0.0.1:49152/mcp\nObservability: http://127.0.0.1:3000"
         );
     }
 

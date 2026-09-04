@@ -8,21 +8,21 @@ pub(crate) enum StackMode {
 }
 
 impl StackMode {
-    /// Semantic topology name shown to users.
+    /// Semantic lane name shown to users.
     #[must_use]
-    pub(crate) const fn topology_label(self) -> &'static str {
+    pub(crate) const fn lane_label(self) -> &'static str {
         match self {
-            Self::Controlplane => "built-in dataplane",
-            Self::Dataplane => "external dataplane",
+            Self::Controlplane => "builtin",
+            Self::Dataplane => "external",
         }
     }
 
-    /// Canonical physical topology value accepted by stack commands.
+    /// Canonical semantic lane value accepted by public commands.
     #[must_use]
-    pub(crate) const fn cli_value(self) -> &'static str {
+    pub(crate) const fn lane_value(self) -> &'static str {
         match self {
-            Self::Controlplane => "controlplane",
-            Self::Dataplane => "dataplane",
+            Self::Controlplane => "builtin",
+            Self::Dataplane => "external",
         }
     }
 }

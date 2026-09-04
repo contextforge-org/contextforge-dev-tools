@@ -53,7 +53,7 @@ jobs:
             exit 1
           fi
           test ! -e "$sandbox/state"
-          if (cd "$sandbox" && CF_INTEGRATION_DIR="$sandbox/state" "$binary" stack config --topology dataplane); then
+          if (cd "$sandbox" && CF_INTEGRATION_DIR="$sandbox/state" "$binary" stack config --lane external); then
             echo "stack config unexpectedly succeeded outside a checkout" >&2
             exit 1
           fi

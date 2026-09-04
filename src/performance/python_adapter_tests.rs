@@ -38,8 +38,47 @@ fn locust_adapter_and_compose_overlay_do_not_reference_the_removed_helper() {
         "the load container receives a bearer token and must not receive the signing key"
     );
     assert!(compose.contains("MCP_PROTOCOL_VERSION=${MCP_PROTOCOL_VERSION:-2026-07-28}"));
+    assert!(compose.contains("standalone_load_backend:"));
+    assert!(compose.contains("profiles: [\"standalone-load\"]"));
+    assert!(compose.contains("MCP_CONFORMANCE_SERVER_ERA: modern"));
     assert!(
         compose.contains("LOCUST_REQUEST_TIMEOUT_SECONDS=${LOCUST_REQUEST_TIMEOUT_SECONDS:-60}")
+    );
+}
+
+#[test]
+fn standalone_config_helper_uses_token_subject_and_selected_protocol() {
+    let code = r#"
+import base64
+import json
+import prepare_standalone_config as helper
+
+claims = base64.urlsafe_b64encode(json.dumps({"sub": "user-123"}).encode()).decode().rstrip("=")
+assert helper.token_subject(f"header.{claims}.signature") == "user-123"
+
+prepared = helper.prepare_config("server-123", "2026-07-28")
+backend = prepared["virtual_hosts"]["server-123"]["backends"]["standalone-load"]
+assert backend["url"] == "http://mcp_conformance_server:3000/mcp"
+assert backend["mcp_protocol_version"] == "2026-07-28"
+assert backend["tool_name_aliases"] == [{"downstream_prefixed_name": "test_simple_text", "upstream_name": "test_simple_text"}]
+assert backend["tool_schemas"] == {"test_simple_text": {}}
+virtual_host = prepared["virtual_hosts"]["server-123"]
+assert virtual_host["tools"] == {"test_simple_text": {"backend_name": "standalone-load", "upstream_name": "test_simple_text"}}
+assert virtual_host["resources"] == {}
+assert virtual_host["resource_templates"] == {}
+assert virtual_host["prompts"] == {}
+"#;
+    let output = Command::new(python())
+        .arg("-c")
+        .arg(code)
+        .env("PYTHONPATH", scripts_dir())
+        .output()
+        .expect("Python helper test should run");
+
+    assert!(
+        output.status.success(),
+        "standalone config helper failed: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

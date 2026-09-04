@@ -34,6 +34,7 @@ pub(crate) const SERVICE_DISPLAY_NAMES: &[(&str, &str)] = &[
     ("keycloak", "cf-keycloak"),
     ("mcp_conformance_server", "cf-conformance-server"),
     ("mcp_conformance_proxy", "cf-conformance-proxy"),
+    ("clickstack", "cf-clickstack"),
 ];
 
 /// Immutable Compose project invocation.
@@ -56,6 +57,20 @@ impl ComposeProject {
                     .join("docker-compose.cf-conformance-fixture.yaml"),
             ],
             profiles: vec![OsString::from("conformance")],
+        }
+    }
+
+    /// Builds the independently managed local ClickStack project.
+    #[must_use]
+    pub(crate) fn observability(repository_root: &Path, project_name: OsString) -> Self {
+        Self {
+            project_name,
+            files: vec![
+                repository_root
+                    .join("docker")
+                    .join("docker-compose.cf-telemetry.yaml"),
+            ],
+            profiles: Vec::new(),
         }
     }
 
@@ -172,6 +187,30 @@ impl ComposeProject {
             .join("docker-compose.cf-conformance-runtime.yaml");
         if !self.files.contains(&overlay) {
             self.files.push(overlay);
+        }
+        self
+    }
+
+    /// Enables the local ClickStack instance and OTLP exporters for routed services.
+    #[must_use]
+    pub(crate) fn with_observability(
+        mut self,
+        repository_root: &Path,
+        include_dataplane: bool,
+    ) -> Self {
+        let controlplane = repository_root
+            .join("docker")
+            .join("docker-compose.cf-controlplane-observability.yaml");
+        if !self.files.contains(&controlplane) {
+            self.files.push(controlplane);
+        }
+        if include_dataplane {
+            let overlay = repository_root
+                .join("docker")
+                .join("docker-compose.cf-dataplane-observability.yaml");
+            if !self.files.contains(&overlay) {
+                self.files.push(overlay);
+            }
         }
         self
     }
