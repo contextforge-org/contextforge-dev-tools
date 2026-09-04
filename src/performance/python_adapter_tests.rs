@@ -575,3 +575,66 @@ assert response.successes == 1 and not response.failures
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn standalone_fixture_catalog_preserves_discovered_routes_and_schemas() {
+    let script = r#"
+import assert from 'node:assert/strict';
+const scriptPath = process.argv[1];
+process.argv[1] = undefined;
+const { fixtureCatalog } = await import(scriptPath);
+const schema = { type: 'object', properties: { value: { type: 'string', 'x-mcp-header': 'Value' } } };
+const calls = [];
+globalThis.fetch = async (_, options) => {
+    const request = JSON.parse(options.body);
+    calls.push(request);
+    assert.equal(request.params._meta['io.modelcontextprotocol/protocolVersion'], '2026-07-28');
+    assert.equal(options.headers['mcp-method'], request.method);
+    let result;
+    switch (request.method) {
+        case 'server/discover': result = {}; break;
+        case 'tools/list': result = request.params.cursor
+            ? { tools: [{ name: 'new_diagnostic_tool', inputSchema: schema }] }
+            : { tools: [{ name: 'first', inputSchema: {} }], nextCursor: 'page2' }; break;
+        case 'resources/list': result = { resources: [{ uri: 'test://new-resource' }] }; break;
+        case 'resources/templates/list': result = { resourceTemplates: [{ uriTemplate: 'test://new/{id}' }] }; break;
+        case 'prompts/list': result = { prompts: [{ name: 'new_prompt' }] }; break;
+        default: assert.fail(request.method);
+    }
+    const message = JSON.stringify({ jsonrpc: '2.0', id: request.id, result });
+    return new Response(request.params.cursor ? `event: message\ndata: ${message}\n\n` : message,
+        { headers: { 'content-type': request.params.cursor ? 'text/event-stream' : 'application/json' } });
+};
+const catalog = await fixtureCatalog('http://fixture/mcp', '2026-07-28');
+assert.deepEqual(catalog.tools, ['first', 'new_diagnostic_tool']);
+assert.deepEqual(catalog.toolSchemas.new_diagnostic_tool, schema);
+assert.deepEqual(catalog.resources, ['test://new-resource']);
+assert.deepEqual(catalog.resourceTemplates, ['test://new/{id}']);
+assert.deepEqual(catalog.prompts, ['new_prompt']);
+assert.equal(calls.filter((r) => r.method === 'tools/list').length, 2);
+
+globalThis.fetch = async (_, options) => {
+    const request = JSON.parse(options.body);
+    return Response.json({ id: request.id, error: { code: -32603, message: 'fixture failed' } });
+};
+await assert.rejects(fixtureCatalog('http://fixture/mcp', '2026-07-28'), /successful result/);
+
+globalThis.fetch = async (_, options) => {
+    const request = JSON.parse(options.body);
+    return Response.json({ id: request.id, result: request.method === 'server/discover' ? {} : {
+        tools: [{ name: 'first', inputSchema: {} }], nextCursor: 'repeated',
+    }});
+};
+await assert.rejects(fixtureCatalog('http://fixture/mcp', '2026-07-28'), /repeated cursor/);
+"#;
+    let output = Command::new("node")
+        .args(["--input-type=module", "--eval", script])
+        .arg(scripts_dir().join("conformance/write_dataplane_config.mjs"))
+        .output()
+        .expect("Node fixture catalog test runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

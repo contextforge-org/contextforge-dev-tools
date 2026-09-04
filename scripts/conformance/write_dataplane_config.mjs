@@ -1,38 +1,94 @@
 #!/usr/bin/env node
 /** Publish one conformance route through the dataplane's current serializer. */
+import { realpathSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 const DATAPLANE_CONFIG_URL =
   'http://dataplane:4445/contextforge-rs/admin/userconfigs';
 const DATAPLANE_TOKEN_URL =
   'http://dataplane:4445/contextforge-rs/admin/tokens';
-const FIXTURE_TOOLS = [
-  'test_simple_text',
-  'test_image_content',
-  'test_audio_content',
-  'test_embedded_resource',
-  'test_multiple_content_types',
-  'test_tool_with_logging',
-  'test_tool_with_progress',
-  'test_error_handling',
-  'test_reconnection',
-  'test_sampling',
-  'test_elicitation',
-  'test_elicitation_sep1034_defaults',
-  'test_elicitation_sep1330_enums',
-  'json_schema_2020_12_tool',
-];
-const FIXTURE_RESOURCES = [
-  'test://static-text',
-  'test://static-binary',
-  'test://watched-resource',
-];
-const FIXTURE_RESOURCE_TEMPLATES = ['test://template/{id}/data'];
-const FIXTURE_PROMPTS = [
-  'test_simple_prompt',
-  'test_prompt_with_arguments',
-  'test_prompt_with_embedded_resource',
-  'test_prompt_with_image',
-];
+/** Discover the pinned fixture instead of maintaining a second, incomplete catalog. */
+export async function fixtureCatalog(backendUrl, protocolVersion) {
+  let requestId = 0;
+  let sessionId;
+  const modern = protocolVersion >= '2026-07-28';
+  const clientInfo = { name: 'cf-integration-config', version: '1.0' };
+  async function rpc(method, params = {}, notification = false) {
+    if (modern) params = { ...params, _meta: {
+      'io.modelcontextprotocol/protocolVersion': protocolVersion,
+      'io.modelcontextprotocol/clientInfo': clientInfo,
+      'io.modelcontextprotocol/clientCapabilities': {},
+    } };
+    const id = notification ? undefined : ++requestId;
+    const response = await fetch(backendUrl, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        'mcp-protocol-version': protocolVersion,
+        'mcp-method': method,
+        ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!response.ok) throw new Error(`fixture ${method} failed: HTTP ${response.status}`);
+    sessionId = response.headers.get('mcp-session-id') ?? sessionId;
+    if (notification) { await response.body?.cancel(); return; }
+    const body = await response.text();
+    const messages = response.headers.get('content-type')?.startsWith('text/event-stream')
+      ? body.split(/\r?\n\r?\n/).filter((event) => /^data:/m.test(event)).map((event) =>
+          JSON.parse(event.split(/\r?\n/).filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice(5).trimStart()).join('\n')))
+      : [JSON.parse(body)];
+    const message = messages.find((message) => message.id === id);
+    if (!message || message.error || !message.result) {
+      throw new Error(`fixture ${method} did not return a successful result`);
+    }
+    return message.result;
+  }
+  async function list(method, key) {
+    const items = [];
+    const cursors = new Set();
+    let cursor;
+    do {
+      const page = await rpc(method, cursor ? { cursor } : {});
+      if (!Array.isArray(page[key])) throw new Error(`fixture ${method} has no ${key} array`);
+      items.push(...page[key]);
+      cursor = page.nextCursor;
+      if (cursor !== undefined && (typeof cursor !== 'string' || !cursor || cursors.has(cursor))) {
+        throw new Error(`fixture ${method} returned an invalid or repeated cursor`);
+      }
+      cursors.add(cursor);
+    } while (cursor !== undefined);
+    return items;
+  }
+  try {
+    if (modern) await rpc('server/discover');
+    else {
+      await rpc('initialize', { protocolVersion, capabilities: {}, clientInfo });
+      await rpc('notifications/initialized', {}, true);
+    }
+    const tools = await list('tools/list', 'tools');
+    if (!tools.length || tools.some((tool) => !tool.name || !tool.inputSchema
+        || typeof tool.inputSchema !== 'object' || Array.isArray(tool.inputSchema))) {
+      throw new Error('fixture tools must include names and input schemas');
+    }
+    return {
+      tools: tools.map((tool) => tool.name),
+      toolSchemas: Object.fromEntries(tools.map((tool) => [tool.name, tool.inputSchema])),
+      resources: (await list('resources/list', 'resources')).map((resource) => resource.uri),
+      resourceTemplates: (await list('resources/templates/list', 'resourceTemplates')).map((resource) => resource.uriTemplate),
+      prompts: (await list('prompts/list', 'prompts')).map((prompt) => prompt.name),
+    };
+  } finally {
+    if (sessionId) await fetch(backendUrl, {
+      method: 'DELETE',
+      headers: { 'mcp-session-id': sessionId, 'mcp-protocol-version': protocolVersion },
+      signal: AbortSignal.timeout(10000),
+    }).then((response) => response.body?.cancel());
+  }
+}
 
 function fail(message) {
   process.stderr.write(`${message}\n`);
@@ -87,20 +143,7 @@ function config(serverId, backendUrl, protocolVersion, catalogs) {
             add_headers: {},
             remove_headers: [],
             completion: {},
-            tool_schemas: Object.fromEntries(catalogs.tools.map((name) => [name, {}])),
-            // Older published dataplanes used aliases instead of service routes.
-            tool_name_aliases: catalogs.tools.map((name) => ({
-              downstream_prefixed_name: name,
-              upstream_name: name,
-            })),
-            resource_uri_aliases: catalogs.resources.map((name) => ({
-              downstream_prefixed_uri: name,
-              upstream_uri: name,
-            })),
-            prompt_name_aliases: catalogs.prompts.map((name) => ({
-              downstream_prefixed_name: name,
-              upstream_name: name,
-            })),
+            tool_schemas: catalogs.toolSchemas ?? {},
           },
         },
         tools: routes(catalogs.tools, backendName),
@@ -175,12 +218,7 @@ async function main() {
   if (!token) fail('MCP_CONFORMANCE_TOKEN is required');
 
   const catalogs = mode === 'fixture'
-    ? {
-        tools: FIXTURE_TOOLS,
-        resources: FIXTURE_RESOURCES,
-        resourceTemplates: FIXTURE_RESOURCE_TEMPLATES,
-        prompts: FIXTURE_PROMPTS,
-      }
+    ? await fixtureCatalog(backendUrl, protocolVersion)
     : {
         tools: stringArray(toolNamesJson, 'tool-names-json'),
         resources: [],
@@ -194,4 +232,4 @@ async function main() {
   process.stdout.write(`${JSON.stringify(catalogs.tools)}\n`);
 }
 
-await main();
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) await main();

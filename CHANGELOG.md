@@ -7,6 +7,12 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- Discover standalone conformance routes and input schemas from the running
+  fixture, including paginated diagnostic tools. Fixture discovery errors stop
+  setup before a baseline can be blessed.
+
 ## [0.3.1] - 2026-09-04
 
 ### Added
