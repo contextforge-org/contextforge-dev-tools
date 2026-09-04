@@ -7,6 +7,11 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Changed
+
+- Simplified runtime dispatch and shared authenticated workflow setup, removing
+  forwarding wrappers while preserving token revocation and stack cleanup.
+
 ### Fixed
 
 - Removed control-plane checkout, worker-configuration, and secret-generation

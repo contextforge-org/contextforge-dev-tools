@@ -48,31 +48,15 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     ) -> AppResult<()> {
         let server_id = self.default_server_id().to_owned();
         self.with_managed_test_target(topology, &server_id, || async {
-            self.run_live_group(topology, group, protocol_version)
+            let target = match group {
+                LiveGroup::Mcp => "test-mcp-protocol-e2e",
+                LiveGroup::Rbac => "test-mcp-rbac",
+                LiveGroup::Protocol => "test-protocol-compliance-gateway",
+                LiveGroup::All => return self.run_live_all(topology, protocol_version),
+            };
+            self.run_controlplane_make(topology, target, protocol_version)
         })
         .await
-    }
-
-    fn run_live_group(
-        &self,
-        topology: StackMode,
-        group: LiveGroup,
-        protocol_version: &ProtocolVersion,
-    ) -> AppResult<()> {
-        match group {
-            LiveGroup::Mcp => {
-                self.run_controlplane_make(topology, "test-mcp-protocol-e2e", protocol_version)
-            }
-            LiveGroup::Rbac => {
-                self.run_controlplane_make(topology, "test-mcp-rbac", protocol_version)
-            }
-            LiveGroup::Protocol => self.run_controlplane_make(
-                topology,
-                "test-protocol-compliance-gateway",
-                protocol_version,
-            ),
-            LiveGroup::All => self.run_live_all(topology, protocol_version),
-        }
     }
 
     fn run_controlplane_make(

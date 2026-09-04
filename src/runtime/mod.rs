@@ -49,8 +49,8 @@ use crate::performance::{LoadSettings, LocustCommand, audit_locust_reports};
 use anyhow::{Context, anyhow};
 
 use crate::app::{
-    Action, CiAction, ConformanceAction, DebugAction, ResolvedLoadArgs, StackAction,
-    selected_topologies, topology_selection,
+    Action, ConformanceAction, DebugAction, ResolvedLoadArgs, StackAction, selected_topologies,
+    topology_selection,
 };
 use crate::cli::{LaneSelection, LiveGroup, ProtocolVersion, TokenKind as CliTokenKind};
 use crate::error::AppFailure;
@@ -78,8 +78,8 @@ use control_plane::CONFORMANCE_TOKEN_DESCRIPTION;
 use control_plane::{ControlPlaneClient, ManagedBearerToken};
 use inspect::*;
 
-/// Shared dependencies borrowed by concrete workflow owners.
-struct RuntimeContext<R> {
+/// Runtime dependencies and execution of resolved CLI actions.
+pub(crate) struct RuntimeContext<R> {
     config: AppConfig,
     runner: R,
     controlplane_image: OnceLock<OsString>,
@@ -88,7 +88,7 @@ struct RuntimeContext<R> {
 impl<R> RuntimeContext<R> {
     /// Creates runtime context without starting any process.
     #[must_use]
-    fn new(config: AppConfig, runner: R) -> Self {
+    pub(crate) fn new(config: AppConfig, runner: R) -> Self {
         Self {
             config,
             runner,
@@ -97,59 +97,32 @@ impl<R> RuntimeContext<R> {
     }
 }
 
-/// Small CLI action dispatcher backed by concrete workflow owners.
-pub(crate) struct RuntimeDispatcher<R> {
-    context: RuntimeContext<R>,
-}
-
-impl<R> RuntimeDispatcher<R> {
-    /// Creates a dispatcher without starting any process.
-    #[must_use]
-    pub(crate) fn new(config: AppConfig, runner: R) -> Self {
-        Self {
-            context: RuntimeContext::new(config, runner),
-        }
-    }
-}
-
-struct StackWorkflow<'a, R>(&'a RuntimeContext<R>);
-struct ProbeWorkflow<'a, R>(&'a RuntimeContext<R>);
-struct PerformanceWorkflow<'a, R>(&'a RuntimeContext<R>);
-struct LiveWorkflow<'a, R>(&'a RuntimeContext<R>);
-struct ConformanceWorkflow<'a, R>(&'a RuntimeContext<R>);
-struct CiWorkflow<'a, R>(&'a RuntimeContext<R>);
-
-impl<R: ProcessRunner> RuntimeDispatcher<R> {
-    /// Dispatches one fully resolved operation through its workflow owner.
+impl<R: ProcessRunner> RuntimeContext<R> {
+    /// Executes one fully resolved operation.
     pub(crate) async fn execute(&self, action: Action) -> AppResult<()> {
         match action {
-            Action::Stack(action) => StackWorkflow(&self.context).execute(action).await,
+            Action::Stack(action) => self.execute_stack(action).await,
             Action::Probe {
                 topology,
                 standalone,
                 protocol_version,
             } => {
-                ProbeWorkflow(&self.context)
-                    .execute(topology, standalone, &protocol_version)
+                self.run_probe(topology, standalone, &protocol_version)
                     .await
             }
-            Action::Load(args) => PerformanceWorkflow(&self.context).execute(args).await,
+            Action::Load(args) => self.run_load(args).await,
             Action::Live {
                 lane,
                 group,
                 protocol_version,
-            } => {
-                LiveWorkflow(&self.context)
-                    .execute(lane, group, &protocol_version)
-                    .await
-            }
-            Action::Conformance(action) => ConformanceWorkflow(&self.context).execute(action).await,
-            Action::Ci(action) => CiWorkflow(&self.context).execute(action).await,
+            } => self.run_live(lane, group, &protocol_version).await,
+            Action::Conformance(action) => self.execute_conformance(action).await,
+            Action::Ci(action) => self.execute_ci(action).await,
             Action::Debug(DebugAction::Token {
                 kind,
                 server_id,
                 standalone,
-            }) => self.context.print_token(kind, server_id, standalone).await,
+            }) => self.print_token(kind, server_id, standalone).await,
             Action::Debug(DebugAction::Inspect {
                 topology,
                 standalone,
@@ -157,69 +130,17 @@ impl<R: ProcessRunner> RuntimeDispatcher<R> {
                 method,
                 server_id,
             }) => {
-                self.context
-                    .inspect(
-                        topology,
-                        standalone,
-                        &protocol_version,
-                        &method,
-                        server_id.as_deref(),
-                    )
-                    .await
+                self.inspect(
+                    topology,
+                    standalone,
+                    &protocol_version,
+                    &method,
+                    server_id.as_deref(),
+                )
+                .await
             }
         }
     }
-}
-
-impl<'a, R: ProcessRunner> StackWorkflow<'a, R> {
-    async fn execute(&self, action: StackAction) -> AppResult<()> {
-        self.0.execute_stack(action).await
-    }
-}
-
-impl<'a, R: ProcessRunner> ProbeWorkflow<'a, R> {
-    async fn execute(
-        &self,
-        topology: StackMode,
-        standalone: bool,
-        protocol_version: &ProtocolVersion,
-    ) -> AppResult<()> {
-        self.0
-            .run_probe(topology, standalone, protocol_version)
-            .await
-    }
-}
-
-impl<'a, R: ProcessRunner> PerformanceWorkflow<'a, R> {
-    async fn execute(&self, args: ResolvedLoadArgs) -> AppResult<()> {
-        self.0.run_load(args).await
-    }
-}
-
-impl<'a, R: ProcessRunner> LiveWorkflow<'a, R> {
-    async fn execute(
-        &self,
-        lane: SemanticLane,
-        group: LiveGroup,
-        protocol_version: &ProtocolVersion,
-    ) -> AppResult<()> {
-        self.0.run_live(lane, group, protocol_version).await
-    }
-}
-
-impl<'a, R: ProcessRunner> ConformanceWorkflow<'a, R> {
-    async fn execute(&self, action: ConformanceAction) -> AppResult<()> {
-        self.0.execute_conformance(action).await
-    }
-}
-
-impl<'a, R: ProcessRunner> CiWorkflow<'a, R> {
-    async fn execute(&self, action: CiAction) -> AppResult<()> {
-        self.0.execute_ci(action).await
-    }
-}
-
-impl<R: ProcessRunner> RuntimeContext<R> {
     async fn print_token(
         &self,
         kind: CliTokenKind,

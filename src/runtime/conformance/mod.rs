@@ -912,17 +912,15 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                 .as_ref()
                                 .expect("managed token was just stored");
                             if standalone_topology
-                                && let Err(error) = self
-                                    .publish_standalone_conformance_config(
-                                        server_id,
-                                        server_era
-                                            .protocol_versions()
-                                            .last()
-                                            .expect("fixture has supported protocols"),
-                                        &token.value,
-                                        true,
-                                    )
-                                    .await
+                                && let Err(error) = self.publish_standalone_conformance_config(
+                                    server_id,
+                                    server_era
+                                        .protocol_versions()
+                                        .last()
+                                        .expect("fixture has supported protocols"),
+                                    &token.value,
+                                    true,
+                                )
                             {
                                 topology_failure = Some(error);
                             }
@@ -1233,7 +1231,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .map_err(AppFailure::from)
     }
 
-    pub(super) async fn publish_standalone_conformance_config(
+    pub(super) fn publish_standalone_conformance_config(
         &self,
         server_id: &str,
         protocol_version: &str,

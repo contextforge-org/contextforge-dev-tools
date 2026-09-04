@@ -55,8 +55,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                         protocol_version.wire_version(),
                         &token.value,
                         true,
-                    )
-                    .await?;
+                    )?;
                 }
                 let conformance_endpoint =
                     self.conformance_fixture_endpoint(topology, standalone, true)?;
@@ -474,21 +473,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             )
     }
 
-    pub(super) fn compose_environment(
-        &self,
-        command: CommandSpec,
-        mode: StackMode,
-        checkout_labels: bool,
-    ) -> AppResult<CommandSpec> {
-        let controlplane_image = self.resolved_controlplane_image()?;
-        self.compose_environment_with_controlplane_image(
-            command,
-            mode,
-            checkout_labels,
-            controlplane_image,
-        )
-    }
-
     pub(super) fn standalone_dataplane_environment(
         &self,
         command: CommandSpec,
@@ -506,13 +490,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         }
     }
 
-    fn compose_environment_with_controlplane_image(
+    pub(super) fn compose_environment(
         &self,
         command: CommandSpec,
         mode: StackMode,
         checkout_labels: bool,
-        controlplane_image: OsString,
     ) -> AppResult<CommandSpec> {
+        let controlplane_image = self.resolved_controlplane_image()?;
         let mut command = self.base_compose_environment(command)?;
         if mode == StackMode::Dataplane {
             command = self.dataplane_environment(command)?;

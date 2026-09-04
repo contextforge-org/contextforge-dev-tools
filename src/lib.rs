@@ -23,7 +23,7 @@ use error::AppFailure;
 use infrastructure::config::{AppConfig, ConfigBootstrap, Environment};
 use infrastructure::process::SystemProcessRunner;
 pub(crate) use output::{Activity, OutputStyle, TestStatus};
-use runtime::RuntimeDispatcher;
+use runtime::RuntimeContext;
 
 /// Runs the CLI using the current process arguments and environment.
 pub async fn run() -> ExitCode {
@@ -91,7 +91,7 @@ pub async fn run() -> ExitCode {
             return report_failure(AppFailure::from(error));
         }
     };
-    let runtime = RuntimeDispatcher::new(config, SystemProcessRunner);
+    let runtime = RuntimeContext::new(config, SystemProcessRunner);
     let result = runtime.execute(action).await;
     if let Some(activity) = activity {
         activity.finish(result.is_ok());

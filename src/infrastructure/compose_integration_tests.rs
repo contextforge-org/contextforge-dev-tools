@@ -453,6 +453,11 @@ fn standalone_dataplane_owns_ephemeral_jwks_auth_and_mock_helpers() {
         compose["services"]["locust"]["profiles"][0].as_str(),
         Some("performance")
     );
+    assert_eq!(
+        compose["services"]["locust"]["image"].as_str(),
+        Some("locustio/locust:2.46.2")
+    );
+    assert!(compose["services"]["locust"]["environment"]["JWT_SECRET_KEY"].is_null());
 }
 
 #[test]

@@ -237,7 +237,7 @@ impl ComposeProject {
         self
     }
 
-    /// Enables the local ClickStack instance and OTLP exporters for routed services.
+    /// Enables OTLP exporters for routed services; ClickStack runs independently.
     #[must_use]
     pub(crate) fn with_observability(
         mut self,
@@ -251,12 +251,7 @@ impl ComposeProject {
             self.files.push(controlplane);
         }
         if include_dataplane {
-            let overlay = repository_root
-                .join("docker")
-                .join("docker-compose.cf-dataplane-observability.yaml");
-            if !self.files.contains(&overlay) {
-                self.files.push(overlay);
-            }
+            self = self.with_dataplane_observability(repository_root);
         }
         self
     }

@@ -14,6 +14,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             topology,
             &server_id,
             standalone,
+            true,
             protocol_version,
             |token, tool_names| async {
                 let config = ProbeConfig {

@@ -27,15 +27,6 @@ struct ManagedSessionScope<'a, R> {
     token: Option<ManagedBearerToken>,
 }
 
-struct ManagedTarget<'a> {
-    topology: StackMode,
-    server_id: &'a str,
-    standalone: bool,
-    project: ComposeProject,
-    observability: bool,
-    protocol_version: &'a ProtocolVersion,
-}
-
 impl<'a, R: ProcessRunner> ManagedSessionScope<'a, R> {
     fn new(runtime: &'a RuntimeContext<R>, topology: StackMode, standalone: bool) -> Self {
         Self {
@@ -105,43 +96,16 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         Fut: Future<Output = AppResult<()>>,
     {
         let scope = ManagedSessionScope::new(self, topology, false);
-        let primary = match self.stack_up(topology, false).await {
-            Ok(()) => match self.prepare_test_target(topology, server_id).await {
-                Ok(()) => operation().await,
-                Err(error) => Err(error),
-            },
-            Err(error) => Err(error),
-        };
+        let primary = async {
+            self.stack_up(topology, false).await?;
+            self.prepare_test_target(topology, server_id).await?;
+            operation().await
+        }
+        .await;
         scope.finish(primary).await
     }
 
     pub(super) async fn with_managed_authenticated_target<F, Fut>(
-        &self,
-        topology: StackMode,
-        server_id: &str,
-        standalone: bool,
-        protocol_version: &ProtocolVersion,
-        operation: F,
-    ) -> AppResult<()>
-    where
-        F: FnOnce(String, Vec<String>) -> Fut,
-        Fut: Future<Output = AppResult<()>>,
-    {
-        self.with_managed_authenticated_target_project(
-            ManagedTarget {
-                topology,
-                server_id,
-                standalone,
-                project: self.compose_project(topology),
-                observability: true,
-                protocol_version,
-            },
-            operation,
-        )
-        .await
-    }
-
-    pub(super) async fn with_managed_performance_target<F, Fut>(
         &self,
         topology: StackMode,
         server_id: &str,
@@ -154,87 +118,41 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         F: FnOnce(String, Vec<String>) -> Fut,
         Fut: Future<Output = AppResult<()>>,
     {
-        self.with_managed_authenticated_target_project(
-            ManagedTarget {
-                topology,
-                server_id,
-                standalone,
-                project: self.performance_compose_project(topology, observability),
-                observability,
-                protocol_version,
-            },
-            operation,
-        )
-        .await
-    }
-
-    async fn with_managed_authenticated_target_project<F, Fut>(
-        &self,
-        target: ManagedTarget<'_>,
-        operation: F,
-    ) -> AppResult<()>
-    where
-        F: FnOnce(String, Vec<String>) -> Fut,
-        Fut: Future<Output = AppResult<()>>,
-    {
-        let ManagedTarget {
-            topology,
-            server_id,
-            standalone,
-            project,
-            observability,
-            protocol_version,
-        } = target;
         if standalone && topology != StackMode::Dataplane {
             return Err(AppFailure::from(anyhow!(
                 "standalone mode requires the external lane"
             )));
         }
         let mut scope = ManagedSessionScope::new(self, topology, standalone);
-        let stack_result = if standalone {
-            self.stack_up_standalone_dataplane(false, observability)
-                .await
-        } else {
-            self.stack_up_with_project(topology, false, project, false, observability)
-                .await
-        };
-        let primary = match stack_result {
-            Ok(()) => match self
-                .prepare_authenticated_target(topology, server_id, standalone)
-                .await
-            {
-                Ok(()) => match if standalone {
-                    self.start_standalone_fixture(protocol_version, observability)
-                        .await
-                        .and_then(|()| self.standalone_dataplane_token(observability))
-                } else {
-                    self.managed_bearer_token(topology, server_id).await
-                } {
-                    Ok(token) => {
-                        let value = token.value.clone();
-                        scope.token = Some(token);
-                        let tool_names = if standalone {
-                            self.publish_standalone_conformance_config(
-                                server_id,
-                                protocol_version.wire_version(),
-                                &value,
-                                observability,
-                            )
-                            .await
-                        } else {
-                            Ok(Vec::new())
-                        };
-                        match tool_names {
-                            Ok(tool_names) => operation(value, tool_names).await,
-                            Err(error) => Err(error),
-                        }
-                    }
-                    Err(error) => Err(error),
-                },
-                Err(error) => Err(error),
-            },
-            Err(error) => Err(error),
-        };
+        let primary = async {
+            let token = if standalone {
+                self.stack_up_standalone_dataplane(false, observability)
+                    .await?;
+                self.start_standalone_fixture(protocol_version, observability)
+                    .await?;
+                self.standalone_dataplane_token(observability)?
+            } else {
+                let project = self.performance_compose_project(topology, observability);
+                self.stack_up_with_project(topology, false, project, false, observability)
+                    .await?;
+                self.prepare_test_target(topology, server_id).await?;
+                self.managed_bearer_token(topology, server_id).await?
+            };
+            let value = token.value.clone();
+            scope.token = Some(token);
+            let tool_names = if standalone {
+                self.publish_standalone_conformance_config(
+                    server_id,
+                    protocol_version.wire_version(),
+                    &value,
+                    observability,
+                )?
+            } else {
+                Vec::new()
+            };
+            operation(value, tool_names).await
+        }
+        .await;
         scope.finish(primary).await
     }
 
@@ -249,19 +167,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         };
         self.start_conformance_service(StackMode::Dataplane, server_era, true, observability)
             .await
-    }
-
-    async fn prepare_authenticated_target(
-        &self,
-        topology: StackMode,
-        server_id: &str,
-        standalone: bool,
-    ) -> AppResult<()> {
-        if standalone {
-            self.ensure_other_stack_stopped(topology)?;
-            return Ok(());
-        }
-        self.prepare_test_target(topology, server_id).await
     }
 
     pub(super) async fn prepare_test_target(

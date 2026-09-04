@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 /** Publish one conformance route through the dataplane's current serializer. */
+import { setTimeout } from 'node:timers/promises';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
@@ -172,7 +173,7 @@ async function publish(subject, body) {
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await setTimeout(500);
   }
   fail(`dataplane config serializer was unavailable: ${lastError}`);
 }
@@ -189,7 +190,7 @@ async function issueToken(tenantId, userId) {
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    await setTimeout(500);
   }
   fail(`dataplane token helper was unavailable: ${lastError}`);
 }

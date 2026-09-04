@@ -21,29 +21,6 @@ fn workspace_root() -> PathBuf {
 }
 
 #[test]
-fn locust_adapter_and_compose_overlay_do_not_reference_the_removed_helper() {
-    let root = workspace_root();
-    let adapter = fs::read_to_string(root.join("scripts/locustfile_mcp.py"))
-        .expect("Locust adapter should be readable");
-    let compose =
-        fs::read_to_string(root.join("docker/docker-compose.cf-dataplane-standalone.yaml"))
-            .expect("standalone Compose file should be readable");
-
-    assert!(!adapter.contains("mcp_http"));
-    assert!(adapter.contains("allow_redirects=False"));
-    assert!(adapter.contains("timeout=REQUEST_TIMEOUT_SECONDS"));
-    assert!(adapter.contains("self.client.trust_env = False"));
-    assert!(!compose.contains("mcp_http.py"));
-    assert!(
-        !compose.contains("JWT_SECRET_KEY="),
-        "the load container receives a bearer token and must not receive the signing key"
-    );
-    assert!(!compose.contains("gateway:"));
-    assert!(compose.contains("locustio/locust:2.46.2"));
-    assert!(compose.contains("profiles: [\"performance\"]"));
-}
-
-#[test]
 fn standalone_config_writer_has_valid_javascript_syntax() {
     for script in [
         "conformance/write_dataplane_config.mjs",
@@ -92,7 +69,7 @@ def task(_weight):
 }
 
 #[test]
-fn locust_adapter_imports_without_the_removed_helper_and_handles_mcp_bodies() {
+fn locust_adapter_imports_and_handles_mcp_bodies() {
     let stub = locust_stub();
     let python_path = std::env::join_paths([stub.path(), scripts_dir().as_path()])
         .expect("Python path should join");
@@ -285,7 +262,7 @@ adapter.validate_result("server/discover", {
 }
 
 #[test]
-fn locust_adapter_validates_and_applies_timeout_to_every_request() {
+fn locust_adapter_applies_timeouts_and_disables_redirects_and_environment_proxies() {
     let stub = locust_stub();
     let python_path = std::env::join_paths([stub.path(), scripts_dir().as_path()])
         .expect("Python path should join");
@@ -321,20 +298,25 @@ class FakeClient:
     def __init__(self):
         self.timeouts = []
 
-    def post(self, _path, *, data, timeout, **_kwargs):
+    def post(self, _path, *, data, timeout, allow_redirects, **_kwargs):
+        assert allow_redirects is False
         self.timeouts.append(("POST", timeout))
         payload = json.loads(data)
         if "id" in payload:
             return FakeResponse({"jsonrpc": "2.0", "id": payload["id"], "result": {}})
         return FakeResponse(status=202)
 
-    def delete(self, _path, *, timeout, **_kwargs):
+    def delete(self, _path, *, timeout, allow_redirects, **_kwargs):
+        assert allow_redirects is False
         self.timeouts.append(("DELETE", timeout))
         return FakeResponse(status=204)
 
 user = adapter.MCPGatewayUser.__new__(adapter.MCPGatewayUser)
 user._session_id = "session"
 user.client = FakeClient()
+user.on_start()
+assert user.client.trust_env is False
+user.client.timeouts.clear()
 assert user._mcp_request("ping", None, name="ping") == {}
 user._mcp_notification("notifications/initialized", None, name="initialized")
 user.on_stop()

@@ -34,6 +34,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             mode,
             &server_id,
             standalone,
+            true,
             protocol_version,
             |token, _| async move {
                 let endpoint = GatewayClient::new(
