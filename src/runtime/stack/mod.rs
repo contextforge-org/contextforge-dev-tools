@@ -21,7 +21,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 let quiet_runtime = RuntimeContext::new(self.config.clone(), quiet_runner);
                 let build_progress = Activity::spinner("Building conformance image");
                 let build_result = quiet_runtime
-                    .build_conformance_service(topology, DEFAULT_CONFORMANCE_SERVER_ERA)
+                    .build_conformance_service(topology, DEFAULT_CONFORMANCE_SERVER_ERA, false)
                     .await;
                 build_progress.finish(build_result.is_ok());
                 if let Err(error) = build_result {
@@ -33,7 +33,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     return Err(error);
                 }
 
-                self.start_conformance_containers(topology, DEFAULT_CONFORMANCE_SERVER_ERA)
+                self.start_conformance_containers(topology, DEFAULT_CONFORMANCE_SERVER_ERA, false)
                     .await?;
                 let conformance_endpoint = self.conformance_fixture_endpoint(topology)?;
                 Activity::completed("Integration stack ready");
@@ -104,6 +104,48 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             true,
         )
         .await
+    }
+
+    pub(super) async fn stack_up_standalone_conformance(&self, fresh: bool) -> AppResult<()> {
+        if !self.config.dataplane_ref().value.is_empty() {
+            self.ensure_dataplane()?;
+        }
+
+        let build = self.resolve_standalone_dataplane_build()?;
+        if !build && self.config.dataplane_ref().value.is_empty() {
+            let platform = self.dataplane_platform()?;
+            self.pull_if_changed(
+                "cf-dataplane",
+                self.config.dataplane_image().resolved(),
+                Some(platform.as_os_str()),
+                self.config.dataplane_image().pull_policy(),
+                false,
+            )?;
+        }
+        if fresh {
+            self.cleanup_standalone_dataplane(CleanupKind::Reset)?;
+        }
+        self.ensure_other_stack_stopped(StackMode::Dataplane)?;
+        self.start_observability()?;
+
+        let mut arguments = vec![
+            OsString::from("up"),
+            OsString::from("-d"),
+            OsString::from("--remove-orphans"),
+        ];
+        if build {
+            arguments.push(OsString::from("--build"));
+        }
+        arguments.extend(
+            ["redis", "dataplane", "nginx"]
+                .into_iter()
+                .map(OsString::from),
+        );
+        let command = self.standalone_dataplane_project().command(arguments);
+        let command = self.standalone_dataplane_environment(command, true)?;
+        self.runner.run_async(&command).await?;
+        self.wait_for_public_endpoint(StackMode::Dataplane, false)
+            .await
     }
 
     pub(super) async fn stack_up_with_project(
@@ -270,7 +312,24 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 self.environment_flag("CONTROLPLANE_ENABLE_SSO", false),
             ),
         };
-        project.with_conformance_overlay(self.config.asset_root())
+        project
+            .with_conformance_overlay(self.config.asset_root())
+            .with_controlplane_conformance_overlay(self.config.asset_root())
+    }
+
+    pub(super) fn standalone_dataplane_project(&self) -> ComposeProject {
+        ComposeProject::standalone_dataplane(
+            self.config.asset_root(),
+            self.config.integration_project().value.clone(),
+            !self.config.dataplane_ref().value.is_empty(),
+        )
+        .with_dataplane_observability(self.config.asset_root())
+        .with_conformance_overlay(self.config.asset_root())
+    }
+
+    pub(super) fn standalone_conformance_compose_project(&self) -> ComposeProject {
+        self.standalone_dataplane_project()
+            .with_conformance_fixture(self.config.asset_root())
     }
 
     pub(super) fn conformance_compose_project(&self, mode: StackMode) -> ComposeProject {
@@ -339,6 +398,40 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         checkout_labels: bool,
     ) -> AppResult<CommandSpec> {
         let controlplane_image = self.resolved_controlplane_image()?;
+        self.compose_environment_with_controlplane_image(
+            command,
+            mode,
+            checkout_labels,
+            controlplane_image,
+        )
+    }
+
+    pub(super) fn standalone_dataplane_environment(
+        &self,
+        command: CommandSpec,
+        checkout_labels: bool,
+    ) -> AppResult<CommandSpec> {
+        let controlplane_image = self.config.controlplane_image().resolved().to_owned();
+        let command = self.compose_environment_with_controlplane_image(
+            command,
+            StackMode::Dataplane,
+            false,
+            controlplane_image,
+        )?;
+        if checkout_labels && !self.config.dataplane_ref().value.is_empty() {
+            self.add_dataplane_checkout_labels(command)
+        } else {
+            Ok(command)
+        }
+    }
+
+    fn compose_environment_with_controlplane_image(
+        &self,
+        command: CommandSpec,
+        mode: StackMode,
+        checkout_labels: bool,
+        controlplane_image: OsString,
+    ) -> AppResult<CommandSpec> {
         let command_environment = command.environment().clone();
         let mut command = if command.working_directory().is_some() {
             command
@@ -497,23 +590,27 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .env("CF_CONTROLPLANE_CHECKOUT_REVISION", controlplane_revision)
             .env("CF_CONTROLPLANE_CHECKOUT_REF", controlplane_ref);
         if mode == StackMode::Dataplane && !self.config.dataplane_ref().value.is_empty() {
-            let revision = self.git_required(self.config.dataplane_dir(), ["rev-parse", "HEAD"])?;
-            let branch =
-                self.git_required(self.config.dataplane_dir(), ["branch", "--show-current"])?;
-            let reference = if branch.is_empty() {
-                self.config
-                    .dataplane_ref()
-                    .value
-                    .to_string_lossy()
-                    .into_owned()
-            } else {
-                branch
-            };
-            command = command
-                .env("CF_DATAPLANE_CHECKOUT_REVISION", revision)
-                .env("CF_DATAPLANE_CHECKOUT_REF", reference);
+            command = self.add_dataplane_checkout_labels(command)?;
         }
         Ok(command)
+    }
+
+    fn add_dataplane_checkout_labels(&self, command: CommandSpec) -> AppResult<CommandSpec> {
+        let revision = self.git_required(self.config.dataplane_dir(), ["rev-parse", "HEAD"])?;
+        let branch =
+            self.git_required(self.config.dataplane_dir(), ["branch", "--show-current"])?;
+        let reference = if branch.is_empty() {
+            self.config
+                .dataplane_ref()
+                .value
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            branch
+        };
+        Ok(command
+            .env("CF_DATAPLANE_CHECKOUT_REVISION", revision)
+            .env("CF_DATAPLANE_CHECKOUT_REF", reference))
     }
 
     fn validate_compose_contract(&self) -> AppResult<()> {
@@ -589,6 +686,41 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             }
         }
         Ok(decision.build)
+    }
+
+    fn resolve_standalone_dataplane_build(&self) -> AppResult<bool> {
+        let setting = required_text(&self.config.compose_build().value, "CF_COMPOSE_BUILD")?;
+        let mode =
+            BuildMode::from_str(setting).map_err(|error| AppFailure::from(anyhow!(error)))?;
+        let source_ref = (!self.config.dataplane_ref().value.is_empty()).then(|| {
+            self.config
+                .dataplane_ref()
+                .value
+                .to_string_lossy()
+                .into_owned()
+        });
+        let checkout_revision = if source_ref.is_some() {
+            Some(self.git_required(self.config.dataplane_dir(), ["rev-parse", "HEAD"])?)
+        } else {
+            None
+        };
+        let (image_present, image_revision) =
+            self.image_state(self.config.dataplane_image().resolved())?;
+        Ok(resolve_build(
+            mode,
+            &BuildInputs {
+                controlplane_image_prebuilt: true,
+                controlplane_image_present: true,
+                controlplane_checkout_revision: None,
+                controlplane_image_revision: None,
+                include_dataplane: true,
+                dataplane_source_ref: source_ref,
+                dataplane_image_present: image_present,
+                dataplane_checkout_revision: checkout_revision,
+                dataplane_image_revision: image_revision,
+            },
+        )
+        .build)
     }
 
     fn image_state(&self, image: &OsStr) -> AppResult<(bool, Option<String>)> {
@@ -943,6 +1075,23 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         kind: CleanupKind,
     ) -> AppResult<()> {
         self.cleanup_with_output(selection, kind, false)
+    }
+
+    pub(super) fn cleanup_standalone_dataplane(&self, kind: CleanupKind) -> AppResult<()> {
+        let project = self
+            .standalone_conformance_compose_project()
+            .with_profiles(["conformance"]);
+        let command = StackCommandPlan::cleanup(project, kind);
+        let command = self.standalone_dataplane_environment(command.command().clone(), false)?;
+        let primary = self
+            .run_cleanup_command(&command, true)
+            .map_err(AppFailure::from)
+            .err();
+        let project = required_text(
+            &self.config.integration_project().value,
+            "CF_INTEGRATION_PROJECT",
+        )?;
+        finish_with_cleanup(primary, self.remove_project_by_label(project, kind, true))
     }
 
     fn cleanup_with_output(

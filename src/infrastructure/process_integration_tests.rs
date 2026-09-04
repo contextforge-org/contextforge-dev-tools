@@ -62,7 +62,7 @@ async fn logging_runner_hides_ordinary_output_in_an_aggregate_log() {
     let runner = LoggingProcessRunner::new(&system, &log_path);
 
     runner
-        .run_async(&CommandSpec::new(script))
+        .run_async(&CommandSpec::new("/bin/sh").arg(script))
         .await
         .expect("logged child should succeed");
 

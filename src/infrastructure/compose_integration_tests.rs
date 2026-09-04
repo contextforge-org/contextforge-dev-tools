@@ -358,6 +358,26 @@ fn source_dataplane_adds_build_overlay_last() {
 }
 
 #[test]
+fn standalone_dataplane_has_no_controlplane_compose_inputs() {
+    let project =
+        ComposeProject::standalone_dataplane(Path::new("/repo"), OsString::from("project"), true);
+
+    assert_eq!(
+        project.files(),
+        [
+            PathBuf::from("/repo/docker/docker-compose.cf-dataplane-standalone.yaml"),
+            PathBuf::from("/repo/docker/docker-compose.cf-dataplane-build.yaml"),
+        ]
+    );
+    assert!(
+        project
+            .files()
+            .iter()
+            .all(|file| !file.to_string_lossy().contains("controlplane"))
+    );
+}
+
+#[test]
 fn conformance_fixture_is_an_explicit_overlay_and_profile() {
     let default_project = ComposeProject::dataplane(
         Path::new("/repo"),
@@ -598,6 +618,9 @@ fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
             .expect("read standalone conformance fixture Compose file");
     let routed_compose = fs::read_to_string(root.join("docker/docker-compose.cf-conformance.yaml"))
         .expect("read routed conformance Compose overlay");
+    let controlplane_compose =
+        fs::read_to_string(root.join("docker/docker-compose.cf-conformance-controlplane.yaml"))
+            .expect("read control-plane conformance Compose overlay");
 
     assert!(dockerfile.contains("FROM node:22-bookworm-slim"));
     assert!(
@@ -679,14 +702,11 @@ services:
     let expected_routed_compose: yaml_serde::Value = yaml_serde::from_str(
         r#"
 services:
-  gateway:
-    environment:
-      GATEWAY_TOOL_NAME_SEPARATOR: "_"
-    volumes:
-      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/conformance/write_client_config.py:/opt/contextforge-conformance/write_client_config.py:ro
   mcp_conformance_server:
     networks:
       - mcpnet
+    volumes:
+      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/conformance/write_dataplane_config.mjs:/opt/contextforge-conformance/write_dataplane_config.mjs:ro
   mcp_conformance_proxy:
     profiles: ["conformance"]
     image: nginx:1.30.4-alpine3.24
@@ -704,6 +724,20 @@ services:
     )
     .expect("parse expected routed conformance Compose overlay");
     assert_eq!(actual_routed_compose, expected_routed_compose);
+
+    let actual_controlplane_compose: yaml_serde::Value =
+        yaml_serde::from_str(&controlplane_compose)
+            .expect("parse control-plane conformance Compose overlay");
+    let expected_controlplane_compose: yaml_serde::Value = yaml_serde::from_str(
+        r#"
+services:
+  gateway:
+    environment:
+      GATEWAY_TOOL_NAME_SEPARATOR: "_"
+"#,
+    )
+    .expect("parse expected control-plane conformance Compose overlay");
+    assert_eq!(actual_controlplane_compose, expected_controlplane_compose);
 
     let proxy = fs::read_to_string(root.join("docker/nginx.cf-conformance-proxy.conf"))
         .expect("read conformance proxy config");

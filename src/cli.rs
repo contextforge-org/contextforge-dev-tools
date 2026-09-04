@@ -413,6 +413,10 @@ pub(crate) struct ConformanceRunArgs {
     #[arg(long, value_enum, action = ArgAction::Append)]
     pub(crate) lane: Vec<CliLane>,
 
+    /// Run the external dataplane against mocked Redis without a control plane.
+    #[arg(long)]
+    pub(crate) standalone: bool,
+
     /// Protocol era used by the official client; repeat for a matrix.
     #[arg(long, value_enum, action = ArgAction::Append)]
     pub(crate) client_era: Vec<CliConformanceEra>,

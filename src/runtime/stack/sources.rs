@@ -41,7 +41,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         self.ensure_checkout(&request)
     }
 
-    fn ensure_dataplane(&self) -> AppResult<()> {
+    pub(super) fn ensure_dataplane(&self) -> AppResult<()> {
         let request = CheckoutRequest::dataplane(
             self.config.dataplane_dir(),
             self.config.dataplane_repo().value.clone(),

@@ -108,6 +108,32 @@ impl ComposeProject {
         }
     }
 
+    /// Builds the minimal external-dataplane project used by standalone conformance.
+    #[must_use]
+    pub(crate) fn standalone_dataplane(
+        repository_root: &Path,
+        project_name: OsString,
+        build_dataplane: bool,
+    ) -> Self {
+        let mut files = vec![
+            repository_root
+                .join("docker")
+                .join("docker-compose.cf-dataplane-standalone.yaml"),
+        ];
+        if build_dataplane {
+            files.push(
+                repository_root
+                    .join("docker")
+                    .join("docker-compose.cf-dataplane-build.yaml"),
+            );
+        }
+        Self {
+            project_name,
+            files,
+            profiles: Vec::new(),
+        }
+    }
+
     /// Builds the stock control-plane-only project.
     #[must_use]
     pub(crate) fn controlplane(
@@ -179,6 +205,18 @@ impl ComposeProject {
         self
     }
 
+    /// Applies conformance-only settings to the control-plane service.
+    #[must_use]
+    pub(crate) fn with_controlplane_conformance_overlay(mut self, repository_root: &Path) -> Self {
+        let overlay = repository_root
+            .join("docker")
+            .join("docker-compose.cf-conformance-controlplane.yaml");
+        if !self.files.contains(&overlay) {
+            self.files.push(overlay);
+        }
+        self
+    }
+
     /// Applies the control-plane runtime settings used by conformance runs.
     #[must_use]
     pub(crate) fn with_conformance_runtime(mut self, repository_root: &Path) -> Self {
@@ -211,6 +249,18 @@ impl ComposeProject {
             if !self.files.contains(&overlay) {
                 self.files.push(overlay);
             }
+        }
+        self
+    }
+
+    /// Enables only the external dataplane OTLP exporters.
+    #[must_use]
+    pub(crate) fn with_dataplane_observability(mut self, repository_root: &Path) -> Self {
+        let overlay = repository_root
+            .join("docker")
+            .join("docker-compose.cf-dataplane-observability.yaml");
+        if !self.files.contains(&overlay) {
+            self.files.push(overlay);
         }
         self
     }

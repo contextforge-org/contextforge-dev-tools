@@ -97,15 +97,22 @@ impl Action {
             ),
             Self::Conformance(ConformanceAction::Run {
                 lanes,
+                standalone,
                 client_eras,
                 server_eras,
                 ..
-            }) => format!(
-                "Lane: {}\nClient era: {}\nServer era: {}",
-                join_lane_labels(lanes),
-                join_client_eras(client_eras),
-                join_server_eras(server_eras),
-            ),
+            }) => {
+                let mut summary = format!(
+                    "Lane: {}\nClient era: {}\nServer era: {}",
+                    join_lane_labels(lanes),
+                    join_client_eras(client_eras),
+                    join_server_eras(server_eras),
+                );
+                if *standalone {
+                    summary.push_str("\nControl plane: disabled; Redis config: mocked");
+                }
+                summary
+            }
             Self::Conformance(ConformanceAction::Report { .. }) => String::from(
                 "Lane: recorded conformance results\nClient era: recorded conformance results\nServer era: recorded conformance results",
             ),
@@ -245,6 +252,7 @@ pub(crate) struct ResolvedLoadArgs {
 pub(crate) enum ConformanceAction {
     Run {
         lanes: Vec<SemanticLane>,
+        standalone: bool,
         client_eras: Vec<ConformanceServerEra>,
         client_versions: Vec<String>,
         server_eras: Vec<ConformanceServerEra>,
@@ -351,8 +359,13 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
         Command::Conformance(args) => Ok(Action::Conformance(match args.command {
             ConformanceCommand::Run(args) => {
                 let (client_eras, client_versions) = resolve_client_eras(args.client_era);
+                let lanes = resolve_lanes(args.lane.into_iter().map(Into::into));
+                if args.standalone && lanes != [SemanticLane::ExternalDataPlane] {
+                    bail!("--standalone requires --lane external as the only lane");
+                }
                 ConformanceAction::Run {
-                    lanes: resolve_lanes(args.lane.into_iter().map(Into::into)),
+                    lanes,
+                    standalone: args.standalone,
                     client_eras,
                     client_versions,
                     server_eras: resolve_server_eras(args.server_era),

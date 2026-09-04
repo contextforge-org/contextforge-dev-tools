@@ -24,10 +24,12 @@ macro_rules! asset {
 
 const ASSETS: &[EmbeddedAsset] = &[
     asset!("docker/docker-compose.cf-conformance-fixture.yaml"),
+    asset!("docker/docker-compose.cf-conformance-controlplane.yaml"),
     asset!("docker/docker-compose.cf-conformance-runtime.yaml"),
     asset!("docker/docker-compose.cf-conformance.yaml"),
     asset!("docker/docker-compose.cf-controlplane-build-labels.yaml"),
     asset!("docker/docker-compose.cf-dataplane-build.yaml"),
+    asset!("docker/docker-compose.cf-dataplane-standalone.yaml"),
     asset!("docker/docker-compose.cf-dataplane.yaml"),
     asset!("docker/docker-compose.cf-integration.yaml"),
     asset!("docker/mcp-conformance-server.Dockerfile"),
@@ -35,7 +37,7 @@ const ASSETS: &[EmbeddedAsset] = &[
     asset!("docker/nginx.cf-dataplane.conf"),
     asset!("docker/patch-mcp-conformance-hosts.mjs"),
     asset!("scripts/live_protocol/sitecustomize.py"),
-    asset!("scripts/conformance/write_client_config.py"),
+    asset!("scripts/conformance/write_dataplane_config.mjs"),
     asset!("scripts/locustfile_mcp.py"),
     asset!("scripts/prepare_standalone_config.py"),
     asset!("tests/conformance/baselines/2026-07-28/legacy/built-in-data-plane.yml"),

@@ -7,6 +7,23 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-09-04
+
+### Added
+
+- Added standalone external-dataplane conformance runs backed by an ephemeral
+  Redis instance, a locally signed test token, and no control-plane services.
+
+### Changed
+
+- Published server and client conformance routes through the running
+  dataplane's serializer so mocked Redis snapshots always use that image's
+  current MessagePack schema.
+
+### Fixed
+
+- Avoided a Linux `ETXTBSY` race in the native process-runner test.
+
 ## [0.3.0] - 2026-09-03
 
 ### Added
@@ -68,7 +85,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Added builtin and external dataplane routing through reusable Docker Compose
   overlays.
 
-[Unreleased]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/contextforge-org/contextforge-dev-tools/releases/tag/v0.1.0

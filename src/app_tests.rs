@@ -466,6 +466,7 @@ fn conformance_defaults_to_all_three_ordered_lanes() {
                 SemanticLane::BuiltInDataPlane,
                 SemanticLane::ExternalDataPlane,
             ],
+            standalone: false,
             client_eras: vec![ConformanceServerEra::Modern],
             client_versions: vec!["2026-07-28".to_owned()],
             server_eras: vec![ConformanceServerEra::Legacy, ConformanceServerEra::Modern],
@@ -513,6 +514,7 @@ fn conformance_lanes_are_deduplicated_and_normalized() {
         ),
         Action::Conformance(ConformanceAction::Run {
             lanes: vec![SemanticLane::FixtureDirect, SemanticLane::ExternalDataPlane,],
+            standalone: false,
             client_eras: vec![ConformanceServerEra::Legacy, ConformanceServerEra::Modern],
             client_versions: vec![
                 "2025-06-18".to_owned(),
@@ -526,6 +528,56 @@ fn conformance_lanes_are_deduplicated_and_normalized() {
             output_dir: Some(PathBuf::from("reports")),
         })
     );
+}
+
+#[test]
+fn standalone_conformance_is_external_only() {
+    let standalone = action(
+        &[
+            "cf-integration",
+            "conformance",
+            "run",
+            "--lane",
+            "external",
+            "--standalone",
+        ],
+        &[],
+    );
+    let Action::Conformance(ConformanceAction::Run {
+        lanes,
+        standalone: enabled,
+        ..
+    }) = &standalone
+    else {
+        panic!("expected conformance run");
+    };
+    assert_eq!(lanes, &[SemanticLane::ExternalDataPlane]);
+    assert!(enabled);
+    assert!(
+        standalone
+            .startup_summary()
+            .contains("Control plane: disabled; Redis config: mocked")
+    );
+
+    for arguments in [
+        vec!["cf-integration", "conformance", "run", "--standalone"],
+        vec![
+            "cf-integration",
+            "conformance",
+            "run",
+            "--lane",
+            "builtin",
+            "--standalone",
+        ],
+    ] {
+        let cli = Cli::try_parse_from(arguments).expect("CLI should parse standalone mode");
+        let error = resolve_action(cli, &Environment::new())
+            .expect_err("standalone conformance must reject non-external lane selections");
+        assert_eq!(
+            error.to_string(),
+            "--standalone requires --lane external as the only lane"
+        );
+    }
 }
 
 #[test]

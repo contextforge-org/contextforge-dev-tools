@@ -462,6 +462,7 @@ fn conformance_defaults_to_all_lanes_and_july_revision_at_resolution_time() {
         panic!("expected conformance run")
     };
     assert!(args.lane.is_empty());
+    assert!(!args.standalone);
     assert!(args.client_era.is_empty());
     assert!(args.server_era.is_empty());
     assert!(args.results_dir.is_none());
@@ -548,6 +549,26 @@ fn conformance_accepts_repeatable_exact_lanes_and_protocol_eras() {
         "--baseline",
         "known.yml",
     ]);
+}
+
+#[test]
+fn conformance_accepts_standalone_external_mode() {
+    let Command::Conformance(ConformanceArgs {
+        command: ConformanceCommand::Run(args),
+    }) = parse(&[
+        "cf-integration",
+        "conformance",
+        "run",
+        "--lane",
+        "external",
+        "--standalone",
+    ])
+    .command
+    else {
+        panic!("expected conformance run")
+    };
+    assert_eq!(args.lane, [CliLane::External]);
+    assert!(args.standalone);
 }
 
 #[test]

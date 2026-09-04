@@ -178,11 +178,24 @@ cf-integration conformance run \
 
 # Replace selected baselines only after every selected run succeeds
 cf-integration conformance run --server-era dual --bless
+
+# Test only the external dataplane with mocked Redis and no control plane
+cf-integration conformance run --lane external --standalone \
+  --client-era modern --server-era modern
+
+# Refresh the external dataplane baselines using the same isolated stack
+cf-integration conformance run --lane external --standalone \
+  --client-era modern --server-era modern --bless
 ```
 
 `--client-era` and `--server-era` accept `legacy`, `modern`, or `dual`.
 `--results-dir`, `--baseline-dir`, and `--output-dir` override artifact
-locations.
+locations. `--standalone` requires `--lane external` as the only lane. It
+starts only Redis, the external dataplane, nginx, ClickStack, and the pinned
+fixture; the control plane is neither started nor used. The CLI signs a
+one-hour test token locally and publishes every server/client route through the
+running dataplane's admin serializer, so each ephemeral Redis snapshot uses the
+tested image's current MessagePack schema.
 
 `report` regenerates Markdown comparisons from existing results without
 running the suite:

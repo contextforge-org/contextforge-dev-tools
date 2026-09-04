@@ -1,12 +1,9 @@
 services:
-  gateway:
-    environment:
-      GATEWAY_TOOL_NAME_SEPARATOR: "_"
-    volumes:
-      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/conformance/write_client_config.py:/opt/contextforge-conformance/write_client_config.py:ro
   mcp_conformance_server:
     networks:
       - mcpnet
+    volumes:
+      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/conformance/write_dataplane_config.mjs:/opt/contextforge-conformance/write_dataplane_config.mjs:ro
   mcp_conformance_proxy:
     profiles: ["conformance"]
     image: nginx:1.30.4-alpine3.24
