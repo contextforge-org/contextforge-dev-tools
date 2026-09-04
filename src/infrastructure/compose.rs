@@ -15,6 +15,7 @@ const LEGACY_FAST_TIME_IMAGE_PREFIXES: &[&str] = &[
 
 /// Compose service keys and their public container display names.
 pub(crate) const SERVICE_DISPLAY_NAMES: &[(&str, &str)] = &[
+    ("auth_keygen", "cf-dataplane-auth-keygen"),
     ("gateway", "cf-controlplane"),
     ("migration", "cf-migration"),
     ("register_fast_time", "cf-register-fast-time"),
@@ -24,6 +25,7 @@ pub(crate) const SERVICE_DISPLAY_NAMES: &[(&str, &str)] = &[
     ("pgbouncer", "cf-pgbouncer"),
     ("redis", "cf-redis"),
     ("dataplane", "cf-dataplane"),
+    ("config_writer", "cf-dataplane-config-writer"),
     ("locust", "cf-locust"),
     ("locust_worker", "cf-locust-worker"),
     ("locust_token", "cf-locust-token"),
@@ -108,7 +110,7 @@ impl ComposeProject {
         }
     }
 
-    /// Builds the minimal external-dataplane project used by standalone conformance.
+    /// Builds the minimal external-dataplane project used by standalone workflows.
     #[must_use]
     pub(crate) fn standalone_dataplane(
         repository_root: &Path,

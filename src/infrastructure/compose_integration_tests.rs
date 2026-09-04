@@ -246,16 +246,7 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
     let environment = compose["services"]["dataplane"]["environment"]
         .as_mapping()
         .expect("dataplane environment must be a mapping");
-    let gateway_volumes = compose["services"]["gateway"]["volumes"]
-        .as_sequence()
-        .expect("gateway volumes must be a sequence");
-    assert!(gateway_volumes.iter().any(|volume| {
-        volume.as_str().is_some_and(|volume| {
-            volume.ends_with(
-                "/scripts/prepare_standalone_config.py:/opt/contextforge-integration/prepare_standalone_config.py:ro",
-            )
-        })
-    }));
+    assert!(compose["services"]["gateway"]["volumes"].is_null());
 
     for key in [
         "CONTEXTFORGE_DATA_PLANE_ADDRESS",
@@ -374,6 +365,56 @@ fn standalone_dataplane_has_no_controlplane_compose_inputs() {
             .files()
             .iter()
             .all(|file| !file.to_string_lossy().contains("controlplane"))
+    );
+}
+
+#[test]
+fn standalone_dataplane_owns_ephemeral_jwks_auth_and_mock_helpers() {
+    let root = workspace_root();
+    let compose =
+        fs::read_to_string(root.join("docker/docker-compose.cf-dataplane-standalone.yaml"))
+            .expect("read standalone dataplane Compose file");
+    let compose: yaml_serde::Value =
+        yaml_serde::from_str(&compose).expect("parse standalone dataplane Compose file");
+    let services = compose["services"]
+        .as_mapping()
+        .expect("standalone services must be a mapping");
+
+    assert_eq!(services.len(), 6);
+    assert!(compose["services"]["gateway"].is_null());
+    assert_eq!(
+        compose["services"]["auth_keygen"]["network_mode"].as_str(),
+        Some("none")
+    );
+    assert_eq!(
+        compose["services"]["dataplane"]["environment"]["CONTEXTFORGE_DATA_PLANE_JWKS_URL"]
+            .as_str(),
+        Some("http://127.0.0.1:4445/contextforge-rs/admin/.well-known/jwks.json")
+    );
+    assert_eq!(
+        compose["services"]["dataplane"]["command"][1].as_str(),
+        Some("/keys/jwt.key")
+    );
+    assert!(
+        compose["services"]["dataplane"]["environment"]["CONTEXTFORGE_DATA_PLANE_TOKEN_SECRET"]
+            .is_null()
+    );
+    assert!(
+        compose["services"]["dataplane"]["environment"]
+            ["CONTEXTFORGE_DATA_PLANE_TOKEN_VERIFICATION_PRIVATE_KEY"]
+            .is_null()
+    );
+    assert_eq!(
+        compose["services"]["nginx"]["healthcheck"]["test"][1].as_str(),
+        Some("wget -q -O - http://127.0.0.1/health >/dev/null")
+    );
+    assert_eq!(
+        compose["services"]["config_writer"]["profiles"][0].as_str(),
+        Some("helpers")
+    );
+    assert_eq!(
+        compose["services"]["locust"]["profiles"][0].as_str(),
+        Some("performance")
     );
 }
 
@@ -705,8 +746,6 @@ services:
   mcp_conformance_server:
     networks:
       - mcpnet
-    volumes:
-      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/conformance/write_dataplane_config.mjs:/opt/contextforge-conformance/write_dataplane_config.mjs:ro
   mcp_conformance_proxy:
     profiles: ["conformance"]
     image: nginx:1.30.4-alpine3.24

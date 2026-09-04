@@ -1,15 +1,17 @@
 # cf-integration
 
-`cf-integration` runs ContextForge stacks and tests against the built-in Python
-dataplane or the external Rust dataplane. It manages Docker Compose, source
-checkouts, MCP probes, Locust load tests, upstream live tests, and official MCP
-conformance runs.
+`cf-integration` manages ContextForge Docker stacks and runs probes, load tests,
+live gateway checks, and official MCP conformance. Routed traffic uses one of
+two lanes:
 
-`/servers/{virtual_host_id}/mcp` routes through `cf-dataplane`; raw `/mcp`,
-UI, and API traffic route to `cf-controlplane`. The external dataplane fails
-closed and never falls back to the built-in dataplane.
+- `builtin`: the Python dataplane in `cf-controlplane`.
+- `external`: the Rust `cf-dataplane`.
 
-## Install and requirements
+`/servers/{virtual_host_id}/mcp` routes to the external dataplane. Raw `/mcp`
+and control-plane UI/API traffic route to `cf-controlplane`; there is no
+fallback between them.
+
+## Install
 
 ```bash
 cargo binstall cf-integration
@@ -17,188 +19,138 @@ cargo binstall cf-integration
 cargo install cf-integration --locked
 ```
 
-To run the current checkout, put `cargo run --` before any command:
+Use `cargo run --` before a command when running this checkout. Runtime use
+requires Docker Compose v2, Git, and Node.js 22.7.5 or newer. Rust 1.97 is
+needed only to compile the CLI or a local dataplane image.
+
+Published images are the default. Set `CF_DATAPLANE_REF` to build and test a
+local dataplane ref.
+
+## Selection
+
+Routed commands accept `--lane builtin|external`; `external` is the default.
+Conformance and protocol-only live tests also accept `fixture-direct`.
+`stack down` accepts `all`. No command accepts the old `--topology` option.
+
+Commands that exercise MCP accept `--protocol-version modern|legacy`:
+
+- `modern`: current per-request, stateless MCP.
+- `legacy`: current initialization-based MCP.
+
+The CLI deliberately does not expose dated wire revisions. Defaults may be set
+with `CF_MCP_LANE` and `MCP_PROTOCOL_VERSION`.
+
+Add the global `--standalone` flag to run the external lane without any control
+plane. Standalone mode starts Redis, the Rust dataplane, nginx, and the required
+test fixture. It generates an ephemeral RSA key, obtains a test token from the
+dataplane's local tool endpoint, validates it through the dataplane's loopback
+JWKS endpoint, and publishes a fresh config through the dataplane serializer.
+Redis therefore always contains the schema understood by the image under test.
+
+Use `cf-integration <command> --help` for the complete interface.
+
+## Stack
+
+Use a persistent stack for manual testing:
 
 ```bash
-cargo run -- probe --lane external --protocol-version modern
-```
+cf-integration stack up --lane builtin --protocol-version modern
+cf-integration stack up --lane external --protocol-version legacy --fresh
+cf-integration stack up --lane external --protocol-version legacy --standalone
 
-Runtime requirements are Docker with Compose v2, Git, and Node.js 22.7.5 or
-newer with `npx`. Load tests also need the control-plane checkout's Python and
-Locust dependencies. Rust 1.97 is required only to compile the CLI or a local
-source image.
+cf-integration stack status --lane external --standalone
+cf-integration stack logs --lane external --standalone
+cf-integration stack logs --lane external --standalone dataplane nginx
+cf-integration stack config --lane external --standalone
 
-Published images are used by default. Set `CF_DATAPLANE_REF` to build an
-external dataplane source ref.
-
-## Common selectors
-
-Wherever `--lane` is accepted, use these values:
-
-- `builtin`: Python built-in dataplane.
-- `external`: external Rust dataplane.
-- `fixture-direct`: reference fixture without ContextForge; available only to
-  conformance and `live --group protocol`.
-
-Routed commands default to `CF_MCP_LANE`, then `external`, and run one lane
-at a time. Run them once per lane when comparing `builtin` and `external`.
-`stack down` also accepts `all`; conformance accepts repeated `--lane`
-options. No command accepts `--topology`.
-
-`probe`, `load`, `live`, and `debug inspect` accept
-`--protocol-version modern|legacy`:
-
-- `modern`: latest per-request, stateless MCP revision.
-- `legacy`: latest initialization-based MCP revision.
-
-The default is `MCP_PROTOCOL_VERSION`, then `modern`. Dated revisions are
-internal wire values, not operational CLI options.
-
-Use `--help` at any level for the authoritative interface, such as
-`cf-integration stack --help` or `cf-integration load --help`.
-
-## Commands
-
-Test workflows prepare and clean up their required stack. Use `stack` when you
-want a persistent stack for manual work.
-
-### `stack`
-
-```bash
-# Start one lane
-cf-integration stack up --lane builtin
-cf-integration stack up --lane external --fresh
-
-# Inspect one lane
-cf-integration stack status --lane external
-cf-integration stack logs --lane external
-cf-integration stack logs --lane external nginx
-cf-integration stack config --lane external
-
-# Stop one or both lanes
-cf-integration stack down --lane builtin
+cf-integration stack down --lane external --standalone
 cf-integration stack down --lane all
 cf-integration stack down --lane all --volumes
 ```
 
-`up --fresh` removes existing volumes before starting. `logs` follows all
-services unless service names are supplied. `config` prints merged Compose
-configuration. `down --volumes` also removes persistent volumes.
+`up --fresh` and `down --volumes` remove the selected stack's volumes.
+ClickStack has an independent lifecycle and is intentionally left running by
+all stack and managed-test cleanup.
 
-ClickStack starts by default for `stack`, `probe`, `live`, `conformance`, and
-`debug inspect`. Open the no-login HyperDX UI at <http://127.0.0.1:3000> to
-inspect traces and metrics. Managed test cleanup leaves ClickStack running, so
-the UI remains available after a command finishes; `stack down --lane all`
-removes it. The external dataplane exports the exact
-HTTP counters, latency histograms, in-flight gauge, and body sizes recorded by
-its `HttpMetricsLayer`. HyperDX opens on live application logs. For metrics,
-open **Chart Explorer**, select the **Metrics** data source and a metric, then
-click **Run**. Run a load for at least 60 seconds so its 30-second cumulative
-export interval produces the two samples needed for a non-zero chart. All
-telemetry storage is ephemeral and disappears when ClickStack is removed.
+## Probe
 
-### `probe`
-
-Probe one public MCP route, including discovery or initialization,
-`tools/list`, a safe `tools/call`, authentication, and backend identity.
+Probe authentication, protocol lifecycle, backend identity, catalog selection,
+and a safe routed tool call:
 
 ```bash
-cf-integration probe [--lane builtin|external] \
-  [--protocol-version modern|legacy]
+cf-integration probe --lane builtin --protocol-version modern
+cf-integration probe --lane external --protocol-version legacy
+cf-integration probe --lane external --protocol-version legacy --standalone
 ```
 
-### `load`
+For standalone external runs, the known catalog comes from the mocked Redis
+snapshot because the Rust dataplane intentionally does not implement fan-out
+`tools/list`.
 
-Run Locust against one public MCP route:
+## Load
 
 ```bash
-cf-integration load [--lane builtin|external] \
-  [--protocol-version modern|legacy] [--standalone] [--smoke] \
-  [--observability] [--users N] [--spawn-rate N] [--run-time DURATION]
-
 # Compare both lanes for two minutes
 cf-integration load --lane builtin --protocol-version legacy \
   --users 10 --spawn-rate 2 --run-time 2m
 cf-integration load --lane external --protocol-version legacy \
   --users 10 --spawn-rate 2 --run-time 2m
 
-# Measure only the external dataplane request path
-cargo run -- load --lane external --protocol-version legacy --standalone \
+# Isolate the external dataplane and mocked Redis
+cf-integration load --lane external --protocol-version legacy --standalone \
   --users 10 --spawn-rate 2 --run-time 2m
 
-# Inspect traces and native HTTP metrics while using the mocked Redis snapshot
-cargo run -- load --lane external --protocol-version legacy --standalone \
+# Include telemetry when diagnostic value matters more than benchmark purity
+cf-integration load --lane external --protocol-version modern --standalone \
   --observability --users 10 --spawn-rate 2 --run-time 2m
 ```
 
-`--smoke` selects a short smoke workload. Duration accepts positive `h`,
-`m`, and `s` groups such as `2m30s` or `1h30m`. Defaults come from
-`LOCUST_USERS`, `LOCUST_SPAWN_RATE`, and `LOCUST_RUN_TIME`.
-Observability is disabled for load tests by default to avoid skewing
-performance results; pass `--observability` when diagnostics are more important
-than an uncontaminated benchmark.
+`--smoke` selects a short workload. Durations accept ordered positive `h`, `m`,
+and `s` groups such as `2m30s`. Defaults are `100` users, `10` users/s, and
+`5m`, overridable with `LOCUST_USERS`, `LOCUST_SPAWN_RATE`, and
+`LOCUST_RUN_TIME`. Observability is opt-in for load tests to avoid skew.
 
-`--standalone` is valid only with `--lane external`. Each run starts the full
-stack to issue a scoped token, starts an isolated current-protocol MCP fixture,
-then stops the control-plane gateway before Locust begins. A fresh mock config
-for the token subject is written through the running dataplane's own serializer
-on every run, so Redis receives the dataplane's current MessagePack schema. The
-snapshot is non-expiring for the load duration; traffic does not depend on the
-control-plane publisher or its schema-sync timing.
+## Live gateway checks
 
-### `live`
-
-Run the managed upstream control-plane test groups: `mcp` for Fast Time MCP
-routes, `rbac` for authorization and transports, `protocol` for
-protocol-specific behavior, or `all` (the default).
+Groups are `mcp`, `rbac`, `protocol`, and `all` (default):
 
 ```bash
-cf-integration live [--lane fixture-direct|builtin|external] \
-  [--protocol-version modern|legacy] [--group mcp|rbac|protocol|all]
-
 cf-integration live --lane builtin --protocol-version legacy --group all
-cf-integration live --lane fixture-direct \
-  --protocol-version legacy --group protocol
+cf-integration live --lane external --protocol-version modern --group all
+cf-integration live --lane external --protocol-version legacy --group all --standalone
+cf-integration live --lane fixture-direct --protocol-version legacy --group protocol
 ```
 
-### `conformance`
+Normal routed runs execute the upstream control-plane live suites. Standalone
+external runs execute the dataplane-native route/auth/protocol contract, with
+no control-plane checkout or API calls.
 
-`run` executes the pinned official suite and compares it with checked-in
-baselines. With no options it runs all three lanes using a modern client against
-legacy and modern fixture servers.
+## Conformance
+
+`run` executes the pinned official MCP suite and compares results with checked-in
+baselines. With no selectors it runs all three lanes with a modern client
+against legacy and modern fixtures.
 
 ```bash
 cf-integration conformance run
 
-# Repeat selectors to build a matrix
 cf-integration conformance run \
   --lane fixture-direct --lane builtin --lane external \
   --client-era legacy --client-era modern \
   --server-era legacy --server-era modern
 
-# Replace selected baselines only after every selected run succeeds
-cf-integration conformance run --server-era dual --bless
-
-# Test only the external dataplane with mocked Redis and no control plane
 cf-integration conformance run --lane external --standalone \
   --client-era modern --server-era modern
 
-# Refresh the external dataplane baselines using the same isolated stack
 cf-integration conformance run --lane external --standalone \
   --client-era modern --server-era modern --bless
 ```
 
 `--client-era` and `--server-era` accept `legacy`, `modern`, or `dual`.
-`--results-dir`, `--baseline-dir`, and `--output-dir` override artifact
-locations. `--standalone` requires `--lane external` as the only lane. It
-starts only Redis, the external dataplane, nginx, ClickStack, and the pinned
-fixture; the control plane is neither started nor used. The CLI signs a
-one-hour test token locally and publishes every server/client route through the
-running dataplane's admin serializer, so each ephemeral Redis snapshot uses the
-tested image's current MessagePack schema.
+`--bless` replaces only the selected baselines and only after every selected
+run succeeds. `--standalone` permits the external lane only.
 
-`report` regenerates Markdown comparisons from existing results without
-running the suite:
+Regenerate Markdown from existing results without running tests:
 
 ```bash
 cf-integration conformance report
@@ -206,46 +158,36 @@ cf-integration conformance report \
   --results-dir .integration/conformance --output-dir reports/conformance
 ```
 
-### `debug`
-
-`inspect` runs an MCP Inspector method against one routed lane. The method
-defaults to `tools/list`, and the server defaults to the Fast Time fixture.
+## Debug
 
 ```bash
 cf-integration debug inspect --lane external \
   --protocol-version modern --method tools/list
 cf-integration debug inspect --lane builtin \
   --protocol-version legacy --server-id <virtual-server-id>
-```
 
-`token` prints a token from an already-running control plane. `scoped`
-creates the minimum catalog token used by public MCP tests; `admin` creates a
-platform-admin session token. `--server-id` is valid only for `scoped`.
-
-```bash
 cf-integration debug token --kind scoped
 cf-integration debug token --kind scoped --server-id <virtual-server-id>
 cf-integration debug token --kind admin
+
+# Issue a token from an already-running standalone external stack
+cf-integration debug token --kind scoped --standalone
 ```
 
-## Configuration and artifacts
+`inspect` uses the official MCP Inspector. Control-plane tokens are revoked when
+the workflow owns them; caller-supplied `MCPGATEWAY_BEARER_TOKEN` values are
+never revoked.
 
-Copy `.env.example` to `.env`; process environment values override it.
+## Observability and artifacts
 
-| Variable | Purpose | Default |
-| --- | --- | --- |
-| `CF_MCP_LANE` | Routed lane | `external` |
-| `MCP_PROTOCOL_VERSION` | Protocol mode | `modern` |
-| `CF_INTEGRATION_DIR` | Checkouts, state, and load reports | `.integration` |
-| `CF_DATAPLANE_REF` | Optional local dataplane Git ref | unset |
-| `LOCUST_*` | Users, spawn rate, and duration | `100`, `10`, `5m` |
+ClickStack starts by default for stack, probe, live, conformance, and Inspector
+workflows. Open the no-login HyperDX UI at <http://127.0.0.1:3000>. Logs open by
+default; for metrics use **Chart Explorer**, choose the **Metrics** source and a
+metric such as `http.server.request.duration`, then run the query. Allow at
+least 60 seconds of traffic for multiple 30-second cumulative exports.
+Telemetry storage is ephemeral inside ClickStack.
 
-See [`.env.example`](.env.example) for every setting. Missing Compose secrets
-are generated under `CF_INTEGRATION_DIR`. Workflow-created tokens are revoked
-during cleanup; a caller-supplied `MCPGATEWAY_BEARER_TOKEN` is never revoked.
-
-Installed binaries embed their runtime assets. Set `CF_INTEGRATION_ROOT` to
-force a developer checkout. Load reports default below
-`CF_INTEGRATION_DIR/reports/load`; conformance results below
-`CF_INTEGRATION_DIR/conformance`; and conformance Markdown below
-`reports/conformance`.
+Load reports are written below `CF_INTEGRATION_DIR/reports/load`, conformance
+results below `CF_INTEGRATION_DIR/conformance`, and comparison Markdown below
+`reports/conformance`. Copy [`.env.example`](.env.example) for the complete
+configuration list. Process environment values override `.env`.

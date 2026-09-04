@@ -17,12 +17,23 @@ for _, key in ipairs(redis.call('KEYS', '*UserConfig*')) do
 end
 return 0
 "#;
+const STANDALONE_TENANT_ID: &str = "cf-integration";
+const STANDALONE_USER_ID: &str = "cf-integration@example.invalid";
 
 struct ManagedSessionScope<'a, R> {
     runtime: &'a RuntimeContext<R>,
     topology: StackMode,
     standalone: bool,
     token: Option<ManagedBearerToken>,
+}
+
+struct ManagedTarget<'a> {
+    topology: StackMode,
+    server_id: &'a str,
+    standalone: bool,
+    project: ComposeProject,
+    observability: bool,
+    protocol_version: &'a ProtocolVersion,
 }
 
 impl<'a, R: ProcessRunner> ManagedSessionScope<'a, R> {
@@ -37,24 +48,18 @@ impl<'a, R: ProcessRunner> ManagedSessionScope<'a, R> {
 
     async fn finish(self, primary: AppResult<()>) -> AppResult<()> {
         let mut cleanup_failures = Vec::new();
-        if self.standalone
-            && self
-                .token
-                .as_ref()
-                .is_some_and(|token| token.catalog_id.is_some())
-            && let Err(error) = self.runtime.restore_control_plane_gateway().await
-        {
-            cleanup_failures.push(error);
-        }
         if let Some(token) = self.token.as_ref()
             && let Err(error) = self.runtime.revoke_managed_token(token).await
         {
             cleanup_failures.push(error);
         }
-        if let Err(error) = self
-            .runtime
-            .cleanup_quiet(topology_selection(self.topology), CleanupKind::Down)
-        {
+        let cleanup = if self.standalone {
+            self.runtime.cleanup_standalone_dataplane(CleanupKind::Down)
+        } else {
+            self.runtime
+                .cleanup_quiet(topology_selection(self.topology), CleanupKind::Down)
+        };
+        if let Err(error) = cleanup {
             cleanup_failures.push(error);
         }
         finish_with_cleanup_failures(primary.err(), cleanup_failures)
@@ -62,6 +67,33 @@ impl<'a, R: ProcessRunner> ManagedSessionScope<'a, R> {
 }
 
 impl<R: ProcessRunner> RuntimeContext<R> {
+    pub(super) fn standalone_dataplane_token(
+        &self,
+        observability: bool,
+    ) -> AppResult<ManagedBearerToken> {
+        let command = self.standalone_dataplane_project(observability).command([
+            "run",
+            "--rm",
+            "--no-deps",
+            "config_writer",
+            "token",
+            STANDALONE_TENANT_ID,
+            STANDALONE_USER_ID,
+        ]);
+        let command = self.standalone_dataplane_environment(command, true)?;
+        let output = self.runner.capture_stdout(&command)?;
+        let token = std::str::from_utf8(&output)
+            .context("standalone dataplane token helper returned non-UTF-8 output")
+            .map_err(AppFailure::from)?
+            .trim();
+        if token.split('.').count() != 3 {
+            return Err(AppFailure::from(anyhow!(
+                "standalone dataplane token helper returned an invalid JWT"
+            )));
+        }
+        Ok(ManagedBearerToken::unmanaged(token.to_owned()))
+    }
+
     pub(super) async fn with_managed_test_target<F, Fut>(
         &self,
         topology: StackMode,
@@ -88,6 +120,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         topology: StackMode,
         server_id: &str,
         standalone: bool,
+        protocol_version: &ProtocolVersion,
         operation: F,
     ) -> AppResult<()>
     where
@@ -95,11 +128,14 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         Fut: Future<Output = AppResult<()>>,
     {
         self.with_managed_authenticated_target_project(
-            topology,
-            server_id,
-            standalone,
-            self.compose_project(topology),
-            true,
+            ManagedTarget {
+                topology,
+                server_id,
+                standalone,
+                project: self.compose_project(topology),
+                observability: true,
+                protocol_version,
+            },
             operation,
         )
         .await
@@ -111,6 +147,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         server_id: &str,
         standalone: bool,
         observability: bool,
+        protocol_version: &ProtocolVersion,
         operation: F,
     ) -> AppResult<()>
     where
@@ -118,11 +155,14 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         Fut: Future<Output = AppResult<()>>,
     {
         self.with_managed_authenticated_target_project(
-            topology,
-            server_id,
-            standalone,
-            self.performance_compose_project(topology, observability),
-            observability,
+            ManagedTarget {
+                topology,
+                server_id,
+                standalone,
+                project: self.performance_compose_project(topology, observability),
+                observability,
+                protocol_version,
+            },
             operation,
         )
         .await
@@ -130,37 +170,57 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 
     async fn with_managed_authenticated_target_project<F, Fut>(
         &self,
-        topology: StackMode,
-        server_id: &str,
-        standalone: bool,
-        project: ComposeProject,
-        observability: bool,
+        target: ManagedTarget<'_>,
         operation: F,
     ) -> AppResult<()>
     where
         F: FnOnce(String, Vec<String>) -> Fut,
         Fut: Future<Output = AppResult<()>>,
     {
+        let ManagedTarget {
+            topology,
+            server_id,
+            standalone,
+            project,
+            observability,
+            protocol_version,
+        } = target;
         if standalone && topology != StackMode::Dataplane {
             return Err(AppFailure::from(anyhow!(
                 "standalone mode requires the external lane"
             )));
         }
         let mut scope = ManagedSessionScope::new(self, topology, standalone);
-        let primary = match self
-            .stack_up_with_project(topology, false, project, false, observability)
-            .await
-        {
+        let stack_result = if standalone {
+            self.stack_up_standalone_dataplane(false, observability)
+                .await
+        } else {
+            self.stack_up_with_project(topology, false, project, false, observability)
+                .await
+        };
+        let primary = match stack_result {
             Ok(()) => match self
                 .prepare_authenticated_target(topology, server_id, standalone)
                 .await
             {
-                Ok(()) => match self.managed_bearer_token(topology, server_id).await {
+                Ok(()) => match if standalone {
+                    self.start_standalone_fixture(protocol_version, observability)
+                        .await
+                        .and_then(|()| self.standalone_dataplane_token(observability))
+                } else {
+                    self.managed_bearer_token(topology, server_id).await
+                } {
                     Ok(token) => {
                         let value = token.value.clone();
                         scope.token = Some(token);
                         let tool_names = if standalone {
-                            self.isolate_external_dataplane(server_id, &value).await
+                            self.publish_standalone_conformance_config(
+                                server_id,
+                                protocol_version.wire_version(),
+                                &value,
+                                observability,
+                            )
+                            .await
                         } else {
                             Ok(Vec::new())
                         };
@@ -176,6 +236,19 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             Err(error) => Err(error),
         };
         scope.finish(primary).await
+    }
+
+    async fn start_standalone_fixture(
+        &self,
+        protocol_version: &ProtocolVersion,
+        observability: bool,
+    ) -> AppResult<()> {
+        let server_era = match protocol_version {
+            ProtocolVersion::Modern => ConformanceServerEra::Modern,
+            ProtocolVersion::Legacy => ConformanceServerEra::Legacy,
+        };
+        self.start_conformance_service(StackMode::Dataplane, server_era, true, observability)
+            .await
     }
 
     async fn prepare_authenticated_target(
@@ -233,70 +306,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             )
             .await;
         }
-    }
-
-    async fn isolate_external_dataplane(
-        &self,
-        server_id: &str,
-        token: &str,
-    ) -> AppResult<Vec<String>> {
-        let project = self.compose_project(StackMode::Dataplane);
-        let command = project.command([
-            "--profile",
-            "standalone-load",
-            "up",
-            "--detach",
-            "--wait",
-            "standalone_load_backend",
-        ]);
-        let command = self.compose_environment(command, StackMode::Dataplane, true)?;
-        self.runner.run(&command)?;
-        let command = StackCommandPlan::stop_service(project.clone(), "gateway");
-        let command =
-            self.compose_environment(command.command().clone(), StackMode::Dataplane, true)?;
-        self.runner.run(&command)?;
-        let command = project.command([
-            "run",
-            "--rm",
-            "--no-deps",
-            "-e",
-            "MCPGATEWAY_BEARER_TOKEN",
-            "--entrypoint",
-            "python3",
-            "gateway",
-            "/opt/contextforge-integration/prepare_standalone_config.py",
-            server_id,
-            ProtocolVersion::Modern.wire_version(),
-        ]);
-        let command = self
-            .compose_environment(command, StackMode::Dataplane, true)?
-            .env("MCPGATEWAY_BEARER_TOKEN", token);
-        let tool_names = self.capture_text(&command)?;
-        let tool_names = serde_json::from_str::<Vec<String>>(&tool_names)
-            .context("standalone config helper returned invalid tool names")
-            .map_err(AppFailure::from)?;
-        if tool_names.is_empty() {
-            return Err(AppFailure::from(anyhow!(
-                "standalone Redis config for server {server_id} contains no tools"
-            )));
-        }
-        let command = StackCommandPlan::restart_service(project, "dataplane");
-        let command =
-            self.compose_environment(command.command().clone(), StackMode::Dataplane, true)?;
-        self.runner.run(&command)?;
-        self.wait_for_public_endpoint(StackMode::Dataplane, false)
-            .await?;
-        Ok(tool_names)
-    }
-
-    async fn restore_control_plane_gateway(&self) -> AppResult<()> {
-        let project = self.compose_project(StackMode::Dataplane);
-        let command = StackCommandPlan::start_service(project, "gateway");
-        let command =
-            self.compose_environment(command.command().clone(), StackMode::Dataplane, true)?;
-        self.runner.run(&command)?;
-        self.wait_for_public_endpoint(StackMode::Controlplane, false)
-            .await
     }
 
     fn dataplane_redis_container(&self) -> AppResult<String> {

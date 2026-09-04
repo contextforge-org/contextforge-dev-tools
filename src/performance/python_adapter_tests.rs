@@ -25,8 +25,9 @@ fn locust_adapter_and_compose_overlay_do_not_reference_the_removed_helper() {
     let root = workspace_root();
     let adapter = fs::read_to_string(root.join("scripts/locustfile_mcp.py"))
         .expect("Locust adapter should be readable");
-    let compose = fs::read_to_string(root.join("docker/docker-compose.cf-integration.yaml"))
-        .expect("Compose overlay should be readable");
+    let compose =
+        fs::read_to_string(root.join("docker/docker-compose.cf-dataplane-standalone.yaml"))
+            .expect("standalone Compose file should be readable");
 
     assert!(!adapter.contains("mcp_http"));
     assert!(adapter.contains("allow_redirects=False"));
@@ -37,49 +38,30 @@ fn locust_adapter_and_compose_overlay_do_not_reference_the_removed_helper() {
         !compose.contains("JWT_SECRET_KEY="),
         "the load container receives a bearer token and must not receive the signing key"
     );
-    assert!(compose.contains("MCP_PROTOCOL_VERSION=${MCP_PROTOCOL_VERSION:-2026-07-28}"));
-    assert!(compose.contains("standalone_load_backend:"));
-    assert!(compose.contains("profiles: [\"standalone-load\"]"));
-    assert!(compose.contains("MCP_CONFORMANCE_SERVER_ERA: modern"));
-    assert!(
-        compose.contains("LOCUST_REQUEST_TIMEOUT_SECONDS=${LOCUST_REQUEST_TIMEOUT_SECONDS:-60}")
-    );
+    assert!(!compose.contains("gateway:"));
+    assert!(compose.contains("config_writer:"));
+    assert!(compose.contains("locustio/locust:2.46.2"));
+    assert!(compose.contains("profiles: [\"performance\"]"));
 }
 
 #[test]
-fn standalone_config_helper_uses_token_subject_and_selected_protocol() {
-    let code = r#"
-import base64
-import json
-import prepare_standalone_config as helper
+fn standalone_config_writer_has_valid_javascript_syntax() {
+    for script in [
+        "conformance/write_dataplane_config.mjs",
+        "standalone/generate_auth_key.mjs",
+    ] {
+        let output = Command::new("node")
+            .arg("--check")
+            .arg(scripts_dir().join(script))
+            .output()
+            .expect("Node standalone-helper syntax check should run");
 
-claims = base64.urlsafe_b64encode(json.dumps({"sub": "user-123"}).encode()).decode().rstrip("=")
-assert helper.token_subject(f"header.{claims}.signature") == "user-123"
-
-prepared = helper.prepare_config("server-123", "2026-07-28")
-backend = prepared["virtual_hosts"]["server-123"]["backends"]["standalone-load"]
-assert backend["url"] == "http://mcp_conformance_server:3000/mcp"
-assert backend["mcp_protocol_version"] == "2026-07-28"
-assert backend["tool_name_aliases"] == [{"downstream_prefixed_name": "test_simple_text", "upstream_name": "test_simple_text"}]
-assert backend["tool_schemas"] == {"test_simple_text": {}}
-virtual_host = prepared["virtual_hosts"]["server-123"]
-assert virtual_host["tools"] == {"test_simple_text": {"backend_name": "standalone-load", "upstream_name": "test_simple_text"}}
-assert virtual_host["resources"] == {}
-assert virtual_host["resource_templates"] == {}
-assert virtual_host["prompts"] == {}
-"#;
-    let output = Command::new(python())
-        .arg("-c")
-        .arg(code)
-        .env("PYTHONPATH", scripts_dir())
-        .output()
-        .expect("Python helper test should run");
-
-    assert!(
-        output.status.success(),
-        "standalone config helper failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+        assert!(
+            output.status.success(),
+            "standalone helper syntax check failed for {script}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 fn locust_stub() -> TempDir {

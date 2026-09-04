@@ -126,35 +126,46 @@ impl<R: ProcessRunner> RuntimeDispatcher<R> {
             Action::Stack(action) => StackWorkflow(&self.context).execute(action).await,
             Action::Probe {
                 topology,
+                standalone,
                 protocol_version,
             } => {
                 ProbeWorkflow(&self.context)
-                    .execute(topology, &protocol_version)
+                    .execute(topology, standalone, &protocol_version)
                     .await
             }
             Action::Load(args) => PerformanceWorkflow(&self.context).execute(args).await,
             Action::Live {
                 lane,
+                standalone,
                 group,
                 protocol_version,
             } => {
                 LiveWorkflow(&self.context)
-                    .execute(lane, group, &protocol_version)
+                    .execute(lane, standalone, group, &protocol_version)
                     .await
             }
             Action::Conformance(action) => ConformanceWorkflow(&self.context).execute(action).await,
             Action::Ci(action) => CiWorkflow(&self.context).execute(action).await,
-            Action::Debug(DebugAction::Token { kind, server_id }) => {
-                self.context.print_token(kind, server_id).await
-            }
+            Action::Debug(DebugAction::Token {
+                kind,
+                server_id,
+                standalone,
+            }) => self.context.print_token(kind, server_id, standalone).await,
             Action::Debug(DebugAction::Inspect {
                 topology,
+                standalone,
                 protocol_version,
                 method,
                 server_id,
             }) => {
                 self.context
-                    .inspect(topology, &protocol_version, &method, server_id.as_deref())
+                    .inspect(
+                        topology,
+                        standalone,
+                        &protocol_version,
+                        &method,
+                        server_id.as_deref(),
+                    )
                     .await
             }
         }
@@ -171,9 +182,12 @@ impl<'a, R: ProcessRunner> ProbeWorkflow<'a, R> {
     async fn execute(
         &self,
         topology: StackMode,
+        standalone: bool,
         protocol_version: &ProtocolVersion,
     ) -> AppResult<()> {
-        self.0.run_probe(topology, protocol_version).await
+        self.0
+            .run_probe(topology, standalone, protocol_version)
+            .await
     }
 }
 
@@ -187,10 +201,13 @@ impl<'a, R: ProcessRunner> LiveWorkflow<'a, R> {
     async fn execute(
         &self,
         lane: SemanticLane,
+        standalone: bool,
         group: LiveGroup,
         protocol_version: &ProtocolVersion,
     ) -> AppResult<()> {
-        self.0.run_live(lane, group, protocol_version).await
+        self.0
+            .run_live(lane, standalone, group, protocol_version)
+            .await
     }
 }
 
@@ -207,7 +224,16 @@ impl<'a, R: ProcessRunner> CiWorkflow<'a, R> {
 }
 
 impl<R: ProcessRunner> RuntimeContext<R> {
-    async fn print_token(&self, kind: CliTokenKind, server_id: Option<String>) -> AppResult<()> {
+    async fn print_token(
+        &self,
+        kind: CliTokenKind,
+        server_id: Option<String>,
+        standalone: bool,
+    ) -> AppResult<()> {
+        if standalone {
+            println!("{}", self.standalone_dataplane_token(true)?.value);
+            return Ok(());
+        }
         let token = match kind {
             CliTokenKind::Scoped => {
                 let server_id = server_id.unwrap_or_else(|| self.default_server_id().to_owned());

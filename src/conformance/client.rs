@@ -21,7 +21,6 @@ pub(crate) const CLIENT_DRIVER_FAILURE_PREFIX: &str = "client conformance driver
 const SCENARIO_ENV: &str = "MCP_CONFORMANCE_SCENARIO";
 const PROTOCOL_VERSION_ENV: &str = "MCP_CONFORMANCE_PROTOCOL_VERSION";
 const CONTEXT_ENV: &str = "MCP_CONFORMANCE_CONTEXT";
-const CONFIG_WRITER: &str = "/opt/contextforge-conformance/write_dataplane_config.mjs";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -167,10 +166,7 @@ fn publish_scenario_config(
         "--no-deps",
         "-e",
         CLIENT_TOKEN_ENV,
-        "--entrypoint",
-        "node",
-        "mcp_conformance_server",
-        CONFIG_WRITER,
+        "config_writer",
         "client",
         server_id,
         backend_url,

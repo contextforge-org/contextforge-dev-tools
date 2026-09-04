@@ -212,6 +212,7 @@ fn lane_precedence_is_cli_then_environment_then_external() {
         action(&["cf-integration", "probe"], &[]),
         Action::Probe {
             topology: StackMode::Dataplane,
+            standalone: false,
             protocol_version: ProtocolVersion::default(),
         }
     );
@@ -219,6 +220,7 @@ fn lane_precedence_is_cli_then_environment_then_external() {
         action(&["cf-integration", "probe"], &[("CF_MCP_LANE", "builtin")],),
         Action::Probe {
             topology: StackMode::Controlplane,
+            standalone: false,
             protocol_version: ProtocolVersion::default(),
         }
     );
@@ -236,6 +238,7 @@ fn lane_precedence_is_cli_then_environment_then_external() {
         ),
         Action::Probe {
             topology: StackMode::Dataplane,
+            standalone: false,
             protocol_version: ProtocolVersion::Legacy,
         }
     );
@@ -284,7 +287,9 @@ fn stack_actions_resolve_freshness_and_volume_cleanup() {
         ),
         Action::Stack(StackAction::Up {
             topology: StackMode::Controlplane,
+            protocol_version: ProtocolVersion::Modern,
             fresh: true,
+            standalone: false,
         })
     );
     assert_eq!(
@@ -292,7 +297,37 @@ fn stack_actions_resolve_freshness_and_volume_cleanup() {
         Action::Stack(StackAction::Down {
             lane: LaneSelection::All,
             volumes: true,
+            standalone: false,
         })
+    );
+}
+
+#[test]
+fn stack_up_resolves_the_semantic_protocol_mode() {
+    let resolved = action(
+        &[
+            "cf-integration",
+            "stack",
+            "up",
+            "--standalone",
+            "--protocol-version",
+            "legacy",
+        ],
+        &[],
+    );
+
+    assert_eq!(
+        resolved,
+        Action::Stack(StackAction::Up {
+            topology: StackMode::Dataplane,
+            protocol_version: ProtocolVersion::Legacy,
+            fresh: false,
+            standalone: true,
+        })
+    );
+    assert_eq!(
+        resolved.startup_summary(),
+        "Lane: external\nProtocol version: legacy\nControl plane: disabled; Redis config: mocked"
     );
 }
 
@@ -361,7 +396,7 @@ fn standalone_load_is_external_only() {
     );
     assert_eq!(
         standalone.startup_summary(),
-        "Lane: external\nProtocol version: modern\nControl plane: disabled during load"
+        "Lane: external\nProtocol version: modern\nControl plane: disabled; Redis config: mocked"
     );
 
     let cli = Cli::try_parse_from([
@@ -403,6 +438,7 @@ fn live_resolves_lane_group_and_protocol_version() {
         ),
         Action::Live {
             lane: SemanticLane::BuiltInDataPlane,
+            standalone: false,
             group: LiveGroup::Mcp,
             protocol_version: ProtocolVersion::Legacy,
         }
@@ -430,6 +466,7 @@ fn live_fixture_lane_bypasses_topology_and_cli_version_wins() {
         ),
         Action::Live {
             lane: SemanticLane::FixtureDirect,
+            standalone: false,
             group: LiveGroup::Protocol,
             protocol_version: ProtocolVersion::Modern,
         }
@@ -559,25 +596,30 @@ fn standalone_conformance_is_external_only() {
             .contains("Control plane: disabled; Redis config: mocked")
     );
 
-    for arguments in [
-        vec!["cf-integration", "conformance", "run", "--standalone"],
-        vec![
-            "cf-integration",
-            "conformance",
-            "run",
-            "--lane",
-            "builtin",
-            "--standalone",
-        ],
-    ] {
-        let cli = Cli::try_parse_from(arguments).expect("CLI should parse standalone mode");
-        let error = resolve_action(cli, &Environment::new())
-            .expect_err("standalone conformance must reject non-external lane selections");
-        assert_eq!(
-            error.to_string(),
-            "--standalone requires --lane external as the only lane"
-        );
-    }
+    let implied = action(
+        &["cf-integration", "conformance", "run", "--standalone"],
+        &[],
+    );
+    let Action::Conformance(ConformanceAction::Run { lanes, .. }) = implied else {
+        panic!("expected conformance run");
+    };
+    assert_eq!(lanes, [SemanticLane::ExternalDataPlane]);
+
+    let arguments = [
+        "cf-integration",
+        "conformance",
+        "run",
+        "--lane",
+        "builtin",
+        "--standalone",
+    ];
+    let cli = Cli::try_parse_from(arguments).expect("CLI should parse standalone mode");
+    let error = resolve_action(cli, &Environment::new())
+        .expect_err("standalone conformance must reject non-external lane selections");
+    assert_eq!(
+        error.to_string(),
+        "--standalone requires --lane external as the only lane"
+    );
 }
 
 #[test]
@@ -603,7 +645,7 @@ fn conformance_report_is_official_only() {
 }
 
 #[test]
-fn only_report_and_token_actions_skip_runtime_assets() {
+fn only_report_and_controlplane_token_actions_skip_runtime_assets() {
     let report = action(&["cf-integration", "conformance", "report"], &[]);
     let token = action(
         &["cf-integration", "debug", "token", "--kind", "admin"],
@@ -613,10 +655,22 @@ fn only_report_and_token_actions_skip_runtime_assets() {
         &["cf-integration", "stack", "status", "--lane", "external"],
         &[],
     );
+    let standalone_token = action(
+        &[
+            "cf-integration",
+            "debug",
+            "token",
+            "--kind",
+            "scoped",
+            "--standalone",
+        ],
+        &[],
+    );
 
     assert!(!report.requires_runtime_assets());
     assert!(!token.requires_runtime_assets());
     assert!(stack.requires_runtime_assets());
+    assert!(standalone_token.requires_runtime_assets());
 }
 
 #[test]
@@ -637,6 +691,7 @@ fn debug_token_and_inspector_remain_explicit_non_gate_operations() {
         Action::Debug(DebugAction::Token {
             kind: TokenKind::Scoped,
             server_id: Some("server-1".to_owned()),
+            standalone: false,
         })
     );
     assert_eq!(
@@ -656,6 +711,7 @@ fn debug_token_and_inspector_remain_explicit_non_gate_operations() {
         ),
         Action::Debug(DebugAction::Inspect {
             topology: StackMode::Controlplane,
+            standalone: false,
             protocol_version: ProtocolVersion::Legacy,
             method: "prompts/list".to_owned(),
             server_id: None,

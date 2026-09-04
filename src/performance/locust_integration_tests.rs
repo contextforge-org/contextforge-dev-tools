@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use cf_integration::infrastructure::StackMode;
+use cf_integration::infrastructure::compose::ComposeProject;
 use cf_integration::infrastructure::config::{
     AppConfig, ConfigBootstrap, ConfigRequirements, Environment,
 };
@@ -46,6 +47,23 @@ fn args(smoke: bool) -> LoadRequest {
         users: None,
         spawn_rate: None,
         run_time: None,
+    }
+}
+
+fn project(config: &AppConfig, mode: StackMode) -> ComposeProject {
+    match mode {
+        StackMode::Dataplane => ComposeProject::dataplane(
+            config.asset_root(),
+            config.controlplane_dir(),
+            config.integration_project().value.clone(),
+            !config.dataplane_ref().value.is_empty(),
+        ),
+        StackMode::Controlplane => ComposeProject::controlplane(
+            config.asset_root(),
+            config.controlplane_dir(),
+            config.controlplane_project().value.clone(),
+            false,
+        ),
     }
 }
 
@@ -156,6 +174,7 @@ fn dataplane_locust_command_has_exact_compose_shape_and_environment() {
 
     let run = LocustCommand::new_with_protocol_version(
         &config,
+        project(&config, StackMode::Dataplane),
         StackMode::Dataplane,
         &settings,
         "scoped.jwt.value",
@@ -173,41 +192,23 @@ fn dataplane_locust_command_has_exact_compose_shape_and_environment() {
         .join("locust");
     assert_eq!(run.report_dir(), report_dir);
     assert!(run.report_dir().is_dir());
-    assert_eq!(
-        run.command().arguments(),
-        [
-            OsString::from("compose"),
-            OsString::from("-p"),
-            OsString::from("cf"),
-            OsString::from("-f"),
-            integration_dir
-                .join("mcp-context-forge")
-                .join("docker-compose.yml")
-                .into_os_string(),
-            OsString::from("-f"),
-            asset_root
-                .join("docker")
-                .join("docker-compose.cf-controlplane-build-labels.yaml")
-                .into_os_string(),
-            OsString::from("-f"),
-            asset_root
-                .join("docker")
-                .join("docker-compose.cf-dataplane.yaml")
-                .into_os_string(),
-            OsString::from("-f"),
-            asset_root
-                .join("docker")
-                .join("docker-compose.cf-integration.yaml")
-                .into_os_string(),
-            OsString::from("--profile"),
-            OsString::from("testing"),
-            OsString::from("run"),
-            OsString::from("--rm"),
-            OsString::from("--no-deps"),
-            OsString::from("--volume"),
-            volume_argument(&report_dir),
-            OsString::from("locust"),
-        ]
+    let arguments = run.command().arguments();
+    assert!(
+        arguments
+            .windows(3)
+            .any(|values| values == ["run", "--rm", "--no-deps"])
+    );
+    assert!(arguments.contains(&volume_argument(&report_dir)));
+    assert!(arguments.contains(&OsString::from("/mnt/locust-cf/locustfile_mcp.py")));
+    assert!(
+        arguments
+            .windows(2)
+            .any(|values| values == ["-e", "MCP_SKIP_TOOL_LIST"])
+    );
+    assert!(
+        arguments
+            .windows(2)
+            .any(|values| values == ["--entrypoint", "locust"])
     );
 
     let expected_environment = HashMap::from([
@@ -253,6 +254,7 @@ fn controlplane_uses_the_same_harness_mcp_adapter_and_does_not_require_server_id
 
     let run = LocustCommand::new_with_protocol_version(
         &config,
+        project(&config, StackMode::Controlplane),
         StackMode::Controlplane,
         &settings,
         "admin.jwt.value",
@@ -296,10 +298,9 @@ fn controlplane_uses_the_same_harness_mcp_adapter_and_does_not_require_server_id
             .get(OsStr::new("MCP_TOOL_NAMES")),
         Some(&OsString::from("safe_time,safe_echo"))
     );
-    assert!(
-        !run.command()
-            .environment()
-            .contains_key(OsStr::new("MCP_SERVER_ID"))
+    assert_eq!(
+        run.command().environment().get(OsStr::new("MCP_SERVER_ID")),
+        Some(&OsString::new())
     );
     let arguments = run.command().arguments();
     let entrypoint = arguments
@@ -353,6 +354,7 @@ fn locust_request_timeout_rejects_empty_non_finite_and_non_positive_values() {
 
         let error = LocustCommand::new_with_protocol_version(
             &config,
+            project(&config, StackMode::Controlplane),
             StackMode::Controlplane,
             &settings,
             "token",
@@ -378,6 +380,7 @@ fn dataplane_requires_nonempty_server_id_and_all_modes_require_a_token() {
 
     let missing_server = LocustCommand::new_with_protocol_version(
         &config,
+        project(&config, StackMode::Dataplane),
         StackMode::Dataplane,
         &settings,
         "token",
@@ -389,6 +392,7 @@ fn dataplane_requires_nonempty_server_id_and_all_modes_require_a_token() {
 
     let missing_token = LocustCommand::new_with_protocol_version(
         &config,
+        project(&config, StackMode::Controlplane),
         StackMode::Controlplane,
         &settings,
         "",

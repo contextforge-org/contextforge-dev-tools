@@ -14,9 +14,17 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             &server_id,
             args.standalone,
             args.observability,
+            &args.protocol_version,
             |token, standalone_tool_names| async move {
+                let project = if args.standalone {
+                    self.standalone_dataplane_project(args.observability)
+                        .with_profiles(["performance"])
+                } else {
+                    self.performance_compose_project(args.topology, args.observability)
+                };
                 let command = LocustCommand::new_with_protocol_version(
                     &self.config,
+                    project,
                     args.topology,
                     &settings,
                     &token,

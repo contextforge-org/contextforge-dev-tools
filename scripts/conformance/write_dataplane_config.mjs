@@ -3,6 +3,8 @@
 
 const DATAPLANE_CONFIG_URL =
   'http://dataplane:4445/contextforge-rs/admin/userconfigs';
+const DATAPLANE_TOKEN_URL =
+  'http://dataplane:4445/contextforge-rs/admin/tokens';
 const FIXTURE_TOOLS = [
   'test_simple_text',
   'test_image_content',
@@ -131,11 +133,36 @@ async function publish(subject, body) {
   fail(`dataplane config serializer was unavailable: ${lastError}`);
 }
 
-async function main() {
-  const [mode, serverId, backendUrl, protocolVersion, toolNamesJson] = process.argv.slice(2);
-  if (!['fixture', 'client'].includes(mode)) {
-    fail('mode must be fixture or client');
+async function issueToken(tenantId, userId) {
+  const endpoint = `${DATAPLANE_TOKEN_URL}/${encodeURIComponent(tenantId)}/${encodeURIComponent(userId)}`;
+  let lastError = 'dataplane did not respond';
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    try {
+      const response = await fetch(endpoint, { signal: AbortSignal.timeout(2000) });
+      const body = await response.text();
+      if (response.ok && body.split('.').length === 3) return body;
+      lastError = `HTTP ${response.status}: ${body.slice(0, 512)}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
+  fail(`dataplane token helper was unavailable: ${lastError}`);
+}
+
+async function main() {
+  const [mode, ...args] = process.argv.slice(2);
+  if (mode === 'token') {
+    const [tenantId, userId] = args;
+    if (!tenantId) fail('tenant-id must not be empty');
+    if (!userId) fail('user-id must not be empty');
+    process.stdout.write(`${await issueToken(tenantId, userId)}\n`);
+    return;
+  }
+  if (!['fixture', 'client'].includes(mode)) {
+    fail('mode must be token, fixture, or client');
+  }
+  const [serverId, backendUrl, protocolVersion, toolNamesJson] = args;
   if (!serverId) fail('virtual-host-id must not be empty');
   try {
     const parsed = new URL(backendUrl);
@@ -164,6 +191,7 @@ async function main() {
     tokenSubject(token),
     config(serverId, backendUrl, protocolVersion, catalogs),
   );
+  process.stdout.write(`${JSON.stringify(catalogs.tools)}\n`);
 }
 
 await main();

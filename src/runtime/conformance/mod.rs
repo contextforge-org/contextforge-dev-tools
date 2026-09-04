@@ -15,7 +15,6 @@ use crate::conformance::profile::{
 use crate::conformance::results::{DEFAULT_CONFORMANCE_SUITE, ScenarioOutcome};
 
 const CLIENT_CONFORMANCE_SERVER_ID: &str = "dataplane-client-conformance";
-const DATAPLANE_CONFIG_WRITER: &str = "/opt/contextforge-conformance/write_dataplane_config.mjs";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ConformanceOperationalFailure {
@@ -177,10 +176,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         topology: StackMode,
         server_era: ConformanceServerEra,
         standalone: bool,
+        observability: bool,
     ) -> AppResult<()> {
-        self.build_conformance_service(topology, server_era, standalone)
+        self.build_conformance_service(topology, server_era, standalone, observability)
             .await?;
-        self.start_conformance_containers(topology, server_era, standalone)
+        self.start_conformance_containers(topology, server_era, standalone, observability)
             .await
     }
 
@@ -189,8 +189,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         topology: StackMode,
         server_era: ConformanceServerEra,
         standalone: bool,
+        observability: bool,
     ) -> AppResult<()> {
-        let project = self.routed_conformance_project(topology, standalone);
+        let project = self.routed_conformance_project(topology, standalone, observability);
         let build = project.command(["build", OFFICIAL_CONFORMANCE_SERVICE]);
         let build = self
             .routed_conformance_environment(build, topology, standalone)?
@@ -203,8 +204,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         topology: StackMode,
         server_era: ConformanceServerEra,
         standalone: bool,
+        observability: bool,
     ) -> AppResult<()> {
-        let project = self.routed_conformance_project(topology, standalone);
+        let project = self.routed_conformance_project(topology, standalone, observability);
         let up = project.command([
             "up",
             "-d",
@@ -218,13 +220,16 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         Ok(self.runner.run_async(&up).await?)
     }
 
-    pub(super) fn conformance_fixture_endpoint(&self, topology: StackMode) -> AppResult<url::Url> {
-        let command = self.conformance_compose_project(topology).command([
-            "port",
-            OFFICIAL_CONFORMANCE_SERVICE,
-            "3000",
-        ]);
-        let command = self.compose_environment(command, topology, true)?;
+    pub(super) fn conformance_fixture_endpoint(
+        &self,
+        topology: StackMode,
+        standalone: bool,
+        observability: bool,
+    ) -> AppResult<url::Url> {
+        let command = self
+            .routed_conformance_project(topology, standalone, observability)
+            .command(["port", OFFICIAL_CONFORMANCE_SERVICE, "3000"]);
+        let command = self.routed_conformance_environment(command, topology, standalone)?;
         let output = self.runner.capture_stdout(&command)?;
         parse_conformance_fixture_endpoint(&output).map_err(AppFailure::from)
     }
@@ -233,9 +238,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         &self,
         topology: StackMode,
         standalone: bool,
+        observability: bool,
     ) -> AppResult<()> {
         let remove = self
-            .routed_conformance_project(topology, standalone)
+            .routed_conformance_project(topology, standalone, observability)
             .command([
                 "rm",
                 "--stop",
@@ -250,10 +256,15 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .map_err(AppFailure::from)
     }
 
-    fn routed_conformance_project(&self, topology: StackMode, standalone: bool) -> ComposeProject {
+    fn routed_conformance_project(
+        &self,
+        topology: StackMode,
+        standalone: bool,
+        observability: bool,
+    ) -> ComposeProject {
         if standalone {
             debug_assert_eq!(topology, StackMode::Dataplane);
-            self.standalone_conformance_compose_project()
+            self.standalone_conformance_compose_project(observability)
         } else {
             self.conformance_compose_project(topology)
         }
@@ -781,7 +792,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             let run_routed = lanes.contains(&target);
             let stack_progress = Activity::spinner(format!("Prepare {}", topology.lane_label()));
             let mut topology_failure = if standalone_topology {
-                self.stack_up_standalone_conformance(true).await.err()
+                self.stack_up_standalone_dataplane(true, true).await.err()
             } else {
                 self.stack_up_for_conformance(topology, true).await.err()
             };
@@ -798,7 +809,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     topology.lane_label()
                 ));
                 let (start_result, start_interrupted) = finish_phase_after_interrupt(
-                    self.start_conformance_service(topology, server_era, standalone_topology),
+                    self.start_conformance_service(topology, server_era, standalone_topology, true),
                     interrupt.as_mut(),
                 )
                 .await;
@@ -893,7 +904,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 let run_inputs = server_id.zip(fixture_metadata.as_ref());
                 match run_inputs {
                     Some((server_id, metadata)) => match if standalone_topology {
-                        self.standalone_conformance_token()
+                        self.standalone_dataplane_token(true)
                     } else {
                         self.issue_conformance_token().await
                     } {
@@ -908,6 +919,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                         server_id,
                                         spec_version,
                                         &token.value,
+                                        true,
                                     )
                                     .await
                             {
@@ -964,7 +976,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     .await
                     .map_err(AppFailure::from);
                 let service_cleanup = self
-                    .stop_conformance_service(topology, standalone_topology)
+                    .stop_conformance_service(topology, standalone_topology, true)
                     .await;
                 topology_failure = finish_with_cleanup(
                     topology_failure,
@@ -974,7 +986,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             } else if service_started {
                 topology_failure = finish_with_cleanup(
                     topology_failure,
-                    self.stop_conformance_service(topology, standalone_topology)
+                    self.stop_conformance_service(topology, standalone_topology, true)
                         .await,
                 )
                 .err();
@@ -1137,7 +1149,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         };
         let stack_progress = Activity::spinner(progress);
         let stack_result = if standalone {
-            self.stack_up_standalone_conformance(!reuse_stack).await
+            self.stack_up_standalone_dataplane(!reuse_stack, true).await
         } else {
             self.stack_up_for_conformance(StackMode::Dataplane, !reuse_stack)
                 .await
@@ -1149,7 +1161,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 
         if failure.is_none() {
             match if standalone {
-                self.standalone_conformance_token()
+                self.standalone_dataplane_token(true)
             } else {
                 self.issue_conformance_token().await
             } {
@@ -1220,70 +1232,42 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .map_err(AppFailure::from)
     }
 
-    fn standalone_conformance_token(&self) -> AppResult<ManagedBearerToken> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .context("system clock is before the Unix epoch")
-            .map_err(AppFailure::from)?
-            .as_secs();
-        let claims = serde_json::json!({
-            "iss": "mcpgateway",
-            "sub": uuid::Uuid::new_v4().to_string(),
-            "aud": "mcpgateway-api",
-            "exp": now + 3_600,
-            "iat": now,
-            "jti": uuid::Uuid::new_v4().to_string(),
-            "token_use": "api",
-            "teams": [],
-            "user": {
-                "email": "cf-integration@example.invalid",
-                "full_name": "cf-integration standalone conformance",
-                "is_admin": true,
-                "auth_provider": "api_token"
-            },
-            "scopes": null
-        });
-        let secret = required_text(&self.config.jwt_secret_key().value, "JWT_SECRET_KEY")?;
-        let token = jsonwebtoken::encode(
-            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
-            &claims,
-            &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
-        )
-        .context("failed to sign the standalone conformance token")
-        .map_err(AppFailure::from)?;
-        Ok(ManagedBearerToken::unmanaged(token))
-    }
-
-    async fn publish_standalone_conformance_config(
+    pub(super) async fn publish_standalone_conformance_config(
         &self,
         server_id: &str,
         protocol_version: &str,
         token: &str,
-    ) -> AppResult<()> {
+        observability: bool,
+    ) -> AppResult<Vec<String>> {
         let progress = Activity::spinner("Publish mocked Redis conformance configuration");
-        let command = self.standalone_conformance_compose_project().command([
-            "run",
-            "--rm",
-            "--no-deps",
-            "-e",
-            CLIENT_TOKEN_ENV,
-            "--entrypoint",
-            "node",
-            OFFICIAL_CONFORMANCE_SERVICE,
-            DATAPLANE_CONFIG_WRITER,
-            "fixture",
-            server_id,
-            OFFICIAL_CONFORMANCE_BACKEND_URL,
-            protocol_version,
-        ]);
+        let command = self
+            .standalone_conformance_compose_project(observability)
+            .command([
+                "run",
+                "--rm",
+                "--no-deps",
+                "-e",
+                CLIENT_TOKEN_ENV,
+                "config_writer",
+                "fixture",
+                server_id,
+                OFFICIAL_CONFORMANCE_BACKEND_URL,
+                protocol_version,
+            ]);
         let command = self
             .standalone_dataplane_environment(command, true)?
             .env(CLIENT_TOKEN_ENV, token);
-        let result = self
-            .runner
-            .run_async(&command)
-            .await
-            .map_err(AppFailure::from);
+        let result = self.capture_text(&command).and_then(|output| {
+            let tool_names = serde_json::from_str::<Vec<String>>(&output)
+                .context("standalone config helper returned invalid tool names")
+                .map_err(AppFailure::from)?;
+            if tool_names.is_empty() {
+                return Err(AppFailure::from(anyhow!(
+                    "standalone Redis config for server {server_id} contains no tools"
+                )));
+            }
+            Ok(tool_names)
+        });
         progress.finish(result.is_ok());
         result
     }
@@ -1337,7 +1321,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         )?;
 
         let compose_project = if standalone {
-            self.standalone_conformance_compose_project()
+            self.standalone_conformance_compose_project(true)
         } else {
             self.conformance_runtime_project(StackMode::Dataplane)
         };

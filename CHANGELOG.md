@@ -11,18 +11,26 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Added
 
-- Added standalone external-dataplane conformance runs backed by an ephemeral
-  Redis instance, a locally signed test token, and no control-plane services.
+- Added global standalone external-dataplane mode across stack, probe, load,
+  live, conformance, and debug-token workflows, backed by mocked Redis,
+  ephemeral RSA authentication, and no control-plane services.
 
 ### Changed
 
-- Published server and client conformance routes through the running
-  dataplane's serializer so mocked Redis snapshots always use that image's
-  current MessagePack schema.
+- Published every standalone route through the running dataplane's serializer
+  so mocked Redis snapshots always use that image's current MessagePack schema.
+- Added protocol-mode selection to `stack up` and native standalone live checks
+  for route authentication, lifecycle negotiation, and routed tool calls.
+- Left the independent ClickStack service running during explicit stack cleanup
+  as well as managed workflow cleanup.
 
 ### Fixed
 
 - Avoided a Linux `ETXTBSY` race in the native process-runner test.
+- Embedded the complete standalone and observability asset set in installed
+  binaries and updated standalone authentication for the dataplane JWKS model.
+- Skipped unsupported external-dataplane catalog fan-out during standalone
+  probes and load tests while retaining routed tool-call coverage.
 
 ## [0.3.0] - 2026-09-03
 
@@ -44,7 +52,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Reused the external conformance stack between compatible server and client
   phases while preserving setup, execution, and cleanup failures.
 - Moved ClickStack into an independent Compose lifecycle so managed test cleanup
-  leaves telemetry available for inspection; explicit `stack down` removes it.
+  leaves telemetry available for inspection.
 - Made ClickStack the default for non-performance workflows and an explicit
   opt-in for load tests to avoid skewing benchmark results.
 

@@ -79,6 +79,10 @@ fn parse_run_time(value: &str) -> Result<String, String> {
 #[derive(Debug, Clone, PartialEq, Parser)]
 #[command(name = "cf-integration", version, arg_required_else_help = true)]
 pub(crate) struct Cli {
+    /// Run the external dataplane with mocked Redis and no control plane.
+    #[arg(long, global = true)]
+    pub(crate) standalone: bool,
+
     /// Workflow to run.
     #[command(subcommand)]
     pub(crate) command: Command,
@@ -185,9 +189,9 @@ pub(crate) enum StackCommand {
 /// Options for starting one stack.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub(crate) struct StackUpArgs {
-    /// Execution lane; defaults to CF_MCP_LANE, then external.
-    #[arg(long, value_enum)]
-    pub(crate) lane: Option<CliRoutedLane>,
+    /// Routed lane and protocol-version selection.
+    #[command(flatten)]
+    pub(crate) target: RoutedWorkflowTargetArgs,
 
     /// Remove existing stack volumes before starting.
     #[arg(long)]
@@ -285,10 +289,6 @@ pub(crate) struct LoadArgs {
     /// Routed lane and protocol-version selection.
     #[command(flatten)]
     pub(crate) target: RoutedWorkflowTargetArgs,
-
-    /// Stop the control plane during an external-dataplane load test.
-    #[arg(long)]
-    pub(crate) standalone: bool,
 
     /// Enable the ClickStack observability UI during the load test.
     #[arg(long)]
@@ -412,10 +412,6 @@ pub(crate) struct ConformanceRunArgs {
     /// Lane to run; repeat to select multiple lanes, defaults to all three.
     #[arg(long, value_enum, action = ArgAction::Append)]
     pub(crate) lane: Vec<CliLane>,
-
-    /// Run the external dataplane against mocked Redis without a control plane.
-    #[arg(long)]
-    pub(crate) standalone: bool,
 
     /// Protocol era used by the official client; repeat for a matrix.
     #[arg(long, value_enum, action = ArgAction::Append)]

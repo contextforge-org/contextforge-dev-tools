@@ -1,0 +1,49 @@
+server {
+    listen 80;
+    server_name localhost;
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header Authorization $http_authorization;
+    proxy_set_header Mcp-Session-Id $http_mcp_session_id;
+    proxy_set_header Mcp-Protocol-Version $http_mcp_protocol_version;
+    proxy_set_header Mcp-Method $http_mcp_method;
+    proxy_set_header Mcp-Name $http_mcp_name;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header Connection "";
+    proxy_hide_header X-CF-Integration-Backend;
+
+    location = /health {
+        default_type application/json;
+        add_header X-ContextForge-MCP-Transport-Mounted rust always;
+        return 200 '{"status":"ok","mode":"standalone"}';
+    }
+
+    location ~ ^/mcp/?$ {
+        proxy_pass http://dataplane:4445/contextforge-rs/servers/${MCP_SERVER_ID}/mcp$is_args$args;
+        proxy_request_buffering on;
+        proxy_buffering off;
+        proxy_cache off;
+        add_header X-Accel-Buffering "no" always;
+        add_header X-CF-Integration-Backend dataplane always;
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 1h;
+        proxy_read_timeout 1h;
+    }
+
+    location ~ ^/servers/([^/]+)/mcp/?$ {
+        proxy_pass http://dataplane:4445/contextforge-rs/servers/$1/mcp$is_args$args;
+        proxy_request_buffering on;
+        proxy_buffering off;
+        proxy_cache off;
+        add_header X-Accel-Buffering "no" always;
+        add_header X-CF-Integration-Backend dataplane always;
+        proxy_connect_timeout 30s;
+        proxy_send_timeout 1h;
+        proxy_read_timeout 1h;
+    }
+}

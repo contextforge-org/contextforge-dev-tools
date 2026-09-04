@@ -9,8 +9,17 @@ const COMPOSE_PROTOCOL_VERSION_ENV: &str = "MCP_PROTOCOL_VERSION";
 impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn execute_stack(&self, action: StackAction) -> AppResult<()> {
         match action {
-            StackAction::Up { topology, fresh } => {
-                self.stack_up_for_conformance(topology, fresh).await?;
+            StackAction::Up {
+                topology,
+                protocol_version,
+                fresh,
+                standalone,
+            } => {
+                if standalone {
+                    self.stack_up_standalone_dataplane(fresh, true).await?;
+                } else {
+                    self.stack_up_for_conformance(topology, fresh).await?;
+                }
 
                 let build_log = self
                     .config
@@ -20,8 +29,12 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 let quiet_runner = LoggingProcessRunner::new(&self.runner, &build_log);
                 let quiet_runtime = RuntimeContext::new(self.config.clone(), quiet_runner);
                 let build_progress = Activity::spinner("Building conformance image");
+                let server_era = match protocol_version {
+                    ProtocolVersion::Modern => ConformanceServerEra::Modern,
+                    ProtocolVersion::Legacy => ConformanceServerEra::Legacy,
+                };
                 let build_result = quiet_runtime
-                    .build_conformance_service(topology, DEFAULT_CONFORMANCE_SERVER_ERA, false)
+                    .build_conformance_service(topology, server_era, standalone, true)
                     .await;
                 build_progress.finish(build_result.is_ok());
                 if let Err(error) = build_result {
@@ -33,56 +46,118 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     return Err(error);
                 }
 
-                self.start_conformance_containers(topology, DEFAULT_CONFORMANCE_SERVER_ERA, false)
+                self.start_conformance_containers(topology, server_era, standalone, true)
                     .await?;
-                let conformance_endpoint = self.conformance_fixture_endpoint(topology)?;
+                if standalone {
+                    let token = self.standalone_dataplane_token(true)?;
+                    self.publish_standalone_conformance_config(
+                        self.default_server_id(),
+                        protocol_version.wire_version(),
+                        &token.value,
+                        true,
+                    )
+                    .await?;
+                }
+                let conformance_endpoint =
+                    self.conformance_fixture_endpoint(topology, standalone, true)?;
                 Activity::completed("Integration stack ready");
                 self.print_stack_summary(topology, &conformance_endpoint)
             }
-            StackAction::Down { lane, volumes } => {
+            StackAction::Down {
+                lane,
+                volumes,
+                standalone,
+            } => {
                 let kind = if volumes {
                     CleanupKind::Reset
                 } else {
                     CleanupKind::Down
                 };
-                let primary = self.cleanup(lane, kind).err();
-                finish_with_cleanup(primary, self.cleanup_observability(kind, true))
+                if standalone {
+                    self.cleanup_standalone_dataplane(kind)
+                } else {
+                    self.cleanup(lane, kind)
+                }
             }
-            StackAction::Status(mode) => {
-                self.require_mode_sources(mode)?;
-                let command = StackCommandPlan::status(self.conformance_compose_project(mode));
-                Ok(self.runner.run(&self.compose_environment(
+            StackAction::Status {
+                topology,
+                standalone,
+            } => {
+                let project = self.stack_command_project(topology, standalone)?;
+                let command = StackCommandPlan::status(project);
+                let command = self.stack_command_environment(
                     command.command().clone(),
-                    mode,
-                    true,
-                )?)?)
+                    topology,
+                    standalone,
+                )?;
+                Ok(self.runner.run(&command)?)
             }
             StackAction::Logs {
-                topology: mode,
+                topology,
                 services,
+                standalone,
             } => {
-                self.require_mode_sources(mode)?;
-                let command =
-                    StackCommandPlan::logs(self.conformance_compose_project(mode), services);
-                Ok(self.runner.run(&self.compose_environment(
+                let project = self.stack_command_project(topology, standalone)?;
+                let command = StackCommandPlan::logs(project, services);
+                let command = self.stack_command_environment(
                     command.command().clone(),
-                    mode,
-                    true,
-                )?)?)
+                    topology,
+                    standalone,
+                )?;
+                Ok(self.runner.run(&command)?)
             }
-            StackAction::Config(mode) => {
-                self.require_mode_sources(mode)?;
-                if mode == StackMode::Dataplane {
+            StackAction::Config {
+                topology,
+                standalone,
+            } => {
+                if !standalone {
+                    self.require_mode_sources(topology)?;
+                }
+                if topology == StackMode::Dataplane && !standalone {
                     self.validate_compose_contract()?;
                 }
-                let command =
-                    StackCommandPlan::config(self.conformance_compose_project(mode), mode);
-                Ok(self.runner.run(&self.compose_environment(
-                    command.command().clone(),
-                    mode,
-                    true,
-                )?)?)
+                let project = self.stack_command_project(topology, standalone)?;
+                let command = if standalone {
+                    project.command(["config", "--no-interpolate", "--no-env-resolution"])
+                } else {
+                    StackCommandPlan::config(project, topology)
+                        .command()
+                        .clone()
+                };
+                let command = self.stack_command_environment(command, topology, standalone)?;
+                Ok(self.runner.run(&command)?)
             }
+        }
+    }
+
+    fn stack_command_project(
+        &self,
+        topology: StackMode,
+        standalone: bool,
+    ) -> AppResult<ComposeProject> {
+        if standalone {
+            if topology != StackMode::Dataplane {
+                return Err(AppFailure::from(anyhow!(
+                    "standalone mode requires the external lane"
+                )));
+            }
+            Ok(self.standalone_conformance_compose_project(true))
+        } else {
+            self.require_mode_sources(topology)?;
+            Ok(self.conformance_compose_project(topology))
+        }
+    }
+
+    fn stack_command_environment(
+        &self,
+        command: CommandSpec,
+        topology: StackMode,
+        standalone: bool,
+    ) -> AppResult<CommandSpec> {
+        if standalone {
+            self.standalone_dataplane_environment(command, true)
+        } else {
+            self.compose_environment(command, topology, true)
         }
     }
 
@@ -106,7 +181,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         .await
     }
 
-    pub(super) async fn stack_up_standalone_conformance(&self, fresh: bool) -> AppResult<()> {
+    pub(super) async fn stack_up_standalone_dataplane(
+        &self,
+        fresh: bool,
+        observability: bool,
+    ) -> AppResult<()> {
         if !self.config.dataplane_ref().value.is_empty() {
             self.ensure_dataplane()?;
         }
@@ -126,7 +205,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             self.cleanup_standalone_dataplane(CleanupKind::Reset)?;
         }
         self.ensure_other_stack_stopped(StackMode::Dataplane)?;
-        self.start_observability()?;
+        if observability {
+            self.start_observability()?;
+        }
 
         let mut arguments = vec![
             OsString::from("up"),
@@ -141,7 +222,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 .into_iter()
                 .map(OsString::from),
         );
-        let command = self.standalone_dataplane_project().command(arguments);
+        let command = self
+            .standalone_dataplane_project(observability)
+            .command(arguments);
         let command = self.standalone_dataplane_environment(command, true)?;
         self.runner.run_async(&command).await?;
         self.wait_for_public_endpoint(StackMode::Dataplane, false)
@@ -317,18 +400,24 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .with_controlplane_conformance_overlay(self.config.asset_root())
     }
 
-    pub(super) fn standalone_dataplane_project(&self) -> ComposeProject {
-        ComposeProject::standalone_dataplane(
+    pub(super) fn standalone_dataplane_project(&self, observability: bool) -> ComposeProject {
+        let project = ComposeProject::standalone_dataplane(
             self.config.asset_root(),
             self.config.integration_project().value.clone(),
             !self.config.dataplane_ref().value.is_empty(),
-        )
-        .with_dataplane_observability(self.config.asset_root())
-        .with_conformance_overlay(self.config.asset_root())
+        );
+        if observability {
+            project.with_dataplane_observability(self.config.asset_root())
+        } else {
+            project
+        }
     }
 
-    pub(super) fn standalone_conformance_compose_project(&self) -> ComposeProject {
-        self.standalone_dataplane_project()
+    pub(super) fn standalone_conformance_compose_project(
+        &self,
+        observability: bool,
+    ) -> ComposeProject {
+        self.standalone_dataplane_project(observability)
             .with_conformance_fixture(self.config.asset_root())
     }
 
@@ -412,12 +501,14 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         checkout_labels: bool,
     ) -> AppResult<CommandSpec> {
         let controlplane_image = self.config.controlplane_image().resolved().to_owned();
-        let command = self.compose_environment_with_controlplane_image(
-            command,
-            StackMode::Dataplane,
-            false,
-            controlplane_image,
-        )?;
+        let command = self
+            .compose_environment_with_controlplane_image(
+                command,
+                StackMode::Dataplane,
+                false,
+                controlplane_image,
+            )?
+            .env("MCP_SERVER_ID", self.default_server_id());
         if checkout_labels && !self.config.dataplane_ref().value.is_empty() {
             self.add_dataplane_checkout_labels(command)
         } else {
@@ -1079,7 +1170,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 
     pub(super) fn cleanup_standalone_dataplane(&self, kind: CleanupKind) -> AppResult<()> {
         let project = self
-            .standalone_conformance_compose_project()
+            .standalone_conformance_compose_project(true)
             .with_profiles(["conformance"]);
         let command = StackCommandPlan::cleanup(project, kind);
         let command = self.standalone_dataplane_environment(command.command().clone(), false)?;
@@ -1135,24 +1226,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             }
         }
         finish_with_cleanup_failures(None, cleanup_failures)
-    }
-
-    fn cleanup_observability(&self, kind: CleanupKind, inherit_output: bool) -> AppResult<()> {
-        let project = self.observability_compose_project();
-        let command = StackCommandPlan::cleanup(project, kind);
-        let command = self.observability_environment(command.command().clone());
-        let primary = self
-            .run_cleanup_command(&command, inherit_output)
-            .map_err(AppFailure::from)
-            .err();
-        let project = format!(
-            "{}-observability",
-            self.config.integration_project().value.to_string_lossy()
-        );
-        finish_with_cleanup(
-            primary,
-            self.remove_project_by_label(&project, kind, inherit_output),
-        )
     }
 
     fn remove_project_by_label(

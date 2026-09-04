@@ -12,6 +12,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn run_live(
         &self,
         lane: SemanticLane,
+        standalone: bool,
         group: LiveGroup,
         protocol_version: &ProtocolVersion,
     ) -> AppResult<()> {
@@ -30,11 +31,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 )
             }
             SemanticLane::BuiltInDataPlane => {
-                self.run_routed_live(StackMode::Controlplane, group, protocol_version)
+                self.run_routed_live(StackMode::Controlplane, false, group, protocol_version)
                     .await
             }
             SemanticLane::ExternalDataPlane => {
-                self.run_routed_live(StackMode::Dataplane, group, protocol_version)
+                self.run_routed_live(StackMode::Dataplane, standalone, group, protocol_version)
                     .await
             }
         }
@@ -43,27 +44,108 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     async fn run_routed_live(
         &self,
         topology: StackMode,
+        standalone: bool,
         group: LiveGroup,
         protocol_version: &ProtocolVersion,
     ) -> AppResult<()> {
         let server_id = self.default_server_id().to_owned();
-        self.with_managed_test_target(topology, &server_id, || async {
-            match group {
-                LiveGroup::Mcp => {
-                    self.run_controlplane_make(topology, "test-mcp-protocol-e2e", protocol_version)
-                }
-                LiveGroup::Rbac => {
-                    self.run_controlplane_make(topology, "test-mcp-rbac", protocol_version)
-                }
-                LiveGroup::Protocol => self.run_controlplane_make(
+        if standalone {
+            return self
+                .with_managed_authenticated_target(
                     topology,
-                    "test-protocol-compliance-gateway",
+                    &server_id,
+                    true,
                     protocol_version,
-                ),
-                LiveGroup::All => self.run_live_all(topology, protocol_version),
-            }
+                    |token, tool_names| async move {
+                        self.run_standalone_live(
+                            topology,
+                            group,
+                            protocol_version,
+                            token,
+                            tool_names,
+                        )
+                        .await
+                    },
+                )
+                .await;
+        }
+        self.with_managed_test_target(topology, &server_id, || async {
+            self.run_live_group(topology, group, protocol_version)
         })
         .await
+    }
+
+    async fn run_standalone_live(
+        &self,
+        topology: StackMode,
+        group: LiveGroup,
+        protocol_version: &ProtocolVersion,
+        token: String,
+        tool_names: Vec<String>,
+    ) -> AppResult<()> {
+        let server_id = self.default_server_id().to_owned();
+        let config = ProbeConfig {
+            mode: gateway_topology(topology),
+            base_url: self.base_url()?.to_owned(),
+            server_id: server_id.clone(),
+            bearer_token: token.clone(),
+            config_timeout: Duration::ZERO,
+            retry_interval: Duration::ZERO,
+            request_timeout: Duration::from_secs(
+                self.environment_u64("CF_PROBE_REQUEST_TIMEOUT", 30)?,
+            ),
+            protocol_version: protocol_version.wire_version().to_owned(),
+            tool_names,
+            output_style: OutputStyle::stdout(),
+        };
+        let transport =
+            GatewayClient::builder(config.mode, &config.base_url, &config.server_id, &token)
+                .protocol_version(config.protocol_version.clone())
+                .build()
+                .context("failed to construct the standalone live gateway endpoint")
+                .map_err(AppFailure::from)?;
+        let started = std::time::Instant::now();
+        let stdout = std::io::stdout();
+        let mut output = stdout.lock();
+        let result = run_probe(&transport, &config, &mut output)
+            .await
+            .map_err(AppFailure::from);
+        println!(
+            "{}",
+            OutputStyle::stdout().test_result(
+                if result.is_ok() {
+                    TestStatus::Pass
+                } else {
+                    TestStatus::Fail
+                },
+                &format!("live::standalone-{}", live_group_label(group)),
+                Some(started.elapsed()),
+                None,
+            )
+        );
+        result
+    }
+
+    fn run_live_group(
+        &self,
+        topology: StackMode,
+        group: LiveGroup,
+        protocol_version: &ProtocolVersion,
+    ) -> AppResult<()> {
+        match group {
+            LiveGroup::Mcp => {
+                self.run_controlplane_make(topology, "test-mcp-protocol-e2e", protocol_version)
+            }
+            LiveGroup::Rbac => {
+                self.run_controlplane_make(topology, "test-mcp-rbac", protocol_version)
+            }
+            LiveGroup::Protocol => self.run_controlplane_make(
+                topology,
+                "test-protocol-compliance-gateway",
+                protocol_version,
+            ),
+            LiveGroup::All => self.run_live_all(topology, protocol_version),
+        }
     }
 
     fn run_controlplane_make(
@@ -79,9 +161,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 .arg(self.config.controlplane_dir().as_os_str())
                 .arg(target);
             let command = self.live_protocol_environment(command, protocol_version)?;
-            self.runner
-                .run(&self.compose_environment(command, topology, false)?)
-                .map_err(AppFailure::from)
+            let command = self.compose_environment(command, topology, false)?;
+            self.runner.run(&command).map_err(AppFailure::from)
         })();
         let status = if result.is_ok() {
             TestStatus::Pass
@@ -133,6 +214,15 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             inherited_python_path,
             protocol_version.wire_version(),
         )
+    }
+}
+
+const fn live_group_label(group: LiveGroup) -> &'static str {
+    match group {
+        LiveGroup::Mcp => "mcp",
+        LiveGroup::Rbac => "rbac",
+        LiveGroup::Protocol => "protocol",
+        LiveGroup::All => "all",
     }
 }
 
