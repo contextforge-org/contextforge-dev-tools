@@ -38,7 +38,7 @@ fn repository_root(dotenv: Option<&str>) -> TempDir {
 
 fn config(root: &Path, process: &Environment) -> AppConfig {
     let bootstrap = ConfigBootstrap::load(process, root).expect("bootstrap should load");
-    AppConfig::load(bootstrap, ConfigRequirements::RUNTIME).expect("application config should load")
+    AppConfig::load(bootstrap, ConfigRequirements::Runtime).expect("application config should load")
 }
 
 fn args(smoke: bool) -> LoadRequest {

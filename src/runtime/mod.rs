@@ -505,7 +505,7 @@ mod tests {
                 .map(|(key, value)| (OsString::from(key), OsString::from(value))),
         );
         let bootstrap = ConfigBootstrap::load(&environment, root).expect("bootstrap should load");
-        AppConfig::load(bootstrap, ConfigRequirements::RUNTIME)
+        AppConfig::load(bootstrap, ConfigRequirements::Runtime)
             .expect("test application config should load")
     }
 

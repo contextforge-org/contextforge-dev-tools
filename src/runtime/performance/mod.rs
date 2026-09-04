@@ -32,8 +32,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     args.protocol_version.wire_version(),
                 )
                 .map_err(AppFailure::from)?;
-                let mut command_spec =
-                    self.compose_environment(command.command().clone(), args.topology, true)?;
+                let mut command_spec = self.target_environment(
+                    command.command().clone(),
+                    args.topology,
+                    args.standalone,
+                )?;
                 if args.standalone {
                     command_spec = command_spec
                         .env("MCP_TOOL_NAMES", standalone_tool_names.join(","))

@@ -10,7 +10,7 @@ use crate::conformance::profile::{
 };
 use crate::conformance::results::{ConformanceServerEra, SemanticLane};
 use crate::infrastructure::StackMode;
-use crate::infrastructure::config::Environment;
+use crate::infrastructure::config::{ConfigRequirements, Environment};
 use crate::performance::LoadRequest;
 use anyhow::{Result, bail};
 
@@ -145,13 +145,33 @@ impl Action {
         )
     }
 
-    /// Returns whether this operation needs Compose overlays or runtime scripts.
+    /// Filesystem resources needed by the resolved operation.
     #[must_use]
-    pub(crate) const fn requires_runtime_assets(&self) -> bool {
-        match self {
-            Self::Conformance(ConformanceAction::Report { .. }) | Self::Ci(_) => false,
-            Self::Debug(DebugAction::Token { standalone, .. }) => *standalone,
-            _ => true,
+    pub(crate) fn config_requirements(&self) -> ConfigRequirements {
+        let standalone = match self {
+            Self::Conformance(ConformanceAction::Report { .. })
+            | Self::Ci(_)
+            | Self::Debug(DebugAction::Token {
+                standalone: false, ..
+            }) => {
+                return ConfigRequirements::ReadOnly;
+            }
+            Self::Probe { standalone, .. }
+            | Self::Debug(DebugAction::Inspect { standalone, .. })
+            | Self::Debug(DebugAction::Token { standalone, .. })
+            | Self::Conformance(ConformanceAction::Run { standalone, .. })
+            | Self::Stack(StackAction::Up { standalone, .. })
+            | Self::Stack(StackAction::Down { standalone, .. })
+            | Self::Stack(StackAction::Status { standalone, .. })
+            | Self::Stack(StackAction::Logs { standalone, .. })
+            | Self::Stack(StackAction::Config { standalone, .. }) => *standalone,
+            Self::Load(args) => args.standalone,
+            Self::Live { .. } => false,
+        };
+        if standalone {
+            ConfigRequirements::StandaloneRuntime
+        } else {
+            ConfigRequirements::Runtime
         }
     }
 }

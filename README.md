@@ -46,6 +46,8 @@ test fixture. It generates an ephemeral RSA key, obtains a test token from the
 dataplane's local tool endpoint, validates it through the dataplane's loopback
 JWKS endpoint, and publishes a fresh config through the dataplane serializer.
 Redis therefore always contains the schema understood by the image under test.
+Standalone commands also work from an installed binary without control-plane
+checkouts or generated control-plane secrets.
 Routes and tool schemas are discovered from every catalog page of the running
 fixture, including the selected protocol era's diagnostic tools and prompts.
 
@@ -151,6 +153,8 @@ cf-integration conformance run --lane external --standalone \
 `--client-era` and `--server-era` accept `legacy`, `modern`, or `dual`.
 `--bless` replaces only the selected baselines and only after every selected
 run succeeds. `--standalone` permits the external lane only.
+Ctrl-C finishes cleanup for the active run, skips the remaining matrix entries,
+and leaves baselines unchanged.
 
 Regenerate Markdown from existing results without running tests:
 

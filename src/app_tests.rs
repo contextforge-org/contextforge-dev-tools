@@ -7,7 +7,7 @@ use cf_integration::app::{
 use cf_integration::cli::{Cli, LaneSelection, LiveGroup, ProtocolVersion, TokenKind};
 use cf_integration::conformance::results::{ConformanceServerEra, SemanticLane};
 use cf_integration::infrastructure::StackMode;
-use cf_integration::infrastructure::config::Environment;
+use cf_integration::infrastructure::config::{ConfigRequirements, Environment};
 use cf_integration::performance::LoadRequest;
 use clap::Parser;
 
@@ -73,7 +73,7 @@ fn ci_image_preparation_is_read_only_until_execution() {
 
     assert!(matches!(&action, Action::Ci(CiAction::PrepareImage { .. })));
     assert_eq!(action.description(), "prepare prebuilt CI image");
-    assert!(!action.requires_runtime_assets());
+    assert_eq!(action.config_requirements(), ConfigRequirements::ReadOnly);
 }
 
 #[test]
@@ -665,10 +665,37 @@ fn only_report_and_controlplane_token_actions_skip_runtime_assets() {
         &[],
     );
 
-    assert!(!report.requires_runtime_assets());
-    assert!(!token.requires_runtime_assets());
-    assert!(stack.requires_runtime_assets());
-    assert!(standalone_token.requires_runtime_assets());
+    assert_eq!(report.config_requirements(), ConfigRequirements::ReadOnly);
+    assert_eq!(token.config_requirements(), ConfigRequirements::ReadOnly);
+    assert_eq!(stack.config_requirements(), ConfigRequirements::Runtime);
+    assert_eq!(
+        standalone_token.config_requirements(),
+        ConfigRequirements::StandaloneRuntime
+    );
+}
+
+#[test]
+fn standalone_workflows_do_not_request_controlplane_secrets() {
+    for command in [
+        vec!["stack", "up"],
+        vec!["stack", "status"],
+        vec!["stack", "config"],
+        vec!["stack", "down"],
+        vec!["stack", "logs"],
+        vec!["probe"],
+        vec!["load"],
+        vec!["conformance", "run"],
+        vec!["debug", "token", "--kind", "scoped"],
+    ] {
+        let arguments: Vec<_> = ["cf-integration", "--standalone"]
+            .into_iter()
+            .chain(command)
+            .collect();
+        assert_eq!(
+            action(&arguments, &[]).config_requirements(),
+            ConfigRequirements::StandaloneRuntime
+        );
+    }
 }
 
 #[test]

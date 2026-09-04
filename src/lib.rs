@@ -20,7 +20,7 @@ mod runtime;
 use app::resolve_action;
 use cli::Cli;
 use error::AppFailure;
-use infrastructure::config::{AppConfig, ConfigBootstrap, ConfigRequirements, Environment};
+use infrastructure::config::{AppConfig, ConfigBootstrap, Environment};
 use infrastructure::process::SystemProcessRunner;
 pub(crate) use output::{Activity, OutputStyle, TestStatus};
 use runtime::RuntimeDispatcher;
@@ -77,11 +77,7 @@ pub async fn run() -> ExitCode {
         Ok(action) => action,
         Err(error) => return report_failure(AppFailure::from(error)),
     };
-    let requirements = if action.requires_runtime_assets() {
-        ConfigRequirements::RUNTIME
-    } else {
-        ConfigRequirements::READ_ONLY
-    };
+    let requirements = action.config_requirements();
     eprintln!("{}", OutputStyle::stderr().info(&action.startup_summary()));
     let activity = action
         .uses_global_activity()

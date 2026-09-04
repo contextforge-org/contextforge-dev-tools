@@ -9,6 +9,12 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- Removed control-plane checkout, worker-configuration, and secret-generation
+  dependencies from standalone workflows, including installed-binary load tests.
+- Kept captured command data, including test tokens, out of conformance setup
+  logs while retaining helper diagnostics when stdout capture fails.
+- Stopped the entire conformance matrix after Ctrl-C cleanup and prevented
+  interrupted runs from updating baselines.
 - Discover standalone conformance routes and input schemas from the running
   fixture, including paginated diagnostic tools. Fixture discovery errors stop
   setup before a baseline can be blessed.

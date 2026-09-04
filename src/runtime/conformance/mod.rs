@@ -194,7 +194,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let project = self.routed_conformance_project(topology, standalone, observability);
         let build = project.command(["build", OFFICIAL_CONFORMANCE_SERVICE]);
         let build = self
-            .routed_conformance_environment(build, topology, standalone)?
+            .target_environment(build, topology, standalone)?
             .env(CONFORMANCE_SERVER_ERA_ENV, server_era.label());
         Ok(self.runner.run_async(&build).await?)
     }
@@ -215,7 +215,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             OFFICIAL_CONFORMANCE_PROXY_SERVICE,
         ]);
         let up = self
-            .routed_conformance_environment(up, topology, standalone)?
+            .target_environment(up, topology, standalone)?
             .env(CONFORMANCE_SERVER_ERA_ENV, server_era.label());
         Ok(self.runner.run_async(&up).await?)
     }
@@ -229,7 +229,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let command = self
             .routed_conformance_project(topology, standalone, observability)
             .command(["port", OFFICIAL_CONFORMANCE_SERVICE, "3000"]);
-        let command = self.routed_conformance_environment(command, topology, standalone)?;
+        let command = self.target_environment(command, topology, standalone)?;
         let output = self.runner.capture_stdout(&command)?;
         parse_conformance_fixture_endpoint(&output).map_err(AppFailure::from)
     }
@@ -249,7 +249,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 OFFICIAL_CONFORMANCE_PROXY_SERVICE,
                 OFFICIAL_CONFORMANCE_SERVICE,
             ]);
-        let remove = self.routed_conformance_environment(remove, topology, standalone)?;
+        let remove = self.target_environment(remove, topology, standalone)?;
         self.runner
             .run_async(&remove)
             .await
@@ -270,21 +270,31 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         }
     }
 
-    fn routed_conformance_environment(
-        &self,
-        command: CommandSpec,
-        topology: StackMode,
-        standalone: bool,
-    ) -> AppResult<CommandSpec> {
-        if standalone {
-            debug_assert_eq!(topology, StackMode::Dataplane);
-            self.standalone_dataplane_environment(command, true)
-        } else {
-            self.compose_environment(command, topology, true)
-        }
+    pub(super) async fn execute_conformance(&self, action: ConformanceAction) -> AppResult<()> {
+        self.execute_conformance_with_interrupt(action, async {
+            if tokio::signal::ctrl_c().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        })
+        .await
     }
 
-    pub(super) async fn execute_conformance(&self, action: ConformanceAction) -> AppResult<()> {
+    async fn execute_conformance_with_interrupt<I>(
+        &self,
+        action: ConformanceAction,
+        interrupt: I,
+    ) -> AppResult<()>
+    where
+        I: Future<Output = ()>,
+    {
+        // Cancellation belongs to the matrix even if an entry cannot write its
+        // final artifacts and returns an error instead of an outcome.
+        let interruption_requested = std::cell::Cell::new(false);
+        let interrupt = async {
+            interrupt.await;
+            interruption_requested.set(true);
+        };
+        tokio::pin!(interrupt);
         match action {
             ConformanceAction::Run {
                 lanes,
@@ -333,7 +343,14 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     let executor = RuntimeContext::new(self.config.clone(), quiet_runner);
                     let matrix_started = Instant::now();
                     let run_result = executor
-                        .run_conformance(&lanes, &client_version, server_era, &paths, standalone)
+                        .run_conformance_with_interrupt(
+                            &lanes,
+                            &client_version,
+                            server_era,
+                            &paths,
+                            standalone,
+                            interrupt.as_mut(),
+                        )
                         .await;
                     let run_completed = matches!(
                         &run_result,
@@ -614,6 +631,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                             setup_log.display()
                         );
                     }
+                    if interruption_requested.get() {
+                        reported_failure = true;
+                        break;
+                    }
                 }
 
                 let baselines_updated = finalize_conformance_execution(
@@ -637,29 +658,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 output_dir,
             } => self.regenerate_conformance_report(results_dir.as_deref(), output_dir.as_deref()),
         }
-    }
-
-    async fn run_conformance(
-        &self,
-        lanes: &[SemanticLane],
-        spec_version: &str,
-        server_era: ConformanceServerEra,
-        paths: &ConformancePaths,
-        standalone: bool,
-    ) -> AppResult<ConformanceRunOutcome> {
-        self.run_conformance_with_interrupt(
-            lanes,
-            spec_version,
-            server_era,
-            paths,
-            standalone,
-            async {
-                if tokio::signal::ctrl_c().await.is_err() {
-                    std::future::pending::<()>().await;
-                }
-            },
-        )
-        .await
     }
 
     async fn run_conformance_with_interrupt<I>(
@@ -1956,6 +1954,99 @@ fn client_driver_command() -> anyhow::Result<(String, OsString)> {
 mod tests {
     use super::*;
     use crate::conformance::results::{CheckStatus, ConformanceCheck, ConformanceScenarioResult};
+
+    #[derive(Default)]
+    struct MatrixRunner(std::cell::RefCell<Vec<CommandSpec>>);
+
+    impl ProcessRunner for MatrixRunner {
+        fn run(&self, spec: &CommandSpec) -> Result<(), InfrastructureError> {
+            self.0.borrow_mut().push(spec.clone());
+            Ok(())
+        }
+        fn run_async_to_log<'a>(
+            &'a self,
+            spec: &'a CommandSpec,
+            _: &'a Path,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), InfrastructureError>> + 'a>> {
+            Box::pin(async move {
+                self.run(spec)?;
+                // Leave setup pending long enough for the injected interrupt.
+                tokio::task::yield_now().await;
+                Ok(())
+            })
+        }
+        fn capture_stdout(&self, _: &CommandSpec) -> Result<Vec<u8>, InfrastructureError> {
+            Ok(b"test-docker".to_vec())
+        }
+        fn capture_output(
+            &self,
+            _: &CommandSpec,
+        ) -> Result<crate::infrastructure::process::CapturedOutput, InfrastructureError> {
+            Ok(crate::infrastructure::process::CapturedOutput::new(
+                b"test-docker".to_vec(),
+                Vec::new(),
+            ))
+        }
+        fn run_to_log(&self, spec: &CommandSpec, _: &Path) -> Result<(), InfrastructureError> {
+            self.run(spec)
+        }
+    }
+
+    #[tokio::test]
+    async fn interruption_finishes_cleanup_and_stops_the_entire_matrix_without_blessing() {
+        use crate::infrastructure::config::{ConfigBootstrap, ConfigRequirements, Environment};
+        let directory = tempfile::tempdir().expect("temporary root");
+        let config = AppConfig::load(
+            ConfigBootstrap::load(&Environment::new(), directory.path()).expect("bootstrap"),
+            ConfigRequirements::StandaloneRuntime,
+        )
+        .expect("config");
+        let runtime = RuntimeContext::new(config, MatrixRunner::default());
+        let artifacts = directory.path().join("results");
+        let baselines = directory.path().join("baselines");
+        fs::create_dir(&baselines).expect("baseline directory");
+        let sentinel = baselines.join("existing.yml");
+        fs::write(&sentinel, "unchanged").expect("existing baseline");
+        let result = runtime
+            .execute_conformance_with_interrupt(
+                ConformanceAction::Run {
+                    lanes: vec![SemanticLane::FixtureDirect],
+                    standalone: true,
+                    client_eras: vec![ConformanceServerEra::Modern],
+                    client_versions: vec![DEFAULT_MCP_SPEC_VERSION.to_owned()],
+                    server_eras: vec![ConformanceServerEra::Modern, ConformanceServerEra::Legacy],
+                    results_dir: Some(artifacts.clone()),
+                    baseline_dir: Some(baselines.clone()),
+                    bless: true,
+                    output_dir: Some(directory.path().join("reports")),
+                },
+                std::future::ready(()),
+            )
+            .await;
+        assert!(result.is_err(), "interrupt must fail the run");
+        assert!(
+            artifacts
+                .join("conformance/2026-07-28/modern/setup.log")
+                .is_file()
+        );
+        assert!(
+            !artifacts.join("conformance/2026-07-28/legacy").exists(),
+            "next matrix entry started after cancellation"
+        );
+        assert_eq!(fs::read_to_string(sentinel).expect("baseline"), "unchanged");
+        assert_eq!(fs::read_dir(baselines).expect("baselines").count(), 1);
+        let commands = runtime.runner.0.borrow();
+        let build = commands
+            .iter()
+            .position(|command| command.arguments().contains(&OsString::from("build")))
+            .expect("fixture setup started");
+        assert!(
+            commands[build + 1..]
+                .iter()
+                .any(|command| command.arguments().contains(&OsString::from("down"))),
+            "fixture cleanup was skipped"
+        );
+    }
 
     fn conformance_result(scenario: &str, status: CheckStatus) -> ConformanceScenarioResult {
         ConformanceScenarioResult {
