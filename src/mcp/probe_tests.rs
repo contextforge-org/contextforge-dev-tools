@@ -83,6 +83,7 @@ fn config() -> ProbeConfig {
         retry_interval: Duration::ZERO,
         request_timeout: Duration::from_secs(1),
         protocol_version: "2025-11-25".to_owned(),
+        tool_names: Vec::new(),
         output_style: OutputStyle::plain(),
     }
 }
@@ -323,6 +324,37 @@ async fn stateless_happy_path_uses_discovery_request_metadata_and_no_session() {
     assert!(output.contains("PASS server_discover status=200 lifecycle=stateless"));
     assert!(!output.contains("PASS initialize"));
     assert!(!output.contains("PASS initialized"));
+}
+
+#[tokio::test]
+async fn mocked_catalog_bypasses_unsupported_fanout_and_calls_a_known_tool() {
+    let transport = FakeTransport::new([
+        ProbeResponse::new(401, None, None),
+        discover_success(),
+        call_success(),
+    ]);
+    let mut configured = config();
+    configured.protocol_version = "2026-07-28".to_owned();
+    configured.tool_names = vec!["test_simple_text".to_owned()];
+    let mut output = Vec::new();
+
+    run_probe(&transport, &configured, &mut output)
+        .await
+        .expect("mocked catalog probe should succeed without tools/list");
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.payload["method"] != "tools/list")
+    );
+    assert_eq!(requests[2].payload["method"], "tools/call");
+    assert_eq!(requests[2].payload["params"]["name"], "test_simple_text");
+    assert_eq!(requests[2].payload["params"]["arguments"], json!({}));
+    let output = String::from_utf8(output).expect("probe output should be UTF-8");
+    assert!(output.contains("PASS tools_catalog count=1 source=mocked-redis"));
+    assert!(output.contains("PASS tool_call tool=test_simple_text"));
 }
 
 #[tokio::test]

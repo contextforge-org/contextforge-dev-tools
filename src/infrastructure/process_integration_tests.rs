@@ -3,7 +3,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use cf_integration::infrastructure::InfrastructureError;
-#[cfg(unix)]
 use cf_integration::infrastructure::process::LoggingProcessRunner;
 use cf_integration::infrastructure::process::{
     CapturedOutput, CommandSpec, ProcessRunner, SystemProcessRunner,
@@ -24,6 +23,53 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::PermissionsExt;
 
 fn assert_runner_interface(_runner: &dyn ProcessRunner) {}
+
+#[test]
+fn captured_data_is_returned_without_becoming_diagnostic_output() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let log = directory.path().join("setup.log");
+    let runner = LoggingProcessRunner::new(&FakeProcessRunner, &log);
+    let command = CommandSpec::new("helper");
+    assert_eq!(
+        runner.capture_stdout(&command).expect("stdout"),
+        b"synthetic stdout"
+    );
+    assert_eq!(
+        runner.capture_output(&command).expect("output").stdout(),
+        b"synthetic stdout"
+    );
+    let contents = fs::read_to_string(log).expect("diagnostic log");
+    assert!(!contents.contains("synthetic stdout"));
+    assert_eq!(contents, "synthetic stderrsynthetic stderr");
+}
+
+#[cfg(unix)]
+#[test]
+fn captured_credentials_stay_private_and_failed_commands_keep_diagnostics() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    for exit_code in [0, 7] {
+        let log = directory.path().join(format!("{exit_code}.log"));
+        let runner = LoggingProcessRunner::new(&SystemProcessRunner, &log);
+        let output = runner.capture_stdout(&CommandSpec::new("/bin/sh").args([
+            "-c",
+            &format!("printf 'private-token'; printf 'helper diagnostic' >&2; exit {exit_code}"),
+        ]));
+        if exit_code == 0 {
+            assert_eq!(output.expect("successful capture"), b"private-token");
+        } else {
+            assert!(
+                !output
+                    .expect_err("failed helper")
+                    .to_string()
+                    .contains("private-token")
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(log).expect("diagnostic log"),
+            "helper diagnostic"
+        );
+    }
+}
 
 struct FakeProcessRunner;
 
@@ -62,7 +108,7 @@ async fn logging_runner_hides_ordinary_output_in_an_aggregate_log() {
     let runner = LoggingProcessRunner::new(&system, &log_path);
 
     runner
-        .run_async(&CommandSpec::new(script))
+        .run_async(&CommandSpec::new("/bin/sh").arg(script))
         .await
         .expect("logged child should succeed");
 

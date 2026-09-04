@@ -144,15 +144,13 @@ pub(crate) struct ConfigBootstrap {
 
 /// Filesystem resources required by a resolved action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ConfigRequirements {
-    runtime: bool,
-}
-
-impl ConfigRequirements {
-    /// Configuration for report and token operations that must not write files.
-    pub(crate) const READ_ONLY: Self = Self { runtime: false };
-    /// Configuration for operations backed by Compose or runtime scripts.
-    pub(crate) const RUNTIME: Self = Self { runtime: true };
+pub(crate) enum ConfigRequirements {
+    /// Resolve configuration without creating files.
+    ReadOnly,
+    /// Materialize runtime assets and control-plane secrets.
+    Runtime,
+    /// Materialize runtime assets without control-plane secrets.
+    StandaloneRuntime,
 }
 
 impl fmt::Debug for SourcedValue {
@@ -271,7 +269,7 @@ impl AppConfig {
                 root.join(".integration").into_os_string(),
             ),
         );
-        let asset_root = if requirements.runtime {
+        let asset_root = if requirements != ConfigRequirements::ReadOnly {
             if contains_runtime_assets(&root) {
                 root.clone()
             } else if bootstrap.root_overridden {
@@ -325,7 +323,7 @@ impl AppConfig {
             "CF_CONTROLPLANE_PROJECT",
             OsString::from("cf-controlplane-only"),
         );
-        let local_secrets = if requirements.runtime
+        let local_secrets = if requirements == ConfigRequirements::Runtime
             && (first_nonempty(&environment, "JWT_SECRET_KEY").is_none()
                 || first_nonempty(&environment, "AUTH_ENCRYPTION_SECRET").is_none())
         {
@@ -337,7 +335,7 @@ impl AppConfig {
         };
         let jwt_secret_key = match first_nonempty(&environment, "JWT_SECRET_KEY") {
             Some(value) => value.clone(),
-            None if !requirements.runtime => default_value(""),
+            None if requirements != ConfigRequirements::Runtime => default_value(""),
             None => default_value(
                 &local_secrets
                     .as_ref()
@@ -347,7 +345,7 @@ impl AppConfig {
         };
         let auth_encryption_secret = match first_nonempty(&environment, "AUTH_ENCRYPTION_SECRET") {
             Some(value) => value.clone(),
-            None if !requirements.runtime => default_value(""),
+            None if requirements != ConfigRequirements::Runtime => default_value(""),
             None => default_value(
                 &local_secrets
                     .as_ref()
@@ -927,7 +925,7 @@ mod tests {
 
     fn load_app_config(root: &Path, process: &Environment) -> AppConfig {
         let bootstrap = ConfigBootstrap::load(process, root).expect("bootstrap should load");
-        AppConfig::load(bootstrap, ConfigRequirements::RUNTIME)
+        AppConfig::load(bootstrap, ConfigRequirements::Runtime)
             .expect("application config should load")
     }
 
@@ -941,11 +939,25 @@ mod tests {
         let outside = tempfile::tempdir().expect("temporary directory should be created");
         let bootstrap = ConfigBootstrap::load(&Environment::new(), outside.path())
             .expect("bootstrap should load");
-        let config = AppConfig::load(bootstrap, ConfigRequirements::READ_ONLY)
+        let config = AppConfig::load(bootstrap, ConfigRequirements::ReadOnly)
             .expect("read-only config should resolve");
 
         assert_eq!(config.root(), outside.path());
         assert!(!outside.path().join(".integration").exists());
+    }
+
+    #[test]
+    fn standalone_config_materializes_assets_without_controlplane_secrets() {
+        let outside = tempfile::tempdir().expect("temporary directory");
+        let bootstrap =
+            ConfigBootstrap::load(&Environment::new(), outside.path()).expect("bootstrap");
+        let config = AppConfig::load(bootstrap, ConfigRequirements::StandaloneRuntime)
+            .expect("standalone runtime config");
+        assert!(contains_runtime_assets(config.asset_root()));
+        assert!(config.jwt_secret_key().value.is_empty());
+        assert!(config.auth_encryption_secret().value.is_empty());
+        assert!(!config.integration_dir().join(LOCAL_SECRETS_FILE).exists());
+        assert!(!config.controlplane_dir().exists());
     }
 
     #[test]
@@ -1263,7 +1275,7 @@ mod tests {
         let bootstrap =
             ConfigBootstrap::load(&process, root.path()).expect("bootstrap should load");
 
-        let error = AppConfig::load(bootstrap, ConfigRequirements::RUNTIME)
+        let error = AppConfig::load(bootstrap, ConfigRequirements::Runtime)
             .expect_err("an unknown pull policy must fail");
 
         assert_eq!(

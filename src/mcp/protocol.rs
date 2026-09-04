@@ -202,6 +202,7 @@ fn flush_sse_event(event_data: &mut String, has_data: &mut bool, message: &mut O
 #[must_use]
 pub(crate) fn tool_call_args(tool_name: &str) -> Option<Value> {
     match tool_name {
+        "test_simple_text" => Some(json!({})),
         "echo" | "fast_time_echo" | "fast-time-echo" => Some(json!({"message": "cf-integration"})),
         "get_system_time"
         | "get-system-time"

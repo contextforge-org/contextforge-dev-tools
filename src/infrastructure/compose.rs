@@ -15,6 +15,7 @@ const LEGACY_FAST_TIME_IMAGE_PREFIXES: &[&str] = &[
 
 /// Compose service keys and their public container display names.
 pub(crate) const SERVICE_DISPLAY_NAMES: &[(&str, &str)] = &[
+    ("auth_keygen", "cf-dataplane-auth-keygen"),
     ("gateway", "cf-controlplane"),
     ("migration", "cf-migration"),
     ("register_fast_time", "cf-register-fast-time"),
@@ -24,6 +25,7 @@ pub(crate) const SERVICE_DISPLAY_NAMES: &[(&str, &str)] = &[
     ("pgbouncer", "cf-pgbouncer"),
     ("redis", "cf-redis"),
     ("dataplane", "cf-dataplane"),
+    ("config_writer", "cf-dataplane-config-writer"),
     ("locust", "cf-locust"),
     ("locust_worker", "cf-locust-worker"),
     ("locust_token", "cf-locust-token"),
@@ -93,6 +95,38 @@ impl ComposeProject {
             repository_root
                 .join("docker")
                 .join("docker-compose.cf-integration.yaml"),
+            repository_root
+                .join("docker")
+                .join("docker-compose.cf-dataplane-config.yaml"),
+        ];
+        if build_dataplane {
+            files.push(
+                repository_root
+                    .join("docker")
+                    .join("docker-compose.cf-dataplane-build.yaml"),
+            );
+        }
+        Self {
+            project_name,
+            files,
+            profiles: Vec::new(),
+        }
+    }
+
+    /// Builds the minimal external-dataplane project used by standalone workflows.
+    #[must_use]
+    pub(crate) fn standalone_dataplane(
+        repository_root: &Path,
+        project_name: OsString,
+        build_dataplane: bool,
+    ) -> Self {
+        let mut files = vec![
+            repository_root
+                .join("docker")
+                .join("docker-compose.cf-dataplane-standalone.yaml"),
+            repository_root
+                .join("docker")
+                .join("docker-compose.cf-dataplane-config.yaml"),
         ];
         if build_dataplane {
             files.push(
@@ -179,6 +213,18 @@ impl ComposeProject {
         self
     }
 
+    /// Applies conformance-only settings to the control-plane service.
+    #[must_use]
+    pub(crate) fn with_controlplane_conformance_overlay(mut self, repository_root: &Path) -> Self {
+        let overlay = repository_root
+            .join("docker")
+            .join("docker-compose.cf-conformance-controlplane.yaml");
+        if !self.files.contains(&overlay) {
+            self.files.push(overlay);
+        }
+        self
+    }
+
     /// Applies the control-plane runtime settings used by conformance runs.
     #[must_use]
     pub(crate) fn with_conformance_runtime(mut self, repository_root: &Path) -> Self {
@@ -191,7 +237,7 @@ impl ComposeProject {
         self
     }
 
-    /// Enables the local ClickStack instance and OTLP exporters for routed services.
+    /// Enables OTLP exporters for routed services; ClickStack runs independently.
     #[must_use]
     pub(crate) fn with_observability(
         mut self,
@@ -205,12 +251,19 @@ impl ComposeProject {
             self.files.push(controlplane);
         }
         if include_dataplane {
-            let overlay = repository_root
-                .join("docker")
-                .join("docker-compose.cf-dataplane-observability.yaml");
-            if !self.files.contains(&overlay) {
-                self.files.push(overlay);
-            }
+            self = self.with_dataplane_observability(repository_root);
+        }
+        self
+    }
+
+    /// Enables only the external dataplane OTLP exporters.
+    #[must_use]
+    pub(crate) fn with_dataplane_observability(mut self, repository_root: &Path) -> Self {
+        let overlay = repository_root
+            .join("docker")
+            .join("docker-compose.cf-dataplane-observability.yaml");
+        if !self.files.contains(&overlay) {
+            self.files.push(overlay);
         }
         self
     }

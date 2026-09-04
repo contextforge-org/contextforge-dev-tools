@@ -20,10 +20,10 @@ mod runtime;
 use app::resolve_action;
 use cli::Cli;
 use error::AppFailure;
-use infrastructure::config::{AppConfig, ConfigBootstrap, ConfigRequirements, Environment};
+use infrastructure::config::{AppConfig, ConfigBootstrap, Environment};
 use infrastructure::process::SystemProcessRunner;
 pub(crate) use output::{Activity, OutputStyle, TestStatus};
-use runtime::RuntimeDispatcher;
+use runtime::RuntimeContext;
 
 /// Runs the CLI using the current process arguments and environment.
 pub async fn run() -> ExitCode {
@@ -77,11 +77,7 @@ pub async fn run() -> ExitCode {
         Ok(action) => action,
         Err(error) => return report_failure(AppFailure::from(error)),
     };
-    let requirements = if action.requires_runtime_assets() {
-        ConfigRequirements::RUNTIME
-    } else {
-        ConfigRequirements::READ_ONLY
-    };
+    let requirements = action.config_requirements();
     eprintln!("{}", OutputStyle::stderr().info(&action.startup_summary()));
     let activity = action
         .uses_global_activity()
@@ -95,7 +91,7 @@ pub async fn run() -> ExitCode {
             return report_failure(AppFailure::from(error));
         }
     };
-    let runtime = RuntimeDispatcher::new(config, SystemProcessRunner);
+    let runtime = RuntimeContext::new(config, SystemProcessRunner);
     let result = runtime.execute(action).await;
     if let Some(activity) = activity {
         activity.finish(result.is_ok());

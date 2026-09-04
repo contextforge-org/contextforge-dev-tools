@@ -47,6 +47,11 @@ pub(crate) struct ProbeConfig {
     pub(crate) request_timeout: Duration,
     /// MCP protocol revision requested during initialization.
     pub(crate) protocol_version: String,
+    /// Tool names supplied by standalone mocked configuration.
+    ///
+    /// A nonempty value bypasses `tools/list`, which the external dataplane
+    /// deliberately does not implement, while still exercising routed calls.
+    pub(crate) tool_names: Vec<String>,
     /// Terminal-aware styling for human-readable probe results.
     pub(crate) output_style: OutputStyle,
 }
@@ -63,6 +68,7 @@ impl fmt::Debug for ProbeConfig {
             .field("retry_interval", &self.retry_interval)
             .field("request_timeout", &self.request_timeout)
             .field("protocol_version", &self.protocol_version)
+            .field("tool_name_count", &self.tool_names.len())
             .finish()
     }
 }
@@ -337,53 +343,29 @@ pub(crate) async fn run_probe<T: ProbeTransport, W: Write>(
         "failed to write initialized notification result",
     )?;
 
-    let tools_response = post_with_timeout(
-        transport,
-        ProbeRequest {
-            url: url.clone(),
-            payload: jsonrpc_with_id("tools/list", Some(json!({})), json!(TOOLS_LIST_ID)),
-            bearer_token: Some(config.bearer_token.clone()),
-            session_id: Some(session_id.clone()),
-            protocol_version: Some(negotiated_version.clone()),
-        },
-        config.request_timeout,
-        "tools_list",
-        config.mode,
-    )
-    .await?;
-    let tools_result = result_of("tools_list", &tools_response, TOOLS_LIST_ID)?;
-    let tools = tools_result
-        .get("tools")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            anyhow::anyhow!("tools_list=FAIL unexpected response: missing tools array")
-        })?;
-    if tools.is_empty() {
-        bail!("tools_list=FAIL no tools returned");
-    }
-    let mut tool_names = Vec::with_capacity(tools.len());
-    for tool in tools {
-        let Some(name) = tool
-            .as_object()
-            .and_then(|tool| tool.get("name"))
-            .and_then(Value::as_str)
-            .filter(|name| !name.trim().is_empty())
-        else {
-            bail!("tools_list=FAIL every tool must have a nonempty name");
-        };
-        tool_names.push(name);
-    }
-    write_probe_result(
-        output,
-        config,
-        TestStatus::Pass,
-        "tools_list",
-        &format!("count={}", tool_names.len()),
-        "failed to write tools list result",
-    )?;
+    let tool_names = if config.tool_names.is_empty() {
+        let tools_response = post_with_timeout(
+            transport,
+            ProbeRequest {
+                url: url.clone(),
+                payload: jsonrpc_with_id("tools/list", Some(json!({})), json!(TOOLS_LIST_ID)),
+                bearer_token: Some(config.bearer_token.clone()),
+                session_id: Some(session_id.clone()),
+                protocol_version: Some(negotiated_version.clone()),
+            },
+            config.request_timeout,
+            "tools_list",
+            config.mode,
+        )
+        .await?;
+        listed_tool_names(&tools_response, output, config)?
+    } else {
+        write_mocked_tool_catalog(output, config)?;
+        config.tool_names.clone()
+    };
     let callable = tool_names
         .iter()
-        .find_map(|name| tool_call_args(name).map(|arguments| (*name, arguments)));
+        .find_map(|name| tool_call_args(name).map(|arguments| (name.as_str(), arguments)));
     let Some((tool_name, arguments)) = callable else {
         write_probe_result(
             output,
@@ -555,56 +537,34 @@ async fn run_stateless_probe<T: ProbeTransport, W: Write>(
         "failed to write server discovery result",
     )?;
 
-    let tools_response = post_with_timeout(
-        transport,
-        ProbeRequest {
-            url: url.clone(),
-            payload: stateless_jsonrpc_with_id(
-                "tools/list",
-                Some(json!({})),
-                json!(TOOLS_LIST_ID),
-                &config.protocol_version,
-            ),
-            bearer_token: Some(config.bearer_token.clone()),
-            session_id: None,
-            protocol_version: Some(config.protocol_version.clone()),
-        },
-        config.request_timeout,
-        "tools_list",
-        config.mode,
-    )
-    .await?;
-    let tools_result = result_of("tools_list", &tools_response, TOOLS_LIST_ID)?;
-    let tools = tools_result
-        .get("tools")
-        .and_then(Value::as_array)
-        .ok_or_else(|| anyhow!("tools_list=FAIL unexpected response: missing tools array"))?;
-    if tools.is_empty() {
-        bail!("tools_list=FAIL no tools returned");
-    }
-    let mut tool_names = Vec::with_capacity(tools.len());
-    for tool in tools {
-        let Some(name) = tool
-            .as_object()
-            .and_then(|tool| tool.get("name"))
-            .and_then(Value::as_str)
-            .filter(|name| !name.trim().is_empty())
-        else {
-            bail!("tools_list=FAIL every tool must have a nonempty name");
-        };
-        tool_names.push(name);
-    }
-    write_probe_result(
-        output,
-        config,
-        TestStatus::Pass,
-        "tools_list",
-        &format!("count={}", tool_names.len()),
-        "failed to write tools list result",
-    )?;
+    let tool_names = if config.tool_names.is_empty() {
+        let tools_response = post_with_timeout(
+            transport,
+            ProbeRequest {
+                url: url.clone(),
+                payload: stateless_jsonrpc_with_id(
+                    "tools/list",
+                    Some(json!({})),
+                    json!(TOOLS_LIST_ID),
+                    &config.protocol_version,
+                ),
+                bearer_token: Some(config.bearer_token.clone()),
+                session_id: None,
+                protocol_version: Some(config.protocol_version.clone()),
+            },
+            config.request_timeout,
+            "tools_list",
+            config.mode,
+        )
+        .await?;
+        listed_tool_names(&tools_response, output, config)?
+    } else {
+        write_mocked_tool_catalog(output, config)?;
+        config.tool_names.clone()
+    };
     let callable = tool_names
         .iter()
-        .find_map(|name| tool_call_args(name).map(|arguments| (*name, arguments)));
+        .find_map(|name| tool_call_args(name).map(|arguments| (name.as_str(), arguments)));
     let Some((tool_name, arguments)) = callable else {
         write_probe_result(
             output,
@@ -654,6 +614,52 @@ async fn run_stateless_probe<T: ProbeTransport, W: Write>(
         "failed to write tool call result",
     )?;
     Ok(())
+}
+
+fn listed_tool_names<W: Write>(
+    response: &ProbeResponse,
+    output: &mut W,
+    config: &ProbeConfig,
+) -> Result<Vec<String>> {
+    let tools_result = result_of("tools_list", response, TOOLS_LIST_ID)?;
+    let tools = tools_result
+        .get("tools")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("tools_list=FAIL unexpected response: missing tools array"))?;
+    if tools.is_empty() {
+        bail!("tools_list=FAIL no tools returned");
+    }
+    let tool_names = tools
+        .iter()
+        .map(|tool| {
+            tool.as_object()
+                .and_then(|tool| tool.get("name"))
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow!("tools_list=FAIL every tool must have a nonempty name"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    write_probe_result(
+        output,
+        config,
+        TestStatus::Pass,
+        "tools_list",
+        &format!("count={}", tool_names.len()),
+        "failed to write tools list result",
+    )?;
+    Ok(tool_names)
+}
+
+fn write_mocked_tool_catalog<W: Write>(output: &mut W, config: &ProbeConfig) -> Result<()> {
+    write_probe_result(
+        output,
+        config,
+        TestStatus::Pass,
+        "tools_catalog",
+        &format!("count={} source=mocked-redis", config.tool_names.len()),
+        "failed to write mocked tool catalog result",
+    )
 }
 
 async fn post_with_timeout<T: ProbeTransport>(

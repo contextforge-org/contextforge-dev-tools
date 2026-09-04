@@ -21,65 +21,23 @@ fn workspace_root() -> PathBuf {
 }
 
 #[test]
-fn locust_adapter_and_compose_overlay_do_not_reference_the_removed_helper() {
-    let root = workspace_root();
-    let adapter = fs::read_to_string(root.join("scripts/locustfile_mcp.py"))
-        .expect("Locust adapter should be readable");
-    let compose = fs::read_to_string(root.join("docker/docker-compose.cf-integration.yaml"))
-        .expect("Compose overlay should be readable");
+fn standalone_config_writer_has_valid_javascript_syntax() {
+    for script in [
+        "conformance/write_dataplane_config.mjs",
+        "standalone/generate_auth_key.mjs",
+    ] {
+        let output = Command::new("node")
+            .arg("--check")
+            .arg(scripts_dir().join(script))
+            .output()
+            .expect("Node standalone-helper syntax check should run");
 
-    assert!(!adapter.contains("mcp_http"));
-    assert!(adapter.contains("allow_redirects=False"));
-    assert!(adapter.contains("timeout=REQUEST_TIMEOUT_SECONDS"));
-    assert!(adapter.contains("self.client.trust_env = False"));
-    assert!(!compose.contains("mcp_http.py"));
-    assert!(
-        !compose.contains("JWT_SECRET_KEY="),
-        "the load container receives a bearer token and must not receive the signing key"
-    );
-    assert!(compose.contains("MCP_PROTOCOL_VERSION=${MCP_PROTOCOL_VERSION:-2026-07-28}"));
-    assert!(compose.contains("standalone_load_backend:"));
-    assert!(compose.contains("profiles: [\"standalone-load\"]"));
-    assert!(compose.contains("MCP_CONFORMANCE_SERVER_ERA: modern"));
-    assert!(
-        compose.contains("LOCUST_REQUEST_TIMEOUT_SECONDS=${LOCUST_REQUEST_TIMEOUT_SECONDS:-60}")
-    );
-}
-
-#[test]
-fn standalone_config_helper_uses_token_subject_and_selected_protocol() {
-    let code = r#"
-import base64
-import json
-import prepare_standalone_config as helper
-
-claims = base64.urlsafe_b64encode(json.dumps({"sub": "user-123"}).encode()).decode().rstrip("=")
-assert helper.token_subject(f"header.{claims}.signature") == "user-123"
-
-prepared = helper.prepare_config("server-123", "2026-07-28")
-backend = prepared["virtual_hosts"]["server-123"]["backends"]["standalone-load"]
-assert backend["url"] == "http://mcp_conformance_server:3000/mcp"
-assert backend["mcp_protocol_version"] == "2026-07-28"
-assert backend["tool_name_aliases"] == [{"downstream_prefixed_name": "test_simple_text", "upstream_name": "test_simple_text"}]
-assert backend["tool_schemas"] == {"test_simple_text": {}}
-virtual_host = prepared["virtual_hosts"]["server-123"]
-assert virtual_host["tools"] == {"test_simple_text": {"backend_name": "standalone-load", "upstream_name": "test_simple_text"}}
-assert virtual_host["resources"] == {}
-assert virtual_host["resource_templates"] == {}
-assert virtual_host["prompts"] == {}
-"#;
-    let output = Command::new(python())
-        .arg("-c")
-        .arg(code)
-        .env("PYTHONPATH", scripts_dir())
-        .output()
-        .expect("Python helper test should run");
-
-    assert!(
-        output.status.success(),
-        "standalone config helper failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+        assert!(
+            output.status.success(),
+            "standalone helper syntax check failed for {script}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 fn locust_stub() -> TempDir {
@@ -111,7 +69,7 @@ def task(_weight):
 }
 
 #[test]
-fn locust_adapter_imports_without_the_removed_helper_and_handles_mcp_bodies() {
+fn locust_adapter_imports_and_handles_mcp_bodies() {
     let stub = locust_stub();
     let python_path = std::env::join_paths([stub.path(), scripts_dir().as_path()])
         .expect("Python path should join");
@@ -304,7 +262,7 @@ adapter.validate_result("server/discover", {
 }
 
 #[test]
-fn locust_adapter_validates_and_applies_timeout_to_every_request() {
+fn locust_adapter_applies_timeouts_and_disables_redirects_and_environment_proxies() {
     let stub = locust_stub();
     let python_path = std::env::join_paths([stub.path(), scripts_dir().as_path()])
         .expect("Python path should join");
@@ -340,20 +298,25 @@ class FakeClient:
     def __init__(self):
         self.timeouts = []
 
-    def post(self, _path, *, data, timeout, **_kwargs):
+    def post(self, _path, *, data, timeout, allow_redirects, **_kwargs):
+        assert allow_redirects is False
         self.timeouts.append(("POST", timeout))
         payload = json.loads(data)
         if "id" in payload:
             return FakeResponse({"jsonrpc": "2.0", "id": payload["id"], "result": {}})
         return FakeResponse(status=202)
 
-    def delete(self, _path, *, timeout, **_kwargs):
+    def delete(self, _path, *, timeout, allow_redirects, **_kwargs):
+        assert allow_redirects is False
         self.timeouts.append(("DELETE", timeout))
         return FakeResponse(status=204)
 
 user = adapter.MCPGatewayUser.__new__(adapter.MCPGatewayUser)
 user._session_id = "session"
 user.client = FakeClient()
+user.on_start()
+assert user.client.trust_env is False
+user.client.timeouts.clear()
 assert user._mcp_request("ping", None, name="ping") == {}
 user._mcp_notification("notifications/initialized", None, name="initialized")
 user.on_stop()
@@ -590,6 +553,140 @@ assert response.successes == 1 and not response.failures
         output.status.success(),
         "Python adapter backend identity check failed:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn standalone_fixture_catalog_preserves_discovered_routes_and_schemas() {
+    let script = r#"
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const scriptPath = process.argv[1];
+process.argv[1] = undefined;
+const { fixtureCatalog } = await import(pathToFileURL(scriptPath).href);
+const schema = { type: 'object', properties: { value: { type: 'string', 'x-mcp-header': 'Value' } } };
+const calls = [];
+globalThis.fetch = async (_, options) => {
+    const request = JSON.parse(options.body);
+    calls.push(request);
+    assert.equal(request.params._meta['io.modelcontextprotocol/protocolVersion'], '2026-07-28');
+    assert.equal(options.headers['mcp-method'], request.method);
+    let result;
+    switch (request.method) {
+        case 'server/discover': result = {}; break;
+        case 'tools/list': result = request.params.cursor !== undefined
+            ? { tools: [{ name: 'new_diagnostic_tool', inputSchema: schema }], nextCursor: null }
+            : { tools: [{ name: 'first', inputSchema: {} }], nextCursor: '' }; break;
+        case 'resources/list': result = { resources: [{ uri: 'test://new-resource' }] }; break;
+        case 'resources/templates/list': result = { resourceTemplates: [{ uriTemplate: 'test://new/{id}' }] }; break;
+        case 'prompts/list': result = { prompts: [{ name: 'new_prompt' }] }; break;
+        default: assert.fail(request.method);
+    }
+    const message = JSON.stringify({ jsonrpc: '2.0', id: request.id, result });
+    return new Response(request.params.cursor !== undefined ? `event: message\ndata: ${message}\n\n` : message,
+        { headers: { 'content-type': request.params.cursor !== undefined ? 'text/event-stream' : 'application/json' } });
+};
+const catalog = await fixtureCatalog('http://fixture/mcp', '2026-07-28');
+assert.deepEqual(catalog.tools, ['first', 'new_diagnostic_tool']);
+assert.deepEqual(catalog.toolSchemas.new_diagnostic_tool, schema);
+assert.deepEqual(catalog.resources, ['test://new-resource']);
+assert.deepEqual(catalog.resourceTemplates, ['test://new/{id}']);
+assert.deepEqual(catalog.prompts, ['new_prompt']);
+assert.equal(calls.filter((r) => r.method === 'tools/list').length, 2);
+
+globalThis.fetch = async (_, options) => {
+    const request = JSON.parse(options.body);
+    return Response.json({ id: request.id, error: { code: -32603, message: 'fixture failed' } });
+};
+await assert.rejects(fixtureCatalog('http://fixture/mcp', '2026-07-28'), /successful result/);
+
+globalThis.fetch = async (_, options) => {
+    const request = JSON.parse(options.body);
+    return Response.json({ id: request.id, result: request.method === 'server/discover' ? {} : {
+        tools: [{ name: 'first', inputSchema: {} }], nextCursor: 'repeated',
+    }});
+};
+await assert.rejects(fixtureCatalog('http://fixture/mcp', '2026-07-28'), /repeated cursor/);
+
+const legacyMethods = [];
+globalThis.fetch = async (_, options) => {
+    if (options.method === 'DELETE') {
+        assert.equal(options.headers['mcp-session-id'], 'legacy-session');
+        legacyMethods.push('DELETE');
+        return new Response(null, { status: 204 });
+    }
+    const request = JSON.parse(options.body);
+    legacyMethods.push(request.method);
+    assert.equal(options.headers['mcp-method'], undefined);
+    assert.equal(request.params._meta, undefined);
+    let result;
+    if (request.method === 'initialize') {
+        assert.equal(options.headers['mcp-protocol-version'], undefined);
+        assert.equal(request.params.protocolVersion, '2025-11-25');
+        result = { protocolVersion: '2025-11-25' };
+    } else {
+        assert.equal(options.headers['mcp-protocol-version'], '2025-11-25');
+        assert.equal(options.headers['mcp-session-id'], 'legacy-session');
+        if (request.method === 'notifications/initialized') return new Response(null, { status: 202 });
+        result = request.method === 'tools/list' ? { tools: [{ name: 'legacy_tool', inputSchema: schema }] }
+            : request.method === 'resources/list' ? { resources: [] }
+            : request.method === 'resources/templates/list' ? { resourceTemplates: [] }
+            : { prompts: [] };
+    }
+    const message = JSON.stringify({ id: request.id, result });
+    return new Response(`event: message\ndata:\n\nevent: message\ndata: ${message}\n\n`, {
+        headers: { 'content-type': 'text/event-stream', 'mcp-session-id': 'legacy-session' },
+    });
+};
+const legacyCatalog = await fixtureCatalog('http://fixture/mcp', '2025-11-25');
+assert.deepEqual(legacyCatalog.tools, ['legacy_tool']);
+assert.deepEqual(legacyCatalog.toolSchemas.legacy_tool, schema);
+assert.deepEqual(legacyMethods, ['initialize', 'notifications/initialized', 'tools/list',
+    'resources/list', 'resources/templates/list', 'prompts/list', 'DELETE']);
+"#;
+    let output = Command::new("node")
+        .args(["--input-type=module", "--eval", script])
+        .arg(scripts_dir().join("conformance/write_dataplane_config.mjs"))
+        .output()
+        .expect("Node fixture catalog test runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn client_config_writer_publishes_a_schema_for_each_scenario_tool() {
+    let script = r#"
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const scriptPath = process.argv[1];
+process.argv = ['node', scriptPath, 'client', 'scenario-server', 'http://fixture/mcp',
+    '2026-07-28', '["metadata_probe","add_numbers"]'];
+process.env.MCP_CONFORMANCE_TOKEN = `header.${Buffer.from('{"sub":"scenario-user"}').toString('base64url')}.signature`;
+let published = false;
+globalThis.fetch = async (url, options) => {
+    assert.ok(url.endsWith('/userconfigs/scenario-user'));
+    assert.equal(options.method, 'POST');
+    const host = JSON.parse(options.body).virtual_hosts['scenario-server'];
+    assert.deepEqual(Object.keys(host.tools), ['metadata_probe', 'add_numbers']);
+    assert.deepEqual(host.backends['conformance-backend'].tool_schemas, { metadata_probe: {}, add_numbers: {} });
+    published = true;
+    return new Response(null, { status: 202 });
+};
+await import(pathToFileURL(scriptPath).href);
+assert.ok(published);
+"#;
+    let output = Command::new("node")
+        .args(["--input-type=module", "--eval", script])
+        .arg(scripts_dir().join("conformance/write_dataplane_config.mjs"))
+        .output()
+        .expect("Node config writer test runs");
+    assert!(
+        output.status.success(),
+        "{}",
         String::from_utf8_lossy(&output.stderr)
     );
 }

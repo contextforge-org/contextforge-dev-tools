@@ -1,0 +1,120 @@
+# Minimal external-dataplane stack for standalone workflows. The control plane
+# is deliberately absent: the dataplane issues a test token from an ephemeral
+# RSA key and serializes the mocked per-user routing snapshot into Redis.
+
+services:
+  auth_keygen:
+    image: node:22-bookworm-slim
+    labels:
+      name: cf-dataplane-auth-keygen
+    restart: "no"
+    network_mode: none
+    volumes:
+      - standalone_auth:/keys
+      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/standalone/generate_auth_key.mjs:/opt/contextforge-integration/generate_auth_key.mjs:ro
+    command:
+      - node
+      - /opt/contextforge-integration/generate_auth_key.mjs
+      - /keys/jwt.key
+
+  redis:
+    image: redis:8.2.8-alpine3.22
+    labels:
+      name: cf-redis
+    restart: "no"
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    expose:
+      - "6379"
+    networks:
+      - mcpnet
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  dataplane:
+    image: ${CF_DATAPLANE_IMAGE:?Set CF_DATAPLANE_IMAGE to the cf-dataplane image tag}
+    pull_policy: ${CF_DATAPLANE_PULL_POLICY:-always}
+    platform: ${CF_DATAPLANE_PLATFORM:?Set CF_DATAPLANE_PLATFORM to the cf-dataplane image platform}
+    labels:
+      name: cf-dataplane
+    restart: "no"
+    networks:
+      mcpnet:
+        aliases:
+          - cf-dataplane
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    expose:
+      - "4445"
+    command:
+      - --token-verification-private-key
+      - /keys/jwt.key
+    volumes:
+      - standalone_auth:/keys:ro
+    environment:
+      CONTEXTFORGE_DATA_PLANE_ADDRESS: 0.0.0.0:4445
+      CONTEXTFORGE_DATA_PLANE_REDIS_HOSTNAME: redis
+      CONTEXTFORGE_DATA_PLANE_REDIS_PORT: "6379"
+      CONTEXTFORGE_DATA_PLANE_REDIS_CONNECTION_MODE: plain-text
+      # The current dataplane validates test tokens against its own
+      # loopback-only JWKS tool endpoint, keeping auth entirely local.
+      CONTEXTFORGE_DATA_PLANE_JWKS_URL: http://127.0.0.1:4445/contextforge-rs/admin/.well-known/jwks.json
+      CONTEXTFORGE_DATA_PLANE_UPSTREAM_CONNECTION_MODE: plain-text-or-tls
+      CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS: ${CF_DATAPLANE_MCP_ALLOWED_HOSTS:-127.0.0.1:${NGINX_PORT:-8080},localhost:${NGINX_PORT:-8080},nginx}
+      CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_ORIGINS: ${CF_DATAPLANE_MCP_ALLOWED_ORIGINS:-http://127.0.0.1:${NGINX_PORT:-8080},http://localhost:${NGINX_PORT:-8080}}
+      CONTEXTFORGE_DATA_PLANE_USER_CONFIG_CACHE_EXPIRY_SECONDS: "0"
+      RUST_LOG: ${CF_DATAPLANE_LOG:-info}
+    depends_on:
+      auth_keygen:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.30.4-alpine3.24
+    labels:
+      name: cf-nginx
+    restart: "no"
+    ports:
+      - "${NGINX_PORT:-8080}:80"
+    environment:
+      MCP_SERVER_ID: ${MCP_SERVER_ID:-9779b6698cbd4b4995ee04a4fab38737}
+    volumes:
+      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/docker/nginx.cf-dataplane-standalone.conf.template:/etc/nginx/templates/default.conf.template:ro
+    networks:
+      - mcpnet
+    depends_on:
+      dataplane:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/health >/dev/null"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  locust:
+    profiles: ["performance"]
+    image: locustio/locust:2.46.2
+    labels:
+      name: cf-locust
+    restart: "no"
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    networks:
+      - mcpnet
+    volumes:
+      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/locustfile_mcp.py:/mnt/locust-cf/locustfile_mcp.py:ro
+
+networks:
+  mcpnet:
+
+volumes:
+  standalone_auth:

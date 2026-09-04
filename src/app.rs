@@ -10,7 +10,7 @@ use crate::conformance::profile::{
 };
 use crate::conformance::results::{ConformanceServerEra, SemanticLane};
 use crate::infrastructure::StackMode;
-use crate::infrastructure::config::Environment;
+use crate::infrastructure::config::{ConfigRequirements, Environment};
 use crate::performance::LoadRequest;
 use anyhow::{Result, bail};
 
@@ -27,6 +27,7 @@ pub(crate) enum Action {
     Stack(StackAction),
     Probe {
         topology: StackMode,
+        standalone: bool,
         protocol_version: ProtocolVersion,
     },
     Load(ResolvedLoadArgs),
@@ -47,9 +48,9 @@ impl Action {
         match self {
             Self::Stack(StackAction::Up { .. }) => "stack up",
             Self::Stack(StackAction::Down { .. }) => "stack down",
-            Self::Stack(StackAction::Status(_)) => "stack status",
+            Self::Stack(StackAction::Status { .. }) => "stack status",
             Self::Stack(StackAction::Logs { .. }) => "stack logs",
-            Self::Stack(StackAction::Config(_)) => "stack config",
+            Self::Stack(StackAction::Config { .. }) => "stack config",
             Self::Probe { .. } => "probe",
             Self::Load(_) => "load test",
             Self::Live { .. } => "live tests",
@@ -70,18 +71,18 @@ impl Action {
             Self::Stack(action) => action.startup_summary(),
             Self::Probe {
                 topology,
+                standalone,
                 protocol_version,
             }
             | Self::Debug(DebugAction::Inspect {
                 topology,
+                standalone,
                 protocol_version,
                 ..
-            }) => lane_and_protocol(*topology, protocol_version),
+            }) => target_summary(*topology, *standalone, protocol_version),
             Self::Load(args) => {
-                let mut summary = lane_and_protocol(args.topology, &args.protocol_version);
-                if args.standalone {
-                    summary.push_str("\nControl plane: disabled during load");
-                }
+                let mut summary =
+                    target_summary(args.topology, args.standalone, &args.protocol_version);
                 if args.observability {
                     summary.push_str("\nObservability: ClickStack enabled during load");
                 }
@@ -97,20 +98,31 @@ impl Action {
             ),
             Self::Conformance(ConformanceAction::Run {
                 lanes,
+                standalone,
                 client_eras,
                 server_eras,
                 ..
-            }) => format!(
-                "Lane: {}\nClient era: {}\nServer era: {}",
-                join_lane_labels(lanes),
-                join_client_eras(client_eras),
-                join_server_eras(server_eras),
-            ),
+            }) => {
+                let mut summary = format!(
+                    "Lane: {}\nClient era: {}\nServer era: {}",
+                    join_lane_labels(lanes),
+                    join_client_eras(client_eras),
+                    join_server_eras(server_eras),
+                );
+                if *standalone {
+                    summary.push_str("\nControl plane: disabled; Redis config: mocked");
+                }
+                summary
+            }
             Self::Conformance(ConformanceAction::Report { .. }) => String::from(
                 "Lane: recorded conformance results\nClient era: recorded conformance results\nServer era: recorded conformance results",
             ),
-            Self::Debug(DebugAction::Token { .. }) => {
-                String::from("Lane: not applicable (token only)")
+            Self::Debug(DebugAction::Token { standalone, .. }) => {
+                if *standalone {
+                    String::from("Lane: external\nControl plane: disabled; Redis config: mocked")
+                } else {
+                    String::from("Lane: not applicable (token only)")
+                }
             }
             Self::Ci(CiAction::PrepareImage { .. }) => {
                 String::from("CI operation: prepare prebuilt image")
@@ -133,15 +145,34 @@ impl Action {
         )
     }
 
-    /// Returns whether this operation needs Compose overlays or runtime scripts.
+    /// Filesystem resources needed by the resolved operation.
     #[must_use]
-    pub(crate) const fn requires_runtime_assets(&self) -> bool {
-        !matches!(
-            self,
+    pub(crate) fn config_requirements(&self) -> ConfigRequirements {
+        let standalone = match self {
             Self::Conformance(ConformanceAction::Report { .. })
-                | Self::Debug(DebugAction::Token { .. })
-                | Self::Ci(_)
-        )
+            | Self::Ci(_)
+            | Self::Debug(DebugAction::Token {
+                standalone: false, ..
+            }) => {
+                return ConfigRequirements::ReadOnly;
+            }
+            Self::Probe { standalone, .. }
+            | Self::Debug(DebugAction::Inspect { standalone, .. })
+            | Self::Debug(DebugAction::Token { standalone, .. })
+            | Self::Conformance(ConformanceAction::Run { standalone, .. })
+            | Self::Stack(StackAction::Up { standalone, .. })
+            | Self::Stack(StackAction::Down { standalone, .. })
+            | Self::Stack(StackAction::Status { standalone, .. })
+            | Self::Stack(StackAction::Logs { standalone, .. })
+            | Self::Stack(StackAction::Config { standalone, .. }) => *standalone,
+            Self::Load(args) => args.standalone,
+            Self::Live { .. } => false,
+        };
+        if standalone {
+            ConfigRequirements::StandaloneRuntime
+        } else {
+            ConfigRequirements::Runtime
+        }
     }
 }
 
@@ -149,9 +180,9 @@ impl StackAction {
     fn startup_summary(&self) -> String {
         let lane = match self {
             Self::Up { topology, .. }
-            | Self::Status(topology)
+            | Self::Status { topology, .. }
             | Self::Logs { topology, .. }
-            | Self::Config(topology) => topology.lane_label().to_owned(),
+            | Self::Config { topology, .. } => topology.lane_label().to_owned(),
             Self::Down { lane, .. } => match lane {
                 LaneSelection::Builtin => StackMode::Controlplane.lane_label().to_owned(),
                 LaneSelection::External => StackMode::Dataplane.lane_label().to_owned(),
@@ -162,22 +193,41 @@ impl StackAction {
                 ),
             },
         };
-        if matches!(self, Self::Up { .. }) {
-            format!(
-                "Lane: {lane}\nProtocol version: {}",
-                ProtocolVersion::default()
-            )
-        } else {
-            format!("Lane: {lane}")
-        }
+        let mut summary = match self {
+            Self::Up {
+                protocol_version, ..
+            } => format!("Lane: {lane}\nProtocol version: {protocol_version}"),
+            _ => format!("Lane: {lane}"),
+        };
+        let standalone = match self {
+            Self::Up { standalone, .. }
+            | Self::Down { standalone, .. }
+            | Self::Status { standalone, .. }
+            | Self::Logs { standalone, .. }
+            | Self::Config { standalone, .. } => *standalone,
+        };
+        append_standalone_summary(&mut summary, standalone);
+        summary
     }
 }
 
-fn lane_and_protocol(topology: StackMode, protocol_version: &ProtocolVersion) -> String {
-    format!(
+fn target_summary(
+    topology: StackMode,
+    standalone: bool,
+    protocol_version: &ProtocolVersion,
+) -> String {
+    let mut summary = format!(
         "Lane: {}\nProtocol version: {protocol_version}",
         topology.lane_label()
-    )
+    );
+    append_standalone_summary(&mut summary, standalone);
+    summary
+}
+
+fn append_standalone_summary(summary: &mut String, standalone: bool) {
+    if standalone {
+        summary.push_str("\nControl plane: disabled; Redis config: mocked");
+    }
 }
 
 fn join_lane_labels(lanes: &[SemanticLane]) -> String {
@@ -216,18 +266,28 @@ fn join_server_eras(server_eras: &[ConformanceServerEra]) -> String {
 pub(crate) enum StackAction {
     Up {
         topology: StackMode,
+        protocol_version: ProtocolVersion,
         fresh: bool,
+        standalone: bool,
     },
     Down {
         lane: LaneSelection,
         volumes: bool,
+        standalone: bool,
     },
-    Status(StackMode),
+    Status {
+        topology: StackMode,
+        standalone: bool,
+    },
     Logs {
         topology: StackMode,
         services: Vec<OsString>,
+        standalone: bool,
     },
-    Config(StackMode),
+    Config {
+        topology: StackMode,
+        standalone: bool,
+    },
 }
 
 /// Fully resolved load-test options.
@@ -245,6 +305,7 @@ pub(crate) struct ResolvedLoadArgs {
 pub(crate) enum ConformanceAction {
     Run {
         lanes: Vec<SemanticLane>,
+        standalone: bool,
         client_eras: Vec<ConformanceServerEra>,
         client_versions: Vec<String>,
         server_eras: Vec<ConformanceServerEra>,
@@ -264,6 +325,7 @@ pub(crate) enum ConformanceAction {
 pub(crate) enum DebugAction {
     Inspect {
         topology: StackMode,
+        standalone: bool,
         protocol_version: ProtocolVersion,
         method: String,
         server_id: Option<String>,
@@ -271,6 +333,7 @@ pub(crate) enum DebugAction {
     Token {
         kind: TokenKind,
         server_id: Option<String>,
+        standalone: bool,
     },
 }
 
@@ -298,12 +361,17 @@ pub(crate) enum CiAction {
 /// Returns an error when a command needs `CF_MCP_LANE` and its value is neither
 /// `builtin` nor `external`.
 pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Action> {
+    let standalone = cli.standalone;
     match cli.command {
-        Command::Stack(args) => resolve_stack(args.command, environment).map(Action::Stack),
+        Command::Stack(args) => {
+            resolve_stack(args.command, environment, standalone).map(Action::Stack)
+        }
         Command::Probe(args) => {
             let topology = resolve_lane(args.lane, environment)?;
+            validate_standalone_lane(standalone, topology)?;
             Ok(Action::Probe {
                 topology,
+                standalone,
                 protocol_version: resolve_protocol_version(
                     args.protocol_version,
                     environment,
@@ -313,9 +381,7 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
         }
         Command::Load(args) => {
             let topology = resolve_lane(args.target.lane, environment)?;
-            if args.standalone && topology != StackMode::Dataplane {
-                bail!("--standalone requires --lane external");
-            }
+            validate_standalone_lane(standalone, topology)?;
             Ok(Action::Load(ResolvedLoadArgs {
                 topology,
                 protocol_version: resolve_protocol_version(
@@ -323,7 +389,7 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
                     environment,
                     ProtocolVersion::default(),
                 )?,
-                standalone: args.standalone,
+                standalone,
                 observability: args.observability,
                 request: LoadRequest {
                     smoke: args.smoke,
@@ -335,6 +401,11 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
         }
         Command::Live(args) => {
             let lane = resolve_live_lane(args.target.lane, environment)?;
+            if standalone {
+                bail!(
+                    "live suites require the control plane; use probe --standalone for isolated external route checks"
+                );
+            }
             if lane == SemanticLane::FixtureDirect && args.group != LiveGroup::Protocol {
                 bail!("--lane fixture-direct requires --group protocol");
             }
@@ -351,8 +422,17 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
         Command::Conformance(args) => Ok(Action::Conformance(match args.command {
             ConformanceCommand::Run(args) => {
                 let (client_eras, client_versions) = resolve_client_eras(args.client_era);
+                let lanes = if standalone && args.lane.is_empty() {
+                    vec![SemanticLane::ExternalDataPlane]
+                } else {
+                    resolve_lanes(args.lane.into_iter().map(Into::into))
+                };
+                if standalone && lanes != [SemanticLane::ExternalDataPlane] {
+                    bail!("--standalone requires --lane external as the only lane");
+                }
                 ConformanceAction::Run {
-                    lanes: resolve_lanes(args.lane.into_iter().map(Into::into)),
+                    lanes,
+                    standalone,
                     client_eras,
                     client_versions,
                     server_eras: resolve_server_eras(args.server_era),
@@ -362,16 +442,23 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
                     output_dir: args.output_dir,
                 }
             }
-            ConformanceCommand::Report(args) => ConformanceAction::Report {
-                results_dir: args.results_dir,
-                output_dir: args.output_dir,
-            },
+            ConformanceCommand::Report(args) => {
+                if standalone {
+                    bail!("--standalone is not valid for conformance report");
+                }
+                ConformanceAction::Report {
+                    results_dir: args.results_dir,
+                    output_dir: args.output_dir,
+                }
+            }
         })),
         Command::Debug(args) => Ok(Action::Debug(match args.command {
             DebugCommand::Inspect(args) => {
                 let topology = resolve_lane(args.target.lane, environment)?;
+                validate_standalone_lane(standalone, topology)?;
                 DebugAction::Inspect {
                     topology,
+                    standalone,
                     protocol_version: resolve_protocol_version(
                         args.target.protocol_version,
                         environment,
@@ -388,36 +475,42 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
                 DebugAction::Token {
                     kind: args.kind,
                     server_id: args.server_id,
+                    standalone,
                 }
             }
         })),
-        Command::Ci(args) => Ok(Action::Ci(match args.command {
-            CiCommand::PrepareImage(args) => {
-                let mut components = args.binary.components();
-                if !matches!(components.next(), Some(Component::Normal(_)))
-                    || components.next().is_some()
-                {
-                    bail!("--binary must be one filename at the artifact root");
-                }
-                let repository = args
-                    .repository
-                    .or_else(|| environment_utf8(environment, "GITHUB_REPOSITORY"))
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| anyhow::anyhow!("set --repository or GITHUB_REPOSITORY"))?;
-                CiAction::PrepareImage {
-                    artifact: args.artifact,
-                    binary: args.binary,
-                    image: args.image,
-                    repository,
-                    revision: args.revision,
-                    dockerfile: args.dockerfile,
-                    target: args.target,
-                    download_dir: args.download_dir,
-                }
+        Command::Ci(args) => {
+            if standalone {
+                bail!("--standalone is not valid for CI commands");
             }
-            CiCommand::PrepareRelease => CiAction::PrepareRelease,
-            CiCommand::SelectRelease => CiAction::SelectRelease,
-        })),
+            Ok(Action::Ci(match args.command {
+                CiCommand::PrepareImage(args) => {
+                    let mut components = args.binary.components();
+                    if !matches!(components.next(), Some(Component::Normal(_)))
+                        || components.next().is_some()
+                    {
+                        bail!("--binary must be one filename at the artifact root");
+                    }
+                    let repository = args
+                        .repository
+                        .or_else(|| environment_utf8(environment, "GITHUB_REPOSITORY"))
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| anyhow::anyhow!("set --repository or GITHUB_REPOSITORY"))?;
+                    CiAction::PrepareImage {
+                        artifact: args.artifact,
+                        binary: args.binary,
+                        image: args.image,
+                        repository,
+                        revision: args.revision,
+                        dockerfile: args.dockerfile,
+                        target: args.target,
+                        download_dir: args.download_dir,
+                    }
+                }
+                CiCommand::PrepareRelease => CiAction::PrepareRelease,
+                CiCommand::SelectRelease => CiAction::SelectRelease,
+            }))
+        }
     }
 }
 
@@ -461,27 +554,74 @@ fn resolve_protocol_version(
         .map_err(|error| anyhow::anyhow!("invalid {PROTOCOL_VERSION_ENV}: {error}"))
 }
 
-fn resolve_stack(command: StackCommand, environment: &Environment) -> Result<StackAction> {
+fn resolve_stack(
+    command: StackCommand,
+    environment: &Environment,
+    standalone: bool,
+) -> Result<StackAction> {
     match command {
-        StackCommand::Up(args) => Ok(StackAction::Up {
-            topology: resolve_lane(args.lane, environment)?,
-            fresh: args.fresh,
-        }),
-        StackCommand::Down(args) => Ok(StackAction::Down {
-            lane: args.lane.unwrap_or(LaneSelection::All),
-            volumes: args.volumes,
-        }),
-        StackCommand::Status(args) => {
-            Ok(StackAction::Status(resolve_lane(args.lane, environment)?))
+        StackCommand::Up(args) => {
+            let topology = resolve_lane(args.target.lane, environment)?;
+            validate_standalone_lane(standalone, topology)?;
+            Ok(StackAction::Up {
+                topology,
+                protocol_version: resolve_protocol_version(
+                    args.target.protocol_version,
+                    environment,
+                    ProtocolVersion::default(),
+                )?,
+                fresh: args.fresh,
+                standalone,
+            })
         }
-        StackCommand::Logs(args) => Ok(StackAction::Logs {
-            topology: resolve_lane(args.lane, environment)?,
-            services: args.services,
-        }),
+        StackCommand::Down(args) => {
+            let lane = args.lane.unwrap_or(if standalone {
+                LaneSelection::External
+            } else {
+                LaneSelection::All
+            });
+            if standalone && lane != LaneSelection::External {
+                bail!("--standalone requires --lane external");
+            }
+            Ok(StackAction::Down {
+                lane,
+                volumes: args.volumes,
+                standalone,
+            })
+        }
+        StackCommand::Status(args) => {
+            let topology = resolve_lane(args.lane, environment)?;
+            validate_standalone_lane(standalone, topology)?;
+            Ok(StackAction::Status {
+                topology,
+                standalone,
+            })
+        }
+        StackCommand::Logs(args) => {
+            let topology = resolve_lane(args.lane, environment)?;
+            validate_standalone_lane(standalone, topology)?;
+            Ok(StackAction::Logs {
+                topology,
+                services: args.services,
+                standalone,
+            })
+        }
         StackCommand::Config(args) => {
-            Ok(StackAction::Config(resolve_lane(args.lane, environment)?))
+            let topology = resolve_lane(args.lane, environment)?;
+            validate_standalone_lane(standalone, topology)?;
+            Ok(StackAction::Config {
+                topology,
+                standalone,
+            })
         }
     }
+}
+
+fn validate_standalone_lane(standalone: bool, topology: StackMode) -> Result<()> {
+    if standalone && topology != StackMode::Dataplane {
+        bail!("--standalone requires --lane external");
+    }
+    Ok(())
 }
 
 fn resolve_lanes(lanes: impl IntoIterator<Item = SemanticLane>) -> Vec<SemanticLane> {

@@ -69,6 +69,7 @@ fn dataplane_compose_files_are_in_override_order() {
         repository_root
             .join("docker")
             .join("docker-compose.cf-integration.yaml"),
+        repository_root.join("docker/docker-compose.cf-dataplane-config.yaml"),
     ];
 
     assert_eq!(project.files(), expected_files);
@@ -87,6 +88,8 @@ fn dataplane_compose_files_are_in_override_order() {
             expected_files[2].as_os_str().to_owned(),
             OsString::from("-f"),
             expected_files[3].as_os_str().to_owned(),
+            OsString::from("-f"),
+            expected_files[4].as_os_str().to_owned(),
             OsString::from("config"),
             OsString::from("--format"),
             OsString::from("json"),
@@ -246,16 +249,7 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
     let environment = compose["services"]["dataplane"]["environment"]
         .as_mapping()
         .expect("dataplane environment must be a mapping");
-    let gateway_volumes = compose["services"]["gateway"]["volumes"]
-        .as_sequence()
-        .expect("gateway volumes must be a sequence");
-    assert!(gateway_volumes.iter().any(|volume| {
-        volume.as_str().is_some_and(|volume| {
-            volume.ends_with(
-                "/scripts/prepare_standalone_config.py:/opt/contextforge-integration/prepare_standalone_config.py:ro",
-            )
-        })
-    }));
+    assert!(compose["services"]["gateway"]["volumes"].is_null());
 
     for key in [
         "CONTEXTFORGE_DATA_PLANE_ADDRESS",
@@ -355,6 +349,115 @@ fn source_dataplane_adds_build_overlay_last() {
             "/repo/docker/docker-compose.cf-dataplane-build.yaml"
         ))
     );
+}
+
+#[test]
+fn standalone_dataplane_has_no_controlplane_compose_inputs() {
+    let project =
+        ComposeProject::standalone_dataplane(Path::new("/repo"), OsString::from("project"), true);
+
+    assert_eq!(
+        project.files(),
+        [
+            PathBuf::from("/repo/docker/docker-compose.cf-dataplane-standalone.yaml"),
+            PathBuf::from("/repo/docker/docker-compose.cf-dataplane-config.yaml"),
+            PathBuf::from("/repo/docker/docker-compose.cf-dataplane-build.yaml"),
+        ]
+    );
+    assert!(
+        project
+            .files()
+            .iter()
+            .all(|file| !file.to_string_lossy().contains("controlplane"))
+    );
+}
+
+#[test]
+fn both_external_projects_provide_the_client_conformance_config_writer() {
+    let root = workspace_root();
+    for project in [
+        ComposeProject::dataplane(
+            root,
+            Path::new("/checkout"),
+            OsString::from("normal"),
+            false,
+        ),
+        ComposeProject::standalone_dataplane(root, OsString::from("standalone"), false),
+    ] {
+        let helpers: Vec<_> = project
+            .files()
+            .iter()
+            .filter_map(|file| {
+                let source = fs::read_to_string(file).ok()?;
+                let compose: yaml_serde::Value =
+                    yaml_serde::from_str(&source).expect("Compose YAML");
+                let service = &compose["services"]["config_writer"];
+                (!service.is_null()).then(|| service.clone())
+            })
+            .collect();
+        assert_eq!(
+            helpers.len(),
+            1,
+            "each external project needs exactly one writer"
+        );
+        assert_eq!(helpers[0]["profiles"][0].as_str(), Some("helpers"));
+        assert_eq!(helpers[0]["networks"][0].as_str(), Some("mcpnet"));
+        assert_eq!(
+            helpers[0]["entrypoint"][1].as_str(),
+            Some("/opt/contextforge-integration/write_dataplane_config.mjs")
+        );
+    }
+}
+
+#[test]
+fn standalone_dataplane_owns_ephemeral_jwks_auth_and_mock_helpers() {
+    let root = workspace_root();
+    let compose =
+        fs::read_to_string(root.join("docker/docker-compose.cf-dataplane-standalone.yaml"))
+            .expect("read standalone dataplane Compose file");
+    let compose: yaml_serde::Value =
+        yaml_serde::from_str(&compose).expect("parse standalone dataplane Compose file");
+    let services = compose["services"]
+        .as_mapping()
+        .expect("standalone services must be a mapping");
+
+    assert_eq!(services.len(), 5);
+    assert!(compose["services"]["gateway"].is_null());
+    assert_eq!(
+        compose["services"]["auth_keygen"]["network_mode"].as_str(),
+        Some("none")
+    );
+    assert_eq!(
+        compose["services"]["dataplane"]["environment"]["CONTEXTFORGE_DATA_PLANE_JWKS_URL"]
+            .as_str(),
+        Some("http://127.0.0.1:4445/contextforge-rs/admin/.well-known/jwks.json")
+    );
+    assert_eq!(
+        compose["services"]["dataplane"]["command"][1].as_str(),
+        Some("/keys/jwt.key")
+    );
+    assert!(
+        compose["services"]["dataplane"]["environment"]["CONTEXTFORGE_DATA_PLANE_TOKEN_SECRET"]
+            .is_null()
+    );
+    assert!(
+        compose["services"]["dataplane"]["environment"]
+            ["CONTEXTFORGE_DATA_PLANE_TOKEN_VERIFICATION_PRIVATE_KEY"]
+            .is_null()
+    );
+    assert_eq!(
+        compose["services"]["nginx"]["healthcheck"]["test"][1].as_str(),
+        Some("wget -q -O - http://127.0.0.1/health >/dev/null")
+    );
+    assert_eq!(
+        compose["services"]["locust"]["profiles"][0].as_str(),
+        Some("performance")
+    );
+    assert_eq!(
+        compose["services"]["locust"]["image"].as_str(),
+        Some("locustio/locust:2.46.2")
+    );
+    assert!(compose["services"]["locust"]["environment"]["JWT_SECRET_KEY"].is_null());
 }
 
 #[test]
@@ -598,6 +701,9 @@ fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
             .expect("read standalone conformance fixture Compose file");
     let routed_compose = fs::read_to_string(root.join("docker/docker-compose.cf-conformance.yaml"))
         .expect("read routed conformance Compose overlay");
+    let controlplane_compose =
+        fs::read_to_string(root.join("docker/docker-compose.cf-conformance-controlplane.yaml"))
+            .expect("read control-plane conformance Compose overlay");
 
     assert!(dockerfile.contains("FROM node:22-bookworm-slim"));
     assert!(
@@ -679,11 +785,6 @@ services:
     let expected_routed_compose: yaml_serde::Value = yaml_serde::from_str(
         r#"
 services:
-  gateway:
-    environment:
-      GATEWAY_TOOL_NAME_SEPARATOR: "_"
-    volumes:
-      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/conformance/write_client_config.py:/opt/contextforge-conformance/write_client_config.py:ro
   mcp_conformance_server:
     networks:
       - mcpnet
@@ -704,6 +805,20 @@ services:
     )
     .expect("parse expected routed conformance Compose overlay");
     assert_eq!(actual_routed_compose, expected_routed_compose);
+
+    let actual_controlplane_compose: yaml_serde::Value =
+        yaml_serde::from_str(&controlplane_compose)
+            .expect("parse control-plane conformance Compose overlay");
+    let expected_controlplane_compose: yaml_serde::Value = yaml_serde::from_str(
+        r#"
+services:
+  gateway:
+    environment:
+      GATEWAY_TOOL_NAME_SEPARATOR: "_"
+"#,
+    )
+    .expect("parse expected control-plane conformance Compose overlay");
+    assert_eq!(actual_controlplane_compose, expected_controlplane_compose);
 
     let proxy = fs::read_to_string(root.join("docker/nginx.cf-conformance-proxy.conf"))
         .expect("read conformance proxy config");
