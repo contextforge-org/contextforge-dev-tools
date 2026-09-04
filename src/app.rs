@@ -33,7 +33,6 @@ pub(crate) enum Action {
     Load(ResolvedLoadArgs),
     Live {
         lane: SemanticLane,
-        standalone: bool,
         group: LiveGroup,
         protocol_version: ProtocolVersion,
     },
@@ -91,17 +90,12 @@ impl Action {
             }
             Self::Live {
                 lane,
-                standalone,
                 protocol_version,
                 ..
-            } => {
-                let mut summary = format!(
-                    "Lane: {}\nProtocol version: {protocol_version}",
-                    lane.label()
-                );
-                append_standalone_summary(&mut summary, *standalone);
-                summary
-            }
+            } => format!(
+                "Lane: {}\nProtocol version: {protocol_version}",
+                lane.label()
+            ),
             Self::Conformance(ConformanceAction::Run {
                 lanes,
                 standalone,
@@ -387,15 +381,16 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
         }
         Command::Live(args) => {
             let lane = resolve_live_lane(args.target.lane, environment)?;
-            if standalone && lane != SemanticLane::ExternalDataPlane {
-                bail!("--standalone requires --lane external");
+            if standalone {
+                bail!(
+                    "live suites require the control plane; use probe --standalone for isolated external route checks"
+                );
             }
             if lane == SemanticLane::FixtureDirect && args.group != LiveGroup::Protocol {
                 bail!("--lane fixture-direct requires --group protocol");
             }
             Ok(Action::Live {
                 lane,
-                standalone,
                 group: args.group,
                 protocol_version: resolve_protocol_version(
                     args.target.protocol_version,

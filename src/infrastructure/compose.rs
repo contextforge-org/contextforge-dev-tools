@@ -95,6 +95,9 @@ impl ComposeProject {
             repository_root
                 .join("docker")
                 .join("docker-compose.cf-integration.yaml"),
+            repository_root
+                .join("docker")
+                .join("docker-compose.cf-dataplane-config.yaml"),
         ];
         if build_dataplane {
             files.push(
@@ -121,6 +124,9 @@ impl ComposeProject {
             repository_root
                 .join("docker")
                 .join("docker-compose.cf-dataplane-standalone.yaml"),
+            repository_root
+                .join("docker")
+                .join("docker-compose.cf-dataplane-config.yaml"),
         ];
         if build_dataplane {
             files.push(

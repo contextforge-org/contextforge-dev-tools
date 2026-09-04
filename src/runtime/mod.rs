@@ -136,12 +136,11 @@ impl<R: ProcessRunner> RuntimeDispatcher<R> {
             Action::Load(args) => PerformanceWorkflow(&self.context).execute(args).await,
             Action::Live {
                 lane,
-                standalone,
                 group,
                 protocol_version,
             } => {
                 LiveWorkflow(&self.context)
-                    .execute(lane, standalone, group, &protocol_version)
+                    .execute(lane, group, &protocol_version)
                     .await
             }
             Action::Conformance(action) => ConformanceWorkflow(&self.context).execute(action).await,
@@ -201,13 +200,10 @@ impl<'a, R: ProcessRunner> LiveWorkflow<'a, R> {
     async fn execute(
         &self,
         lane: SemanticLane,
-        standalone: bool,
         group: LiveGroup,
         protocol_version: &ProtocolVersion,
     ) -> AppResult<()> {
-        self.0
-            .run_live(lane, standalone, group, protocol_version)
-            .await
+        self.0.run_live(lane, group, protocol_version).await
     }
 }
 

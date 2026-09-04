@@ -454,7 +454,6 @@ fn standalone_is_global_across_operational_commands() {
         vec!["cf-integration", "stack", "status", "--standalone"],
         vec!["cf-integration", "probe", "--standalone"],
         vec!["cf-integration", "load", "--standalone"],
-        vec!["cf-integration", "live", "--standalone"],
         vec!["cf-integration", "conformance", "run", "--standalone"],
         vec![
             "cf-integration",

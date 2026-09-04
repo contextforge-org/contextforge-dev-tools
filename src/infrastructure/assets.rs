@@ -30,6 +30,7 @@ const ASSETS: &[EmbeddedAsset] = &[
     asset!("docker/docker-compose.cf-controlplane-build-labels.yaml"),
     asset!("docker/docker-compose.cf-controlplane-observability.yaml"),
     asset!("docker/docker-compose.cf-dataplane-build.yaml"),
+    asset!("docker/docker-compose.cf-dataplane-config.yaml"),
     asset!("docker/docker-compose.cf-dataplane-observability.yaml"),
     asset!("docker/docker-compose.cf-dataplane-standalone.yaml"),
     asset!("docker/docker-compose.cf-dataplane.yaml"),

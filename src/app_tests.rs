@@ -438,7 +438,6 @@ fn live_resolves_lane_group_and_protocol_version() {
         ),
         Action::Live {
             lane: SemanticLane::BuiltInDataPlane,
-            standalone: false,
             group: LiveGroup::Mcp,
             protocol_version: ProtocolVersion::Legacy,
         }
@@ -466,7 +465,6 @@ fn live_fixture_lane_bypasses_topology_and_cli_version_wins() {
         ),
         Action::Live {
             lane: SemanticLane::FixtureDirect,
-            standalone: false,
             group: LiveGroup::Protocol,
             protocol_version: ProtocolVersion::Modern,
         }
@@ -734,4 +732,28 @@ fn admin_token_rejects_a_server_scope() {
     let error = resolve_action(cli, &Environment::new())
         .expect_err("admin token server restriction must not be discarded");
     assert!(error.to_string().contains("only valid with --kind scoped"));
+}
+
+#[test]
+fn standalone_live_rejects_every_group_before_runtime_setup() {
+    for group in ["mcp", "rbac", "protocol", "all"] {
+        let cli = Cli::try_parse_from([
+            "cf-integration",
+            "live",
+            "--lane",
+            "external",
+            "--standalone",
+            "--group",
+            group,
+        ])
+        .expect("CLI parses before workflow validation");
+        let error =
+            resolve_action(cli, &Environment::new()).expect_err("standalone live is unsupported");
+        assert!(
+            error
+                .to_string()
+                .contains("live suites require the control plane")
+        );
+        assert!(error.to_string().contains("probe --standalone"));
+    }
 }

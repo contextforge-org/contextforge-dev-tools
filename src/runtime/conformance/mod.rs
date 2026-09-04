@@ -917,7 +917,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                 && let Err(error) = self
                                     .publish_standalone_conformance_config(
                                         server_id,
-                                        spec_version,
+                                        server_era
+                                            .protocol_versions()
+                                            .last()
+                                            .expect("fixture has supported protocols"),
                                         &token.value,
                                         true,
                                     )

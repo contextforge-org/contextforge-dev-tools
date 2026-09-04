@@ -39,7 +39,6 @@ fn locust_adapter_and_compose_overlay_do_not_reference_the_removed_helper() {
         "the load container receives a bearer token and must not receive the signing key"
     );
     assert!(!compose.contains("gateway:"));
-    assert!(compose.contains("config_writer:"));
     assert!(compose.contains("locustio/locust:2.46.2"));
     assert!(compose.contains("profiles: [\"performance\"]"));
 }
@@ -594,17 +593,17 @@ globalThis.fetch = async (_, options) => {
     let result;
     switch (request.method) {
         case 'server/discover': result = {}; break;
-        case 'tools/list': result = request.params.cursor
-            ? { tools: [{ name: 'new_diagnostic_tool', inputSchema: schema }] }
-            : { tools: [{ name: 'first', inputSchema: {} }], nextCursor: 'page2' }; break;
+        case 'tools/list': result = request.params.cursor !== undefined
+            ? { tools: [{ name: 'new_diagnostic_tool', inputSchema: schema }], nextCursor: null }
+            : { tools: [{ name: 'first', inputSchema: {} }], nextCursor: '' }; break;
         case 'resources/list': result = { resources: [{ uri: 'test://new-resource' }] }; break;
         case 'resources/templates/list': result = { resourceTemplates: [{ uriTemplate: 'test://new/{id}' }] }; break;
         case 'prompts/list': result = { prompts: [{ name: 'new_prompt' }] }; break;
         default: assert.fail(request.method);
     }
     const message = JSON.stringify({ jsonrpc: '2.0', id: request.id, result });
-    return new Response(request.params.cursor ? `event: message\ndata: ${message}\n\n` : message,
-        { headers: { 'content-type': request.params.cursor ? 'text/event-stream' : 'application/json' } });
+    return new Response(request.params.cursor !== undefined ? `event: message\ndata: ${message}\n\n` : message,
+        { headers: { 'content-type': request.params.cursor !== undefined ? 'text/event-stream' : 'application/json' } });
 };
 const catalog = await fixtureCatalog('http://fixture/mcp', '2026-07-28');
 assert.deepEqual(catalog.tools, ['first', 'new_diagnostic_tool']);
@@ -627,12 +626,82 @@ globalThis.fetch = async (_, options) => {
     }});
 };
 await assert.rejects(fixtureCatalog('http://fixture/mcp', '2026-07-28'), /repeated cursor/);
+
+const legacyMethods = [];
+globalThis.fetch = async (_, options) => {
+    if (options.method === 'DELETE') {
+        assert.equal(options.headers['mcp-session-id'], 'legacy-session');
+        legacyMethods.push('DELETE');
+        return new Response(null, { status: 204 });
+    }
+    const request = JSON.parse(options.body);
+    legacyMethods.push(request.method);
+    assert.equal(options.headers['mcp-method'], undefined);
+    assert.equal(request.params._meta, undefined);
+    let result;
+    if (request.method === 'initialize') {
+        assert.equal(options.headers['mcp-protocol-version'], undefined);
+        assert.equal(request.params.protocolVersion, '2025-11-25');
+        result = { protocolVersion: '2025-11-25' };
+    } else {
+        assert.equal(options.headers['mcp-protocol-version'], '2025-11-25');
+        assert.equal(options.headers['mcp-session-id'], 'legacy-session');
+        if (request.method === 'notifications/initialized') return new Response(null, { status: 202 });
+        result = request.method === 'tools/list' ? { tools: [{ name: 'legacy_tool', inputSchema: schema }] }
+            : request.method === 'resources/list' ? { resources: [] }
+            : request.method === 'resources/templates/list' ? { resourceTemplates: [] }
+            : { prompts: [] };
+    }
+    const message = JSON.stringify({ id: request.id, result });
+    return new Response(`event: message\ndata:\n\nevent: message\ndata: ${message}\n\n`, {
+        headers: { 'content-type': 'text/event-stream', 'mcp-session-id': 'legacy-session' },
+    });
+};
+const legacyCatalog = await fixtureCatalog('http://fixture/mcp', '2025-11-25');
+assert.deepEqual(legacyCatalog.tools, ['legacy_tool']);
+assert.deepEqual(legacyCatalog.toolSchemas.legacy_tool, schema);
+assert.deepEqual(legacyMethods, ['initialize', 'notifications/initialized', 'tools/list',
+    'resources/list', 'resources/templates/list', 'prompts/list', 'DELETE']);
 "#;
     let output = Command::new("node")
         .args(["--input-type=module", "--eval", script])
         .arg(scripts_dir().join("conformance/write_dataplane_config.mjs"))
         .output()
         .expect("Node fixture catalog test runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn client_config_writer_publishes_a_schema_for_each_scenario_tool() {
+    let script = r#"
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+const scriptPath = process.argv[1];
+process.argv = ['node', scriptPath, 'client', 'scenario-server', 'http://fixture/mcp',
+    '2026-07-28', '["metadata_probe","add_numbers"]'];
+process.env.MCP_CONFORMANCE_TOKEN = `header.${Buffer.from('{"sub":"scenario-user"}').toString('base64url')}.signature`;
+let published = false;
+globalThis.fetch = async (url, options) => {
+    assert.ok(url.endsWith('/userconfigs/scenario-user'));
+    assert.equal(options.method, 'POST');
+    const host = JSON.parse(options.body).virtual_hosts['scenario-server'];
+    assert.deepEqual(Object.keys(host.tools), ['metadata_probe', 'add_numbers']);
+    assert.deepEqual(host.backends['conformance-backend'].tool_schemas, { metadata_probe: {}, add_numbers: {} });
+    published = true;
+    return new Response(null, { status: 202 });
+};
+await import(pathToFileURL(scriptPath).href);
+assert.ok(published);
+"#;
+    let output = Command::new("node")
+        .args(["--input-type=module", "--eval", script])
+        .arg(scripts_dir().join("conformance/write_dataplane_config.mjs"))
+        .output()
+        .expect("Node config writer test runs");
     assert!(
         output.status.success(),
         "{}",

@@ -12,21 +12,27 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Discover standalone conformance routes and input schemas from the running
   fixture, including paginated diagnostic tools. Fixture discovery errors stop
   setup before a baseline can be blessed.
+- Made the dataplane config writer available to normal external client conformance
+  and preserved schemas for its scenario tools.
+- Accepted empty pagination cursors and legacy SSE keepalives during discovery,
+  and used the fixture's protocol era when configuring backends for clients from
+  a different era.
+- Rejected `live --standalone`, which previously reported live-group success after
+  only a probe. Isolated route checks remain available through `probe --standalone`.
 
 ## [0.3.1] - 2026-09-04
 
 ### Added
 
 - Added global standalone external-dataplane mode across stack, probe, load,
-  live, conformance, and debug-token workflows, backed by mocked Redis,
+  conformance, and debug-token workflows, backed by mocked Redis,
   ephemeral RSA authentication, and no control-plane services.
 
 ### Changed
 
 - Published every standalone route through the running dataplane's serializer
   so mocked Redis snapshots always use that image's current MessagePack schema.
-- Added protocol-mode selection to `stack up` and native standalone live checks
-  for route authentication, lifecycle negotiation, and routed tool calls.
+- Added protocol-mode selection to `stack up`.
 - Left the independent ClickStack service running during explicit stack cleanup
   as well as managed workflow cleanup.
 

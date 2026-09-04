@@ -46,6 +46,8 @@ test fixture. It generates an ephemeral RSA key, obtains a test token from the
 dataplane's local tool endpoint, validates it through the dataplane's loopback
 JWKS endpoint, and publishes a fresh config through the dataplane serializer.
 Redis therefore always contains the schema understood by the image under test.
+Routes and tool schemas are discovered from every catalog page of the running
+fixture, including the selected protocol era's diagnostic tools and prompts.
 
 Use `cf-integration <command> --help` for the complete interface.
 
@@ -117,13 +119,13 @@ Groups are `mcp`, `rbac`, `protocol`, and `all` (default):
 ```bash
 cf-integration live --lane builtin --protocol-version legacy --group all
 cf-integration live --lane external --protocol-version modern --group all
-cf-integration live --lane external --protocol-version legacy --group all --standalone
 cf-integration live --lane fixture-direct --protocol-version legacy --group protocol
 ```
 
-Normal routed runs execute the upstream control-plane live suites. Standalone
-external runs execute the dataplane-native route/auth/protocol contract, with
-no control-plane checkout or API calls.
+Routed runs execute the upstream control-plane live suites. `live --standalone`
+is unsupported because these suites require the control plane. Use
+`cf-integration probe --lane external --standalone` for isolated authentication,
+protocol, and routed tool-call checks.
 
 ## Conformance
 

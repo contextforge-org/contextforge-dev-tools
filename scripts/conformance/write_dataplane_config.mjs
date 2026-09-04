@@ -25,8 +25,8 @@ export async function fixtureCatalog(backendUrl, protocolVersion) {
       headers: {
         'content-type': 'application/json',
         accept: 'application/json, text/event-stream',
-        'mcp-protocol-version': protocolVersion,
-        'mcp-method': method,
+        ...(method === 'initialize' ? {} : { 'mcp-protocol-version': protocolVersion }),
+        ...(modern ? { 'mcp-method': method } : {}),
         ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
       },
       body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
@@ -37,9 +37,10 @@ export async function fixtureCatalog(backendUrl, protocolVersion) {
     if (notification) { await response.body?.cancel(); return; }
     const body = await response.text();
     const messages = response.headers.get('content-type')?.startsWith('text/event-stream')
-      ? body.split(/\r?\n\r?\n/).filter((event) => /^data:/m.test(event)).map((event) =>
-          JSON.parse(event.split(/\r?\n/).filter((line) => line.startsWith('data:'))
-            .map((line) => line.slice(5).trimStart()).join('\n')))
+      ? body.split(/\r?\n\r?\n/).map((event) =>
+          event.split(/\r?\n/).filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice(5).trimStart()).join('\n'))
+          .filter((data) => data.trim()).map((data) => JSON.parse(data))
       : [JSON.parse(body)];
     const message = messages.find((message) => message.id === id);
     if (!message || message.error || !message.result) {
@@ -52,11 +53,11 @@ export async function fixtureCatalog(backendUrl, protocolVersion) {
     const cursors = new Set();
     let cursor;
     do {
-      const page = await rpc(method, cursor ? { cursor } : {});
+      const page = await rpc(method, cursor === undefined ? {} : { cursor });
       if (!Array.isArray(page[key])) throw new Error(`fixture ${method} has no ${key} array`);
       items.push(...page[key]);
-      cursor = page.nextCursor;
-      if (cursor !== undefined && (typeof cursor !== 'string' || !cursor || cursors.has(cursor))) {
+      cursor = page.nextCursor ?? undefined;
+      if (cursor !== undefined && (typeof cursor !== 'string' || cursors.has(cursor))) {
         throw new Error(`fixture ${method} returned an invalid or repeated cursor`);
       }
       cursors.add(cursor);
@@ -143,7 +144,7 @@ function config(serverId, backendUrl, protocolVersion, catalogs) {
             add_headers: {},
             remove_headers: [],
             completion: {},
-            tool_schemas: catalogs.toolSchemas ?? {},
+            tool_schemas: catalogs.toolSchemas,
           },
         },
         tools: routes(catalogs.tools, backendName),
@@ -217,10 +218,12 @@ async function main() {
   const token = process.env.MCP_CONFORMANCE_TOKEN;
   if (!token) fail('MCP_CONFORMANCE_TOKEN is required');
 
+  const tools = mode === 'client' ? stringArray(toolNamesJson, 'tool-names-json') : undefined;
   const catalogs = mode === 'fixture'
     ? await fixtureCatalog(backendUrl, protocolVersion)
     : {
-        tools: stringArray(toolNamesJson, 'tool-names-json'),
+        tools,
+        toolSchemas: Object.fromEntries(tools.map((name) => [name, {}])),
         resources: [],
         resourceTemplates: [],
         prompts: [],

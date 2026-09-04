@@ -69,6 +69,7 @@ fn dataplane_compose_files_are_in_override_order() {
         repository_root
             .join("docker")
             .join("docker-compose.cf-integration.yaml"),
+        repository_root.join("docker/docker-compose.cf-dataplane-config.yaml"),
     ];
 
     assert_eq!(project.files(), expected_files);
@@ -87,6 +88,8 @@ fn dataplane_compose_files_are_in_override_order() {
             expected_files[2].as_os_str().to_owned(),
             OsString::from("-f"),
             expected_files[3].as_os_str().to_owned(),
+            OsString::from("-f"),
+            expected_files[4].as_os_str().to_owned(),
             OsString::from("config"),
             OsString::from("--format"),
             OsString::from("json"),
@@ -357,6 +360,7 @@ fn standalone_dataplane_has_no_controlplane_compose_inputs() {
         project.files(),
         [
             PathBuf::from("/repo/docker/docker-compose.cf-dataplane-standalone.yaml"),
+            PathBuf::from("/repo/docker/docker-compose.cf-dataplane-config.yaml"),
             PathBuf::from("/repo/docker/docker-compose.cf-dataplane-build.yaml"),
         ]
     );
@@ -366,6 +370,43 @@ fn standalone_dataplane_has_no_controlplane_compose_inputs() {
             .iter()
             .all(|file| !file.to_string_lossy().contains("controlplane"))
     );
+}
+
+#[test]
+fn both_external_projects_provide_the_client_conformance_config_writer() {
+    let root = workspace_root();
+    for project in [
+        ComposeProject::dataplane(
+            root,
+            Path::new("/checkout"),
+            OsString::from("normal"),
+            false,
+        ),
+        ComposeProject::standalone_dataplane(root, OsString::from("standalone"), false),
+    ] {
+        let helpers: Vec<_> = project
+            .files()
+            .iter()
+            .filter_map(|file| {
+                let source = fs::read_to_string(file).ok()?;
+                let compose: yaml_serde::Value =
+                    yaml_serde::from_str(&source).expect("Compose YAML");
+                let service = &compose["services"]["config_writer"];
+                (!service.is_null()).then(|| service.clone())
+            })
+            .collect();
+        assert_eq!(
+            helpers.len(),
+            1,
+            "each external project needs exactly one writer"
+        );
+        assert_eq!(helpers[0]["profiles"][0].as_str(), Some("helpers"));
+        assert_eq!(helpers[0]["networks"][0].as_str(), Some("mcpnet"));
+        assert_eq!(
+            helpers[0]["entrypoint"][1].as_str(),
+            Some("/opt/contextforge-integration/write_dataplane_config.mjs")
+        );
+    }
 }
 
 #[test]
@@ -380,7 +421,7 @@ fn standalone_dataplane_owns_ephemeral_jwks_auth_and_mock_helpers() {
         .as_mapping()
         .expect("standalone services must be a mapping");
 
-    assert_eq!(services.len(), 6);
+    assert_eq!(services.len(), 5);
     assert!(compose["services"]["gateway"].is_null());
     assert_eq!(
         compose["services"]["auth_keygen"]["network_mode"].as_str(),
@@ -407,10 +448,6 @@ fn standalone_dataplane_owns_ephemeral_jwks_auth_and_mock_helpers() {
     assert_eq!(
         compose["services"]["nginx"]["healthcheck"]["test"][1].as_str(),
         Some("wget -q -O - http://127.0.0.1/health >/dev/null")
-    );
-    assert_eq!(
-        compose["services"]["config_writer"]["profiles"][0].as_str(),
-        Some("helpers")
     );
     assert_eq!(
         compose["services"]["locust"]["profiles"][0].as_str(),
