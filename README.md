@@ -42,14 +42,20 @@ with `CF_MCP_LANE` and `MCP_PROTOCOL_VERSION`.
 
 Add the global `--standalone` flag to run the external lane without any control
 plane. Standalone mode starts Redis, the Rust dataplane, nginx, and the required
-test fixture. It generates an ephemeral RSA key, obtains a test token from the
-dataplane's local tool endpoint, validates it through the dataplane's loopback
-JWKS endpoint, and publishes a fresh config through the dataplane serializer.
-Redis therefore always contains the schema understood by the image under test.
+test fixture. A harness-owned auth service generates an ephemeral RSA key and
+serves public JWKS on the dataplane network namespace's loopback interface. The
+config helper signs test tokens and writes named MessagePack routing snapshots
+directly to Redis. Production dataplane images work without `with_tools`; that
+feature is only for testing the dataplane's optional administrative helpers.
+The helper image installs pinned Redis and MessagePack packages on its first build.
 Standalone commands also work from an installed binary without control-plane
 checkouts or generated control-plane secrets.
 Routes and tool schemas are discovered from every catalog page of the running
 fixture, including the selected protocol era's diagnostic tools and prompts.
+
+Control-plane-backed external runs require `CONTEXTFORGE_DATA_PLANE_JWKS_URL`
+to point to the HTTPS JWKS provider for the control plane's signing keys.
+Standalone runs supply their own loopback JWKS provider.
 
 Use `cf-integration <command> --help` for the complete interface.
 

@@ -1,6 +1,6 @@
 [package]
 name = "cf-integration"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 rust-version = "1.97"
 license = "Apache-2.0"
@@ -20,7 +20,10 @@ include = [
     "/scripts/locustfile_mcp.py",
     "/scripts/live_protocol/sitecustomize.py",
     "/scripts/conformance/write_dataplane_config.mjs",
-    "/scripts/standalone/generate_auth_key.mjs",
+    "/scripts/conformance/package.json",
+    "/scripts/conformance/package-lock.json",
+    "/scripts/conformance/Dockerfile",
+    "/scripts/standalone/auth.mjs",
     "/tests/conformance/baselines/**",
     "/README.md",
     "/CHANGELOG.md",

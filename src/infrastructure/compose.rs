@@ -15,7 +15,7 @@ const LEGACY_FAST_TIME_IMAGE_PREFIXES: &[&str] = &[
 
 /// Compose service keys and their public container display names.
 pub(crate) const SERVICE_DISPLAY_NAMES: &[(&str, &str)] = &[
-    ("auth_keygen", "cf-dataplane-auth-keygen"),
+    ("auth", "cf-dataplane-auth"),
     ("gateway", "cf-controlplane"),
     ("migration", "cf-migration"),
     ("register_fast_time", "cf-register-fast-time"),

@@ -1,13 +1,9 @@
 #!/usr/bin/env node
-/** Publish one conformance route through the dataplane's current serializer. */
-import { setTimeout } from 'node:timers/promises';
-import { realpathSync } from 'node:fs';
+/** Publish a test routing snapshot directly to the harness Redis. */
+import { sign } from 'node:crypto';
+import { readFileSync, realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-const DATAPLANE_CONFIG_URL =
-  'http://dataplane:4445/contextforge-rs/admin/userconfigs';
-const DATAPLANE_TOKEN_URL =
-  'http://dataplane:4445/contextforge-rs/admin/tokens';
 /** Discover the pinned fixture instead of maintaining a second, incomplete catalog. */
 export async function fixtureCatalog(backendUrl, protocolVersion) {
   let requestId = 0;
@@ -131,7 +127,7 @@ function routes(names, backendName) {
   );
 }
 
-function config(serverId, backendUrl, protocolVersion, catalogs) {
+export function config(serverId, backendUrl, protocolVersion, catalogs) {
   const backendName = 'conformance-backend';
   return {
     virtual_hosts: {
@@ -158,41 +154,30 @@ function config(serverId, backendUrl, protocolVersion, catalogs) {
 }
 
 async function publish(subject, body) {
-  const endpoint = `${DATAPLANE_CONFIG_URL}/${encodeURIComponent(subject)}`;
-  let lastError = 'dataplane did not respond';
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    try {
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(2000),
-      });
-      if (response.status === 202) return;
-      lastError = `HTTP ${response.status}: ${(await response.text()).slice(0, 512)}`;
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-    }
-    await setTimeout(500);
+  const { encode } = await import('@msgpack/msgpack');
+  const { createClient } = await import('@redis/client');
+  const client = createClient({
+    url: process.env.CF_CONFIG_REDIS_URL ?? 'redis://redis:6379',
+    socket: { connectTimeout: 10000, reconnectStrategy: false },
+  });
+  client.on('error', (error) => process.stderr.write(`Redis: ${error.message}\n`));
+  try {
+    await client.connect();
+    // User::new(subject) uses the compact [KeyType::UserConfig, subject] key.
+    // Named maps preserve empty maps and avoid depending on Rust field order.
+    await client.set(Buffer.from(encode(['UserConfig', subject])), Buffer.from(encode(body)));
+  } finally {
+    if (client.isOpen) client.destroy();
   }
-  fail(`dataplane config serializer was unavailable: ${lastError}`);
 }
 
-async function issueToken(tenantId, userId) {
-  const endpoint = `${DATAPLANE_TOKEN_URL}/${encodeURIComponent(tenantId)}/${encodeURIComponent(userId)}`;
-  let lastError = 'dataplane did not respond';
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    try {
-      const response = await fetch(endpoint, { signal: AbortSignal.timeout(2000) });
-      const body = await response.text();
-      if (response.ok && body.split('.').length === 3) return body;
-      lastError = `HTTP ${response.status}: ${body.slice(0, 512)}`;
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-    }
-    await setTimeout(500);
-  }
-  fail(`dataplane token helper was unavailable: ${lastError}`);
+export function issueToken(tenantId, userId, privateKey = readFileSync('/keys/jwt.key')) {
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: 'RS256', typ: 'JWT', kid: 'cf-integration-standalone' };
+  const claims = { sub: userId, tenant_id: tenantId, iat: now, nbf: now, exp: now + 86400 };
+  const payload = [header, claims].map((value) =>
+    Buffer.from(JSON.stringify(value)).toString('base64url')).join('.');
+  return `${payload}.${sign('RSA-SHA256', Buffer.from(payload), privateKey).toString('base64url')}`;
 }
 
 async function main() {

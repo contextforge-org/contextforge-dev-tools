@@ -7,7 +7,13 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-07
+
 ### Changed
+
+- Standalone workflows now run against production dataplane images without
+  `with_tools`. The harness signs ephemeral JWTs, serves loopback JWKS, and
+  publishes MessagePack routing snapshots directly to Redis.
 
 - Simplified runtime dispatch and shared authenticated workflow setup, removing
   forwarding wrappers while preserving token revocation and stack cleanup.
@@ -25,6 +31,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   setup before a baseline can be blessed.
 - Made the dataplane config writer available to normal external client conformance
   and preserved schemas for its scenario tools.
+- Embedded the ClickStack collector configuration required by installed-binary
+  conformance runs.
 - Accepted empty pagination cursors and legacy SSE keepalives during discovery,
   and used the fixture's protocol era when configuring backends for clients from
   a different era.

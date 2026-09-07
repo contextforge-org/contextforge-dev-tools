@@ -47,12 +47,7 @@ services:
       CONTEXTFORGE_DATA_PLANE_REDIS_HOSTNAME: redis
       CONTEXTFORGE_DATA_PLANE_REDIS_PORT: "6379"
       CONTEXTFORGE_DATA_PLANE_REDIS_CONNECTION_MODE: plain-text
-      CONTEXTFORGE_DATA_PLANE_TOKEN_SECRET: ${JWT_SECRET_KEY:-my-test-key-but-now-longer-than-32-bytes}
-      # The published image currently includes its non-production `with_tools`
-      # bootstrap routes, whose clap model requires an RSA signing-key path.
-      # The standalone load helper calls only the internal user-config route;
-      # token creation stays disabled, so satisfy the unused path without a key.
-      CONTEXTFORGE_DATA_PLANE_TOKEN_VERIFICATION_PRIVATE_KEY: /dev/null
+      CONTEXTFORGE_DATA_PLANE_JWKS_URL: ${CONTEXTFORGE_DATA_PLANE_JWKS_URL:-}
       CONTEXTFORGE_DATA_PLANE_UPSTREAM_CONNECTION_MODE: plain-text-or-tls
       # These two MCP transport settings intentionally retain the historical
       # prefix in the current dataplane configuration contract.

@@ -258,8 +258,7 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
         "CONTEXTFORGE_DATA_PLANE_REDIS_HOSTNAME",
         "CONTEXTFORGE_DATA_PLANE_REDIS_PORT",
         "CONTEXTFORGE_DATA_PLANE_REDIS_CONNECTION_MODE",
-        "CONTEXTFORGE_DATA_PLANE_TOKEN_SECRET",
-        "CONTEXTFORGE_DATA_PLANE_TOKEN_VERIFICATION_PRIVATE_KEY",
+        "CONTEXTFORGE_DATA_PLANE_JWKS_URL",
         "CONTEXTFORGE_DATA_PLANE_UPSTREAM_CONNECTION_MODE",
         "CONTEXTFORGE_DATA_PLANE_USER_CONFIG_CACHE_EXPIRY_SECONDS",
         "CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS",
@@ -270,14 +269,12 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
             "dataplane environment must define {key}"
         );
     }
-    assert_eq!(
-        environment[yaml_serde::Value::String(
-            "CONTEXTFORGE_DATA_PLANE_TOKEN_VERIFICATION_PRIVATE_KEY".to_owned()
-        )]
-        .as_str(),
-        Some("/dev/null"),
-        "the unused local-bootstrap signing key must not add a real private key to the harness"
-    );
+    for key in [
+        "CONTEXTFORGE_DATA_PLANE_TOKEN_SECRET",
+        "CONTEXTFORGE_DATA_PLANE_TOKEN_VERIFICATION_PRIVATE_KEY",
+    ] {
+        assert!(!environment.contains_key(yaml_serde::Value::String(key.to_owned())));
+    }
     assert!(
         environment
             [yaml_serde::Value::String("CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS".to_owned())]
@@ -394,7 +391,7 @@ fn both_external_projects_provide_the_client_conformance_config_writer() {
                 let compose: yaml_serde::Value =
                     yaml_serde::from_str(&source).expect("Compose YAML");
                 let service = &compose["services"]["config_writer"];
-                (!service.is_null()).then(|| service.clone())
+                (!service["entrypoint"].is_null()).then(|| service.clone())
             })
             .collect();
         assert_eq!(
@@ -412,7 +409,7 @@ fn both_external_projects_provide_the_client_conformance_config_writer() {
 }
 
 #[test]
-fn standalone_dataplane_owns_ephemeral_jwks_auth_and_mock_helpers() {
+fn standalone_harness_owns_auth_without_dataplane_tools() {
     let root = workspace_root();
     let compose =
         fs::read_to_string(root.join("docker/docker-compose.cf-dataplane-standalone.yaml"))
@@ -423,20 +420,26 @@ fn standalone_dataplane_owns_ephemeral_jwks_auth_and_mock_helpers() {
         .as_mapping()
         .expect("standalone services must be a mapping");
 
-    assert_eq!(services.len(), 5);
+    assert_eq!(services.len(), 6);
     assert!(compose["services"]["gateway"].is_null());
     assert_eq!(
-        compose["services"]["auth_keygen"]["network_mode"].as_str(),
-        Some("none")
+        compose["services"]["auth"]["network_mode"].as_str(),
+        Some("service:dataplane")
     );
     assert_eq!(
         compose["services"]["dataplane"]["environment"]["CONTEXTFORGE_DATA_PLANE_JWKS_URL"]
             .as_str(),
-        Some("http://127.0.0.1:4445/contextforge-rs/admin/.well-known/jwks.json")
+        Some("http://127.0.0.1:4446/.well-known/jwks.json")
+    );
+    assert!(compose["services"]["dataplane"]["command"].is_null());
+    assert!(compose["services"]["dataplane"]["volumes"].is_null());
+    assert_eq!(
+        compose["services"]["nginx"]["depends_on"]["auth"]["condition"].as_str(),
+        Some("service_healthy")
     );
     assert_eq!(
-        compose["services"]["dataplane"]["command"][1].as_str(),
-        Some("/keys/jwt.key")
+        compose["services"]["config_writer"]["volumes"][0].as_str(),
+        Some("standalone_auth:/keys:ro")
     );
     assert!(
         compose["services"]["dataplane"]["environment"]["CONTEXTFORGE_DATA_PLANE_TOKEN_SECRET"]

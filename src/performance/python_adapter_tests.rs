@@ -24,7 +24,7 @@ fn workspace_root() -> PathBuf {
 fn standalone_config_writer_has_valid_javascript_syntax() {
     for script in [
         "conformance/write_dataplane_config.mjs",
-        "standalone/generate_auth_key.mjs",
+        "standalone/auth.mjs",
     ] {
         let output = Command::new("node")
             .arg("--check")
@@ -658,32 +658,89 @@ assert.deepEqual(legacyMethods, ['initialize', 'notifications/initialized', 'too
 }
 
 #[test]
-fn client_config_writer_publishes_a_schema_for_each_scenario_tool() {
+fn client_config_writer_preserves_scenario_schemas_and_empty_maps() {
     let script = r#"
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 const scriptPath = process.argv[1];
-process.argv = ['node', scriptPath, 'client', 'scenario-server', 'http://fixture/mcp',
-    '2026-07-28', '["metadata_probe","add_numbers"]'];
-process.env.MCP_CONFORMANCE_TOKEN = `header.${Buffer.from('{"sub":"scenario-user"}').toString('base64url')}.signature`;
-let published = false;
-globalThis.fetch = async (url, options) => {
-    assert.ok(url.endsWith('/userconfigs/scenario-user'));
-    assert.equal(options.method, 'POST');
-    const host = JSON.parse(options.body).virtual_hosts['scenario-server'];
-    assert.deepEqual(Object.keys(host.tools), ['metadata_probe', 'add_numbers']);
-    assert.deepEqual(host.backends['conformance-backend'].tool_schemas, { metadata_probe: {}, add_numbers: {} });
-    published = true;
-    return new Response(null, { status: 202 });
-};
-await import(pathToFileURL(scriptPath).href);
-assert.ok(published);
+process.argv = ['node'];
+const { config } = await import(pathToFileURL(scriptPath).href);
+const host = config('scenario-server', 'http://fixture/mcp', '2026-07-28', {
+    tools: ['metadata_probe', 'add_numbers'],
+    toolSchemas: { metadata_probe: {}, add_numbers: {} },
+    resources: [], resourceTemplates: [], prompts: [],
+}).virtual_hosts['scenario-server'];
+assert.deepEqual(Object.keys(host.tools), ['metadata_probe', 'add_numbers']);
+assert.deepEqual(host.backends['conformance-backend'].tool_schemas, { metadata_probe: {}, add_numbers: {} });
+assert.deepEqual(host.resources, {});
+assert.deepEqual(host.resource_templates, {});
+assert.deepEqual(host.prompts, {});
 "#;
     let output = Command::new("node")
         .args(["--input-type=module", "--eval", script])
         .arg(scripts_dir().join("conformance/write_dataplane_config.mjs"))
         .output()
         .expect("Node config writer test runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn standalone_auth_serves_public_jwks_and_signs_verifiable_tokens() {
+    let script = r#"
+import assert from 'node:assert/strict';
+import { createPublicKey, verify, generateKeyPairSync } from 'node:crypto';
+import { once } from 'node:events';
+import { readFileSync, statSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [authPath, writerPath, keyPath] = process.argv.slice(1);
+process.argv = ['node'];
+const { startAuth } = await import(pathToFileURL(authPath).href);
+const { issueToken } = await import(pathToFileURL(writerPath).href);
+let originalJwks;
+for (let run = 0; run < 2; run++) {
+  const server = startAuth(keyPath, 0);
+  try {
+    await once(server, 'listening');
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const response = await fetch(`${base}/.well-known/jwks.json`);
+    assert.equal(response.status, 200);
+    const jwks = await response.json();
+    if (originalJwks) assert.deepEqual(jwks, originalJwks);
+    originalJwks = jwks;
+    const jwk = jwks.keys[0];
+    assert.equal(jwk.d, undefined);
+    assert.equal(jwk.p, undefined);
+    const token = issueToken('tenant', 'subject', readFileSync(keyPath));
+    const [header, claims, signature] = token.split('.');
+    assert.equal(JSON.parse(Buffer.from(header, 'base64url')).kid, jwk.kid);
+    const decoded = JSON.parse(Buffer.from(claims, 'base64url'));
+    assert.equal(decoded.sub, 'subject');
+    assert.equal(decoded.tenant_id, 'tenant');
+    assert.ok(decoded.exp > Date.now() / 1000);
+    const data = Buffer.from(`${header}.${claims}`);
+    const bytes = Buffer.from(signature, 'base64url');
+    assert.ok(verify('RSA-SHA256', data, createPublicKey({ key: jwk, format: 'jwk' }), bytes));
+    assert.equal(verify('RSA-SHA256', data, generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey, bytes), false);
+    assert.equal((await fetch(`${base}/jwt.key`)).status, 404);
+    assert.equal((await fetch(`${base}/.well-known/jwks.json`, { method: 'POST' })).status, 405);
+    if (process.platform !== 'win32') assert.equal(statSync(keyPath).mode & 0o777, 0o600);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+}
+"#;
+    let directory = tempfile::tempdir().expect("temporary auth directory");
+    let output = Command::new("node")
+        .args(["--input-type=module", "--eval", script])
+        .arg(scripts_dir().join("standalone/auth.mjs"))
+        .arg(scripts_dir().join("conformance/write_dataplane_config.mjs"))
+        .arg(directory.path().join("jwt.key"))
+        .output()
+        .expect("Node auth test runs");
     assert!(
         output.status.success(),
         "{}",

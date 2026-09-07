@@ -23,6 +23,7 @@ macro_rules! asset {
 }
 
 const ASSETS: &[EmbeddedAsset] = &[
+    asset!("docker/clickstack/collector.yaml"),
     asset!("docker/docker-compose.cf-conformance-fixture.yaml"),
     asset!("docker/docker-compose.cf-conformance-controlplane.yaml"),
     asset!("docker/docker-compose.cf-conformance-runtime.yaml"),
@@ -44,7 +45,10 @@ const ASSETS: &[EmbeddedAsset] = &[
     asset!("scripts/live_protocol/sitecustomize.py"),
     asset!("scripts/conformance/write_dataplane_config.mjs"),
     asset!("scripts/locustfile_mcp.py"),
-    asset!("scripts/standalone/generate_auth_key.mjs"),
+    asset!("scripts/standalone/auth.mjs"),
+    asset!("scripts/conformance/package.json"),
+    asset!("scripts/conformance/package-lock.json"),
+    asset!("scripts/conformance/Dockerfile"),
     asset!("tests/conformance/baselines/2026-07-28/legacy/built-in-data-plane.yml"),
     asset!("tests/conformance/baselines/2026-07-28/legacy/client/external-data-plane.yml"),
     asset!("tests/conformance/baselines/2026-07-28/legacy/external-data-plane.yml"),
