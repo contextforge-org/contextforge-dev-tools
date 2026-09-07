@@ -36,6 +36,7 @@ impl LocustCommand {
     /// ID, an invalid timeout, or an inaccessible report directory.
     pub(crate) fn new_with_protocol_version(
         config: &AppConfig,
+        project: ComposeProject,
         mode: StackMode,
         settings: &LoadSettings,
         bearer_token: &str,
@@ -68,69 +69,44 @@ impl LocustCommand {
         })?;
 
         let volume = volume_argument(&report_dir);
-        let project = match mode {
-            StackMode::Dataplane => ComposeProject::dataplane(
-                config.asset_root(),
-                config.controlplane_dir(),
-                config.integration_project().value.clone(),
-                !config.dataplane_ref().value.is_empty(),
-            ),
-            StackMode::Controlplane => ComposeProject::controlplane(
-                config.asset_root(),
-                config.controlplane_dir(),
-                config.controlplane_project().value.clone(),
-                controlplane_sso_enabled(config),
-            ),
-        };
-
-        let command = match mode {
-            StackMode::Dataplane => project.command([
-                OsString::from("--profile"),
-                OsString::from("testing"),
-                OsString::from("run"),
-                OsString::from("--rm"),
-                OsString::from("--no-deps"),
-                OsString::from("--volume"),
-                volume,
-                OsString::from("locust"),
-            ]),
-            StackMode::Controlplane => {
-                let adapter_volume = adapter_volume_argument(config.asset_root());
-                let arguments = vec![
-                    OsString::from("run"),
-                    OsString::from("--rm"),
-                    OsString::from("--no-deps"),
-                    OsString::from("--volume"),
-                    volume,
-                    OsString::from("--volume"),
-                    adapter_volume,
-                    OsString::from("-e"),
-                    OsString::from("MCPGATEWAY_BEARER_TOKEN"),
-                    OsString::from("-e"),
-                    OsString::from("MCP_STACK_MODE"),
-                    OsString::from("-e"),
-                    OsString::from(REQUEST_TIMEOUT_ENV),
-                    OsString::from("-e"),
-                    OsString::from("MCP_PROTOCOL_VERSION"),
-                    OsString::from("-e"),
-                    OsString::from("MCP_TOOL_NAMES"),
-                    OsString::from("--entrypoint"),
-                    OsString::from("locust"),
-                    OsString::from("locust"),
-                    OsString::from("-f"),
-                    OsString::from(LOCUST_ADAPTER_CONTAINER_PATH),
-                    OsString::from("--host=http://nginx:80"),
-                    OsString::from(format!("--users={}", settings.users().get())),
-                    OsString::from(format!("--spawn-rate={}", settings.spawn_rate())),
-                    OsString::from(format!("--run-time={}", settings.run_time())),
-                    OsString::from("--headless"),
-                    OsString::from("--html=/mnt/reports/locust_report.html"),
-                    OsString::from("--csv=/mnt/reports/locust"),
-                    OsString::from("--only-summary"),
-                ];
-                project.command(arguments)
-            }
-        };
+        let adapter_volume = adapter_volume_argument(config.asset_root());
+        let arguments = vec![
+            OsString::from("run"),
+            OsString::from("--rm"),
+            OsString::from("--no-deps"),
+            OsString::from("--volume"),
+            volume,
+            OsString::from("--volume"),
+            adapter_volume,
+            OsString::from("-e"),
+            OsString::from("MCPGATEWAY_BEARER_TOKEN"),
+            OsString::from("-e"),
+            OsString::from("MCP_STACK_MODE"),
+            OsString::from("-e"),
+            OsString::from(REQUEST_TIMEOUT_ENV),
+            OsString::from("-e"),
+            OsString::from("MCP_PROTOCOL_VERSION"),
+            OsString::from("-e"),
+            OsString::from("MCP_TOOL_NAMES"),
+            OsString::from("-e"),
+            OsString::from("MCP_SKIP_TOOL_LIST"),
+            OsString::from("-e"),
+            OsString::from("MCP_SERVER_ID"),
+            OsString::from("--entrypoint"),
+            OsString::from("locust"),
+            OsString::from("locust"),
+            OsString::from("-f"),
+            OsString::from(LOCUST_ADAPTER_CONTAINER_PATH),
+            OsString::from("--host=http://nginx:80"),
+            OsString::from(format!("--users={}", settings.users().get())),
+            OsString::from(format!("--spawn-rate={}", settings.spawn_rate())),
+            OsString::from(format!("--run-time={}", settings.run_time())),
+            OsString::from("--headless"),
+            OsString::from("--html=/mnt/reports/locust_report.html"),
+            OsString::from("--csv=/mnt/reports/locust"),
+            OsString::from("--only-summary"),
+        ];
+        let command = project.command(arguments);
 
         let mut command = command
             .env("CF_INTEGRATION_ROOT", config.asset_root().as_os_str())
@@ -150,7 +126,9 @@ impl LocustCommand {
             }
             StackMode::Controlplane => {
                 let tool_names = configured_text(config, "MCP_TOOL_NAMES").unwrap_or("");
-                command = command.env("MCP_TOOL_NAMES", tool_names);
+                command = command
+                    .env("MCP_TOOL_NAMES", tool_names)
+                    .env("MCP_SERVER_ID", "");
             }
         }
 
@@ -307,14 +285,6 @@ fn adapter_volume_argument(root: &Path) -> OsString {
     argument.push(LOCUST_ADAPTER_CONTAINER_PATH);
     argument.push(":ro");
     argument
-}
-
-fn controlplane_sso_enabled(config: &AppConfig) -> bool {
-    config
-        .environment()
-        .get(OsStr::new("CONTROLPLANE_ENABLE_SSO"))
-        .and_then(|value| value.value.to_str())
-        .is_some_and(|value| matches!(value, "true" | "1"))
 }
 
 #[cfg(test)]

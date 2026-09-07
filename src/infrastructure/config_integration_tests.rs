@@ -42,7 +42,7 @@ struct TestConfigLoad {
 fn load_app_config(root: &Path, process: &Environment) -> TestConfigLoad {
     let bootstrap = ConfigBootstrap::load(process, root).expect("bootstrap should load");
     let warnings = bootstrap.warnings().to_vec();
-    let config = AppConfig::load(bootstrap, ConfigRequirements::RUNTIME)
+    let config = AppConfig::load(bootstrap, ConfigRequirements::Runtime)
         .expect("application config should load");
     TestConfigLoad { config, warnings }
 }
@@ -231,7 +231,7 @@ fn workspace_root_prefers_process_override() {
 
     let bootstrap =
         ConfigBootstrap::load(&process, cwd_root.path()).expect("bootstrap should load");
-    let config = AppConfig::load(bootstrap, ConfigRequirements::READ_ONLY)
+    let config = AppConfig::load(bootstrap, ConfigRequirements::ReadOnly)
         .expect("read-only config should resolve");
 
     assert_eq!(config.root(), process_root.path());
@@ -242,7 +242,7 @@ fn workspace_root_defaults_to_cwd_without_writing_files() {
     let outside = tempfile::tempdir().expect("temporary directory should be created");
     let bootstrap =
         ConfigBootstrap::load(&Environment::new(), outside.path()).expect("bootstrap should load");
-    let config = AppConfig::load(bootstrap, ConfigRequirements::READ_ONLY)
+    let config = AppConfig::load(bootstrap, ConfigRequirements::ReadOnly)
         .expect("read-only config should resolve");
 
     assert_eq!(config.root(), outside.path());
@@ -259,7 +259,7 @@ fn invalid_explicit_runtime_root_fails_closed() {
     )]);
 
     let bootstrap = ConfigBootstrap::load(&process, outside.path()).expect("bootstrap should load");
-    let error = AppConfig::load(bootstrap, ConfigRequirements::RUNTIME)
+    let error = AppConfig::load(bootstrap, ConfigRequirements::Runtime)
         .expect_err("an explicit root without assets must fail");
 
     assert!(error.to_string().contains(ROOT_OVERRIDE));

@@ -134,6 +134,7 @@ impl CapturedOutput {
 
     /// Returns captured standard output bytes.
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn stdout(&self) -> &[u8] {
         &self.stdout
     }
@@ -213,6 +214,17 @@ pub(crate) trait ProcessRunner {
     /// Captures standard output while inheriting standard error.
     fn capture_stdout(&self, spec: &CommandSpec) -> Result<Vec<u8>, InfrastructureError>;
 
+    /// Returns command data on stdout and appends diagnostics on stderr to a log.
+    fn capture_stdout_to_log(
+        &self,
+        spec: &CommandSpec,
+        log_path: &Path,
+    ) -> Result<Vec<u8>, InfrastructureError> {
+        let output = self.capture_output(spec)?;
+        append_captured_stderr(log_path, spec, &output)?;
+        Ok(output.stdout)
+    }
+
     /// Captures standard output and error separately.
     fn capture_output(&self, spec: &CommandSpec) -> Result<CapturedOutput, InfrastructureError>;
 
@@ -282,14 +294,20 @@ impl<R: ProcessRunner> ProcessRunner for LoggingProcessRunner<'_, R> {
     }
 
     fn capture_stdout(&self, spec: &CommandSpec) -> Result<Vec<u8>, InfrastructureError> {
-        let output = self.inner.capture_output(spec)?;
-        append_captured_output(self.log_path, spec, &output)?;
-        Ok(output.stdout)
+        self.inner.capture_stdout_to_log(spec, self.log_path)
+    }
+
+    fn capture_stdout_to_log(
+        &self,
+        spec: &CommandSpec,
+        log_path: &Path,
+    ) -> Result<Vec<u8>, InfrastructureError> {
+        self.inner.capture_stdout_to_log(spec, log_path)
     }
 
     fn capture_output(&self, spec: &CommandSpec) -> Result<CapturedOutput, InfrastructureError> {
         let output = self.inner.capture_output(spec)?;
-        append_captured_output(self.log_path, spec, &output)?;
+        append_captured_stderr(self.log_path, spec, &output)?;
         Ok(output)
     }
 
@@ -445,6 +463,27 @@ impl ProcessRunner for SystemProcessRunner {
         Ok(CapturedOutput::new(output.stdout, output.stderr))
     }
 
+    fn capture_stdout_to_log(
+        &self,
+        spec: &CommandSpec,
+        log_path: &Path,
+    ) -> Result<Vec<u8>, InfrastructureError> {
+        let log = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .with_context(|| log_context("open", log_path, spec))?;
+        let output = command(spec)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(log))
+            .output()
+            .with_context(|| operation_context("capture", spec))?;
+        // stderr is already durable even when the command fails. stdout can
+        // contain credentials or structured data and must never enter the log.
+        require_success(spec, output.status)?;
+        Ok(output.stdout)
+    }
+
     fn run_to_log(&self, spec: &CommandSpec, log_path: &Path) -> Result<(), InfrastructureError> {
         let (log, stderr_log) = log_handles(log_path, spec)?;
         let mut command = command(spec);
@@ -473,7 +512,7 @@ fn log_handles(log_path: &Path, spec: &CommandSpec) -> Result<(File, File), Infr
     Ok((log, stderr_log))
 }
 
-fn append_captured_output(
+fn append_captured_stderr(
     log_path: &Path,
     spec: &CommandSpec,
     output: &CapturedOutput,
@@ -483,8 +522,7 @@ fn append_captured_output(
         .append(true)
         .open(log_path)
         .with_context(|| log_context("open", log_path, spec))?;
-    log.write_all(output.stdout())
-        .and_then(|()| log.write_all(output.stderr()))
+    log.write_all(output.stderr())
         .with_context(|| log_context("append output to", log_path, spec))?;
     Ok(())
 }

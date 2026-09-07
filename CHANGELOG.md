@@ -7,6 +7,54 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Changed
+
+- Simplified runtime dispatch and shared authenticated workflow setup, removing
+  forwarding wrappers while preserving token revocation and stack cleanup.
+
+### Fixed
+
+- Removed control-plane checkout, worker-configuration, and secret-generation
+  dependencies from standalone workflows, including installed-binary load tests.
+- Kept captured command data, including test tokens, out of conformance setup
+  logs while retaining helper diagnostics when stdout capture fails.
+- Stopped the entire conformance matrix after Ctrl-C cleanup and prevented
+  interrupted runs from updating baselines.
+- Discover standalone conformance routes and input schemas from the running
+  fixture, including paginated diagnostic tools. Fixture discovery errors stop
+  setup before a baseline can be blessed.
+- Made the dataplane config writer available to normal external client conformance
+  and preserved schemas for its scenario tools.
+- Accepted empty pagination cursors and legacy SSE keepalives during discovery,
+  and used the fixture's protocol era when configuring backends for clients from
+  a different era.
+- Rejected `live --standalone`, which previously reported live-group success after
+  only a probe. Isolated route checks remain available through `probe --standalone`.
+
+## [0.3.1] - 2026-09-04
+
+### Added
+
+- Added global standalone external-dataplane mode across stack, probe, load,
+  conformance, and debug-token workflows, backed by mocked Redis,
+  ephemeral RSA authentication, and no control-plane services.
+
+### Changed
+
+- Published every standalone route through the running dataplane's serializer
+  so mocked Redis snapshots always use that image's current MessagePack schema.
+- Added protocol-mode selection to `stack up`.
+- Left the independent ClickStack service running during explicit stack cleanup
+  as well as managed workflow cleanup.
+
+### Fixed
+
+- Avoided a Linux `ETXTBSY` race in the native process-runner test.
+- Embedded the complete standalone and observability asset set in installed
+  binaries and updated standalone authentication for the dataplane JWKS model.
+- Skipped unsupported external-dataplane catalog fan-out during standalone
+  probes and load tests while retaining routed tool-call coverage.
+
 ## [0.3.0] - 2026-09-03
 
 ### Added
@@ -27,7 +75,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Reused the external conformance stack between compatible server and client
   phases while preserving setup, execution, and cleanup failures.
 - Moved ClickStack into an independent Compose lifecycle so managed test cleanup
-  leaves telemetry available for inspection; explicit `stack down` removes it.
+  leaves telemetry available for inspection.
 - Made ClickStack the default for non-performance workflows and an explicit
   opt-in for load tests to avoid skewing benchmark results.
 
@@ -68,7 +116,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Added builtin and external dataplane routing through reusable Docker Compose
   overlays.
 
-[Unreleased]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/contextforge-org/contextforge-dev-tools/releases/tag/v0.1.0

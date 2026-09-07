@@ -21,7 +21,6 @@ pub(crate) const CLIENT_DRIVER_FAILURE_PREFIX: &str = "client conformance driver
 const SCENARIO_ENV: &str = "MCP_CONFORMANCE_SCENARIO";
 const PROTOCOL_VERSION_ENV: &str = "MCP_CONFORMANCE_PROTOCOL_VERSION";
 const CONTEXT_ENV: &str = "MCP_CONFORMANCE_CONTEXT";
-const CONFIG_WRITER: &str = "/opt/contextforge-conformance/write_client_config.py";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -56,7 +55,7 @@ pub(crate) async fn run_internal_client(arguments: &[OsString]) -> Result<()> {
     let base_url = required_environment(CLIENT_BASE_URL_ENV)?;
     let tool_calls = scenario_tool_calls(&scenario)?;
     let backend_url = container_backend_url(scenario_server_url)?;
-    publish_scenario_config(&backend_url, &server_id, &tool_calls)?;
+    publish_scenario_config(&backend_url, &server_id, &protocol_version, &tool_calls)?;
 
     let mut client =
         GatewayClient::builder(GatewayTopology::Dataplane, &base_url, &server_id, &token)
@@ -146,6 +145,7 @@ fn container_backend_url(value: &str) -> Result<String> {
 fn publish_scenario_config(
     backend_url: &str,
     server_id: &str,
+    protocol_version: &str,
     tool_calls: &[ToolCall],
 ) -> Result<()> {
     let serialized_args = required_environment(CLIENT_COMPOSE_ARGS_ENV)?;
@@ -166,12 +166,11 @@ fn publish_scenario_config(
         "--no-deps",
         "-e",
         CLIENT_TOKEN_ENV,
-        "--entrypoint",
-        "python3",
-        "gateway",
-        CONFIG_WRITER,
+        "config_writer",
+        "client",
         server_id,
         backend_url,
+        protocol_version,
         &tool_names,
     ]);
     SystemProcessRunner

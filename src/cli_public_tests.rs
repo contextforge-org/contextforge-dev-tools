@@ -158,7 +158,8 @@ fn stack_up_and_down_make_destructive_behavior_explicit() {
     else {
         panic!("expected stack up")
     };
-    assert_eq!(up.lane, Some(CliRoutedLane::External));
+    assert_eq!(up.target.lane, Some(CliRoutedLane::External));
+    assert_eq!(up.target.protocol_version, None);
     assert!(up.fresh);
 
     let Command::Stack(StackArgs {
@@ -207,7 +208,6 @@ fn stack_logs_preserve_service_arguments() {
 fn load_keeps_validated_locust_settings() {
     let Command::Load(LoadArgs {
         target,
-        standalone,
         observability,
         users,
         spawn_rate,
@@ -229,7 +229,6 @@ fn load_keeps_validated_locust_settings() {
     };
     assert_eq!(target.lane, None);
     assert_eq!(target.protocol_version, None);
-    assert!(!standalone);
     assert!(!observability);
     assert_eq!(users, Some(2));
     assert_eq!(spawn_rate, Some(0.5));
@@ -243,20 +242,19 @@ fn load_keeps_validated_locust_settings() {
 
 #[test]
 fn load_accepts_standalone_external_dataplane_mode() {
-    let Command::Load(args) = parse(&[
+    let cli = parse(&[
         "cf-integration",
         "load",
         "--lane",
         "external",
         "--standalone",
-    ])
-    .command
-    else {
+    ]);
+    assert!(cli.standalone);
+    let Command::Load(args) = cli.command else {
         panic!("expected load")
     };
 
     assert_eq!(args.target.lane, Some(CliRoutedLane::External));
-    assert!(args.standalone);
 }
 
 #[test]
@@ -382,6 +380,20 @@ fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
     }
 
     let common = ["--lane", "builtin", "--protocol-version", "legacy"];
+    let Command::Stack(StackArgs {
+        command: StackCommand::Up(stack),
+    }) = parse(
+        &["cf-integration", "stack", "up"]
+            .into_iter()
+            .chain(common)
+            .collect::<Vec<_>>(),
+    )
+    .command
+    else {
+        panic!("expected stack-up workflow")
+    };
+    assert_routed_target(&stack.target);
+
     let Command::Probe(probe) = parse(
         &["cf-integration", "probe"]
             .into_iter()
@@ -436,6 +448,30 @@ fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
 }
 
 #[test]
+fn standalone_is_global_across_operational_commands() {
+    for arguments in [
+        vec!["cf-integration", "stack", "up", "--standalone"],
+        vec!["cf-integration", "stack", "status", "--standalone"],
+        vec!["cf-integration", "probe", "--standalone"],
+        vec!["cf-integration", "load", "--standalone"],
+        vec!["cf-integration", "conformance", "run", "--standalone"],
+        vec![
+            "cf-integration",
+            "debug",
+            "token",
+            "--kind",
+            "scoped",
+            "--standalone",
+        ],
+    ] {
+        assert!(
+            parse(&arguments).standalone,
+            "missing global flag for {arguments:?}"
+        );
+    }
+}
+
+#[test]
 fn routed_workflows_reject_the_fixture_lane_during_parsing() {
     for arguments in [
         vec!["cf-integration", "probe", "--lane", "fixture-direct"],
@@ -455,9 +491,11 @@ fn routed_workflows_reject_the_fixture_lane_during_parsing() {
 
 #[test]
 fn conformance_defaults_to_all_lanes_and_july_revision_at_resolution_time() {
+    let cli = parse(&["cf-integration", "conformance", "run"]);
+    assert!(!cli.standalone);
     let Command::Conformance(ConformanceArgs {
         command: ConformanceCommand::Run(args),
-    }) = parse(&["cf-integration", "conformance", "run"]).command
+    }) = cli.command
     else {
         panic!("expected conformance run")
     };
@@ -548,6 +586,26 @@ fn conformance_accepts_repeatable_exact_lanes_and_protocol_eras() {
         "--baseline",
         "known.yml",
     ]);
+}
+
+#[test]
+fn conformance_accepts_standalone_external_mode() {
+    let cli = parse(&[
+        "cf-integration",
+        "conformance",
+        "run",
+        "--lane",
+        "external",
+        "--standalone",
+    ]);
+    assert!(cli.standalone);
+    let Command::Conformance(ConformanceArgs {
+        command: ConformanceCommand::Run(args),
+    }) = cli.command
+    else {
+        panic!("expected conformance run")
+    };
+    assert_eq!(args.lane, [CliLane::External]);
 }
 
 #[test]

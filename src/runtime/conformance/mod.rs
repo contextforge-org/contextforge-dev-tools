@@ -175,9 +175,12 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         &self,
         topology: StackMode,
         server_era: ConformanceServerEra,
+        standalone: bool,
+        observability: bool,
     ) -> AppResult<()> {
-        self.build_conformance_service(topology, server_era).await?;
-        self.start_conformance_containers(topology, server_era)
+        self.build_conformance_service(topology, server_era, standalone, observability)
+            .await?;
+        self.start_conformance_containers(topology, server_era, standalone, observability)
             .await
     }
 
@@ -185,11 +188,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         &self,
         topology: StackMode,
         server_era: ConformanceServerEra,
+        standalone: bool,
+        observability: bool,
     ) -> AppResult<()> {
-        let project = self.conformance_compose_project(topology);
+        let project = self.routed_conformance_project(topology, standalone, observability);
         let build = project.command(["build", OFFICIAL_CONFORMANCE_SERVICE]);
         let build = self
-            .compose_environment(build, topology, true)?
+            .target_environment(build, topology, standalone)?
             .env(CONFORMANCE_SERVER_ERA_ENV, server_era.label());
         Ok(self.runner.run_async(&build).await?)
     }
@@ -198,8 +203,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         &self,
         topology: StackMode,
         server_era: ConformanceServerEra,
+        standalone: bool,
+        observability: bool,
     ) -> AppResult<()> {
-        let project = self.conformance_compose_project(topology);
+        let project = self.routed_conformance_project(topology, standalone, observability);
         let up = project.command([
             "up",
             "-d",
@@ -208,41 +215,90 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             OFFICIAL_CONFORMANCE_PROXY_SERVICE,
         ]);
         let up = self
-            .compose_environment(up, topology, true)?
+            .target_environment(up, topology, standalone)?
             .env(CONFORMANCE_SERVER_ERA_ENV, server_era.label());
         Ok(self.runner.run_async(&up).await?)
     }
 
-    pub(super) fn conformance_fixture_endpoint(&self, topology: StackMode) -> AppResult<url::Url> {
-        let command = self.conformance_compose_project(topology).command([
-            "port",
-            OFFICIAL_CONFORMANCE_SERVICE,
-            "3000",
-        ]);
-        let command = self.compose_environment(command, topology, true)?;
+    pub(super) fn conformance_fixture_endpoint(
+        &self,
+        topology: StackMode,
+        standalone: bool,
+        observability: bool,
+    ) -> AppResult<url::Url> {
+        let command = self
+            .routed_conformance_project(topology, standalone, observability)
+            .command(["port", OFFICIAL_CONFORMANCE_SERVICE, "3000"]);
+        let command = self.target_environment(command, topology, standalone)?;
         let output = self.runner.capture_stdout(&command)?;
         parse_conformance_fixture_endpoint(&output).map_err(AppFailure::from)
     }
 
-    async fn stop_conformance_service(&self, topology: StackMode) -> AppResult<()> {
-        let remove = self.conformance_compose_project(topology).command([
-            "rm",
-            "--stop",
-            "--force",
-            OFFICIAL_CONFORMANCE_PROXY_SERVICE,
-            OFFICIAL_CONFORMANCE_SERVICE,
-        ]);
-        let remove = self.compose_environment(remove, topology, true)?;
+    async fn stop_conformance_service(
+        &self,
+        topology: StackMode,
+        standalone: bool,
+        observability: bool,
+    ) -> AppResult<()> {
+        let remove = self
+            .routed_conformance_project(topology, standalone, observability)
+            .command([
+                "rm",
+                "--stop",
+                "--force",
+                OFFICIAL_CONFORMANCE_PROXY_SERVICE,
+                OFFICIAL_CONFORMANCE_SERVICE,
+            ]);
+        let remove = self.target_environment(remove, topology, standalone)?;
         self.runner
             .run_async(&remove)
             .await
             .map_err(AppFailure::from)
     }
 
+    fn routed_conformance_project(
+        &self,
+        topology: StackMode,
+        standalone: bool,
+        observability: bool,
+    ) -> ComposeProject {
+        if standalone {
+            debug_assert_eq!(topology, StackMode::Dataplane);
+            self.standalone_conformance_compose_project(observability)
+        } else {
+            self.conformance_compose_project(topology)
+        }
+    }
+
     pub(super) async fn execute_conformance(&self, action: ConformanceAction) -> AppResult<()> {
+        self.execute_conformance_with_interrupt(action, async {
+            if tokio::signal::ctrl_c().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        })
+        .await
+    }
+
+    async fn execute_conformance_with_interrupt<I>(
+        &self,
+        action: ConformanceAction,
+        interrupt: I,
+    ) -> AppResult<()>
+    where
+        I: Future<Output = ()>,
+    {
+        // Cancellation belongs to the matrix even if an entry cannot write its
+        // final artifacts and returns an error instead of an outcome.
+        let interruption_requested = std::cell::Cell::new(false);
+        let interrupt = async {
+            interrupt.await;
+            interruption_requested.set(true);
+        };
+        tokio::pin!(interrupt);
         match action {
             ConformanceAction::Run {
                 lanes,
+                standalone,
                 client_eras: _,
                 client_versions,
                 server_eras,
@@ -287,7 +343,14 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     let executor = RuntimeContext::new(self.config.clone(), quiet_runner);
                     let matrix_started = Instant::now();
                     let run_result = executor
-                        .run_conformance(&lanes, &client_version, server_era, &paths)
+                        .run_conformance_with_interrupt(
+                            &lanes,
+                            &client_version,
+                            server_era,
+                            &paths,
+                            standalone,
+                            interrupt.as_mut(),
+                        )
                         .await;
                     let run_completed = matches!(
                         &run_result,
@@ -568,6 +631,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                             setup_log.display()
                         );
                     }
+                    if interruption_requested.get() {
+                        reported_failure = true;
+                        break;
+                    }
                 }
 
                 let baselines_updated = finalize_conformance_execution(
@@ -593,27 +660,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         }
     }
 
-    async fn run_conformance(
-        &self,
-        lanes: &[SemanticLane],
-        spec_version: &str,
-        server_era: ConformanceServerEra,
-        paths: &ConformancePaths,
-    ) -> AppResult<ConformanceRunOutcome> {
-        self.run_conformance_with_interrupt(lanes, spec_version, server_era, paths, async {
-            if tokio::signal::ctrl_c().await.is_err() {
-                std::future::pending::<()>().await;
-            }
-        })
-        .await
-    }
-
     async fn run_conformance_with_interrupt<I>(
         &self,
         lanes: &[SemanticLane],
         spec_version: &str,
         server_era: ConformanceServerEra,
         paths: &ConformancePaths,
+        standalone: bool,
         interrupt: I,
     ) -> AppResult<ConformanceRunOutcome>
     where
@@ -713,7 +766,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
 
         if !topologies.is_empty() && !interrupted {
             let cleanup_progress = Activity::spinner("Clear prior integration stacks");
-            let cleanup_result = self.cleanup(LaneSelection::All, CleanupKind::Reset);
+            let cleanup_result = if standalone {
+                self.cleanup_standalone_dataplane(CleanupKind::Reset)
+            } else {
+                self.cleanup(LaneSelection::All, CleanupKind::Reset)
+            };
             cleanup_progress.finish(cleanup_result.is_ok());
             if let Err(error) = cleanup_result {
                 failures.push(ConformanceOperationalFailure::server(
@@ -728,10 +785,15 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             if interrupted {
                 break;
             }
+            let standalone_topology = standalone && topology == StackMode::Dataplane;
             let target = conformance_target(topology);
             let run_routed = lanes.contains(&target);
             let stack_progress = Activity::spinner(format!("Prepare {}", topology.lane_label()));
-            let mut topology_failure = self.stack_up_for_conformance(topology, true).await.err();
+            let mut topology_failure = if standalone_topology {
+                self.stack_up_standalone_dataplane(true, true).await.err()
+            } else {
+                self.stack_up_for_conformance(topology, true).await.err()
+            };
             let stack_started = topology_failure.is_none();
             stack_progress.finish(topology_failure.is_none());
             let mut fixture_state = None;
@@ -745,7 +807,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     topology.lane_label()
                 ));
                 let (start_result, start_interrupted) = finish_phase_after_interrupt(
-                    self.start_conformance_service(topology, server_era),
+                    self.start_conformance_service(topology, server_era, standalone_topology, true),
                     interrupt.as_mut(),
                 )
                 .await;
@@ -774,7 +836,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 }
             }
 
-            if topology_failure.is_none() && run_routed {
+            if topology_failure.is_none() && run_routed && !standalone_topology {
                 match self.admin_session_token().await.and_then(|token| {
                     ConformanceFixtureClient::builder(self.base_url()?, token)
                         .build()
@@ -830,41 +892,64 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             }
 
             if topology_failure.is_none() && run_routed {
-                let run_inputs = fixture_state
-                    .as_ref()
-                    .map(|(_, fixture)| fixture)
-                    .zip(fixture_metadata.as_ref());
+                let server_id = if standalone_topology {
+                    Some(OFFICIAL_CONFORMANCE_SERVER_ID)
+                } else {
+                    fixture_state
+                        .as_ref()
+                        .map(|(_, fixture)| fixture.server_id.as_str())
+                };
+                let run_inputs = server_id.zip(fixture_metadata.as_ref());
                 match run_inputs {
-                    Some((fixture, metadata)) => match self.issue_conformance_token().await {
+                    Some((server_id, metadata)) => match if standalone_topology {
+                        self.standalone_dataplane_token(true)
+                    } else {
+                        self.issue_conformance_token().await
+                    } {
                         Ok(token) => {
                             managed_token = Some(token);
                             let token = managed_token
                                 .as_ref()
                                 .expect("managed token was just stored");
-                            let tests = async {
-                                self.run_official_conformance_mode(
-                                    &OfficialConformanceRun {
-                                        topology,
-                                        server_id: &fixture.server_id,
-                                        token: &token.value,
-                                        spec_version,
-                                        server_era,
-                                        fixture: metadata,
-                                        cancellation: cancellation_receiver.clone(),
-                                    },
-                                    paths,
+                            if standalone_topology
+                                && let Err(error) = self.publish_standalone_conformance_config(
+                                    server_id,
+                                    server_era
+                                        .protocol_versions()
+                                        .last()
+                                        .expect("fixture has supported protocols"),
+                                    &token.value,
+                                    true,
                                 )
-                                .await
-                                .err()
-                            };
-                            tokio::pin!(tests);
-                            tokio::select! {
-                                failure = &mut tests => topology_failure = failure,
-                                () = interrupt.as_mut() => {
-                                    interrupted = true;
-                                    cancellation_sender.send_replace(true);
-                                    let _ = tests.await;
-                                    topology_failure = Some(interrupted_conformance_failure());
+                            {
+                                topology_failure = Some(error);
+                            }
+                            if topology_failure.is_none() {
+                                let tests = async {
+                                    self.run_official_conformance_mode(
+                                        &OfficialConformanceRun {
+                                            topology,
+                                            server_id,
+                                            token: &token.value,
+                                            spec_version,
+                                            server_era,
+                                            fixture: metadata,
+                                            cancellation: cancellation_receiver.clone(),
+                                        },
+                                        paths,
+                                    )
+                                    .await
+                                    .err()
+                                };
+                                tokio::pin!(tests);
+                                tokio::select! {
+                                    failure = &mut tests => topology_failure = failure,
+                                    () = interrupt.as_mut() => {
+                                        interrupted = true;
+                                        cancellation_sender.send_replace(true);
+                                        let _ = tests.await;
+                                        topology_failure = Some(interrupted_conformance_failure());
+                                    }
                                 }
                             }
                         }
@@ -878,7 +963,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 }
             }
 
-            if let Some(token) = managed_token.as_ref() {
+            if !standalone_topology && let Some(token) = managed_token.as_ref() {
                 topology_failure =
                     finish_with_cleanup(topology_failure, self.revoke_managed_token(token).await)
                         .err();
@@ -889,7 +974,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     .cleanup(Some(&fixture))
                     .await
                     .map_err(AppFailure::from);
-                let service_cleanup = self.stop_conformance_service(topology).await;
+                let service_cleanup = self
+                    .stop_conformance_service(topology, standalone_topology, true)
+                    .await;
                 topology_failure = finish_with_cleanup(
                     topology_failure,
                     combine_cleanup_results(api_cleanup, service_cleanup),
@@ -898,7 +985,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             } else if service_started {
                 topology_failure = finish_with_cleanup(
                     topology_failure,
-                    self.stop_conformance_service(topology).await,
+                    self.stop_conformance_service(topology, standalone_topology, true)
+                        .await,
                 )
                 .err();
             }
@@ -906,11 +994,12 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             if can_reuse_external_stack(topology, stack_started, interrupted, run_external_client) {
                 external_stack_retained = true;
             } else {
-                topology_failure = finish_with_cleanup(
-                    topology_failure,
-                    self.cleanup(topology_selection(topology), CleanupKind::Down),
-                )
-                .err();
+                let cleanup = if standalone_topology {
+                    self.cleanup_standalone_dataplane(CleanupKind::Down)
+                } else {
+                    self.cleanup(topology_selection(topology), CleanupKind::Down)
+                };
+                topology_failure = finish_with_cleanup(topology_failure, cleanup).err();
             }
             if let Some(error) = topology_failure {
                 failures.push(ConformanceOperationalFailure::server(
@@ -932,6 +1021,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 paths,
                 cancellation_receiver.clone(),
                 external_stack_retained,
+                standalone,
             );
             tokio::pin!(client);
             tokio::select! {
@@ -1049,6 +1139,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         paths: &ConformancePaths,
         cancellation: tokio::sync::watch::Receiver<bool>,
         reuse_stack: bool,
+        standalone: bool,
     ) -> AppResult<()> {
         let progress = if reuse_stack {
             "Reuse external dataplane for client conformance"
@@ -1056,21 +1147,28 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             "Prepare external dataplane client conformance"
         };
         let stack_progress = Activity::spinner(progress);
-        let stack_result = self
-            .stack_up_for_conformance(StackMode::Dataplane, !reuse_stack)
-            .await;
+        let stack_result = if standalone {
+            self.stack_up_standalone_dataplane(!reuse_stack, true).await
+        } else {
+            self.stack_up_for_conformance(StackMode::Dataplane, !reuse_stack)
+                .await
+        };
         stack_progress.finish(stack_result.is_ok());
         let mut failure = stack_result.err();
         let mut token = None;
         let mut publisher_stopped = false;
 
         if failure.is_none() {
-            match self.issue_conformance_token().await {
+            match if standalone {
+                self.standalone_dataplane_token(true)
+            } else {
+                self.issue_conformance_token().await
+            } {
                 Ok(issued) => token = Some(issued),
                 Err(error) => failure = Some(error),
             }
         }
-        if failure.is_none() {
+        if failure.is_none() && !standalone {
             let progress = Activity::spinner("Pause the control-plane publisher");
             let result = self.set_control_plane_publisher(false).await;
             progress.finish(result.is_ok());
@@ -1089,6 +1187,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                             &issued.value,
                             paths,
                             cancellation,
+                            standalone,
                         )
                         .await
                         .err();
@@ -1107,13 +1206,15 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             progress.finish(result.is_ok());
             failure = finish_with_cleanup(failure, result).err();
         }
-        if let Some(token) = token.as_ref() {
+        if !standalone && let Some(token) = token.as_ref() {
             failure = finish_with_cleanup(failure, self.revoke_managed_token(token).await).err();
         }
-        finish_with_cleanup(
-            failure,
-            self.cleanup(topology_selection(StackMode::Dataplane), CleanupKind::Down),
-        )
+        let cleanup = if standalone {
+            self.cleanup_standalone_dataplane(CleanupKind::Down)
+        } else {
+            self.cleanup(topology_selection(StackMode::Dataplane), CleanupKind::Down)
+        };
+        finish_with_cleanup(failure, cleanup)
     }
 
     async fn set_control_plane_publisher(&self, running: bool) -> AppResult<()> {
@@ -1130,6 +1231,46 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .map_err(AppFailure::from)
     }
 
+    pub(super) fn publish_standalone_conformance_config(
+        &self,
+        server_id: &str,
+        protocol_version: &str,
+        token: &str,
+        observability: bool,
+    ) -> AppResult<Vec<String>> {
+        let progress = Activity::spinner("Publish mocked Redis conformance configuration");
+        let command = self
+            .standalone_conformance_compose_project(observability)
+            .command([
+                "run",
+                "--rm",
+                "--no-deps",
+                "-e",
+                CLIENT_TOKEN_ENV,
+                "config_writer",
+                "fixture",
+                server_id,
+                OFFICIAL_CONFORMANCE_BACKEND_URL,
+                protocol_version,
+            ]);
+        let command = self
+            .standalone_dataplane_environment(command, true)?
+            .env(CLIENT_TOKEN_ENV, token);
+        let result = self.capture_text(&command).and_then(|output| {
+            let tool_names = serde_json::from_str::<Vec<String>>(&output)
+                .context("standalone config helper returned invalid tool names")
+                .map_err(AppFailure::from)?;
+            if tool_names.is_empty() {
+                return Err(AppFailure::from(anyhow!(
+                    "standalone Redis config for server {server_id} contains no tools"
+                )));
+            }
+            Ok(tool_names)
+        });
+        progress.finish(result.is_ok());
+        result
+    }
+
     async fn run_official_client_conformance(
         &self,
         spec_version: &str,
@@ -1137,6 +1278,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         token: &str,
         paths: &ConformancePaths,
         cancellation: tokio::sync::watch::Receiver<bool>,
+        standalone: bool,
     ) -> AppResult<()> {
         let expected_scenarios =
             expected_client_scenarios(spec_version).map_err(AppFailure::from)?;
@@ -1177,12 +1319,23 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             },
         )?;
 
-        let compose = self.compose_environment(
+        let compose_project = if standalone {
+            self.standalone_conformance_compose_project(true)
+        } else {
             self.conformance_runtime_project(StackMode::Dataplane)
-                .command(std::iter::empty::<&str>()),
-            StackMode::Dataplane,
-            true,
-        )?;
+        };
+        let compose = if standalone {
+            self.standalone_dataplane_environment(
+                compose_project.command(std::iter::empty::<&str>()),
+                true,
+            )?
+        } else {
+            self.compose_environment(
+                compose_project.command(std::iter::empty::<&str>()),
+                StackMode::Dataplane,
+                true,
+            )?
+        };
         let compose_args = compose
             .arguments()
             .iter()
@@ -1799,6 +1952,99 @@ fn client_driver_command() -> anyhow::Result<(String, OsString)> {
 mod tests {
     use super::*;
     use crate::conformance::results::{CheckStatus, ConformanceCheck, ConformanceScenarioResult};
+
+    #[derive(Default)]
+    struct MatrixRunner(std::cell::RefCell<Vec<CommandSpec>>);
+
+    impl ProcessRunner for MatrixRunner {
+        fn run(&self, spec: &CommandSpec) -> Result<(), InfrastructureError> {
+            self.0.borrow_mut().push(spec.clone());
+            Ok(())
+        }
+        fn run_async_to_log<'a>(
+            &'a self,
+            spec: &'a CommandSpec,
+            _: &'a Path,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), InfrastructureError>> + 'a>> {
+            Box::pin(async move {
+                self.run(spec)?;
+                // Leave setup pending long enough for the injected interrupt.
+                tokio::task::yield_now().await;
+                Ok(())
+            })
+        }
+        fn capture_stdout(&self, _: &CommandSpec) -> Result<Vec<u8>, InfrastructureError> {
+            Ok(b"test-docker".to_vec())
+        }
+        fn capture_output(
+            &self,
+            _: &CommandSpec,
+        ) -> Result<crate::infrastructure::process::CapturedOutput, InfrastructureError> {
+            Ok(crate::infrastructure::process::CapturedOutput::new(
+                b"test-docker".to_vec(),
+                Vec::new(),
+            ))
+        }
+        fn run_to_log(&self, spec: &CommandSpec, _: &Path) -> Result<(), InfrastructureError> {
+            self.run(spec)
+        }
+    }
+
+    #[tokio::test]
+    async fn interruption_finishes_cleanup_and_stops_the_entire_matrix_without_blessing() {
+        use crate::infrastructure::config::{ConfigBootstrap, ConfigRequirements, Environment};
+        let directory = tempfile::tempdir().expect("temporary root");
+        let config = AppConfig::load(
+            ConfigBootstrap::load(&Environment::new(), directory.path()).expect("bootstrap"),
+            ConfigRequirements::StandaloneRuntime,
+        )
+        .expect("config");
+        let runtime = RuntimeContext::new(config, MatrixRunner::default());
+        let artifacts = directory.path().join("results");
+        let baselines = directory.path().join("baselines");
+        fs::create_dir(&baselines).expect("baseline directory");
+        let sentinel = baselines.join("existing.yml");
+        fs::write(&sentinel, "unchanged").expect("existing baseline");
+        let result = runtime
+            .execute_conformance_with_interrupt(
+                ConformanceAction::Run {
+                    lanes: vec![SemanticLane::FixtureDirect],
+                    standalone: true,
+                    client_eras: vec![ConformanceServerEra::Modern],
+                    client_versions: vec![DEFAULT_MCP_SPEC_VERSION.to_owned()],
+                    server_eras: vec![ConformanceServerEra::Modern, ConformanceServerEra::Legacy],
+                    results_dir: Some(artifacts.clone()),
+                    baseline_dir: Some(baselines.clone()),
+                    bless: true,
+                    output_dir: Some(directory.path().join("reports")),
+                },
+                std::future::ready(()),
+            )
+            .await;
+        assert!(result.is_err(), "interrupt must fail the run");
+        assert!(
+            artifacts
+                .join("conformance/2026-07-28/modern/setup.log")
+                .is_file()
+        );
+        assert!(
+            !artifacts.join("conformance/2026-07-28/legacy").exists(),
+            "next matrix entry started after cancellation"
+        );
+        assert_eq!(fs::read_to_string(sentinel).expect("baseline"), "unchanged");
+        assert_eq!(fs::read_dir(baselines).expect("baselines").count(), 1);
+        let commands = runtime.runner.0.borrow();
+        let build = commands
+            .iter()
+            .position(|command| command.arguments().contains(&OsString::from("build")))
+            .expect("fixture setup started");
+        assert!(
+            commands[build + 1..]
+                .iter()
+                .any(|command| command.arguments().contains(&OsString::from("down"))),
+            "fixture cleanup was skipped"
+        );
+    }
 
     fn conformance_result(scenario: &str, status: CheckStatus) -> ConformanceScenarioResult {
         ConformanceScenarioResult {

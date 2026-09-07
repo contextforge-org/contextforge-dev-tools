@@ -27,9 +27,6 @@ services:
       # Requires a control-plane image with configurable publisher interval;
       # older images ignore the variable (60s behavior).
       DATAPLANE_PUBLISHER_INTERVAL_SECONDS: ${CF_DATAPLANE_PUBLISHER_INTERVAL_SECONDS:-2}
-    volumes:
-      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/prepare_standalone_config.py:/opt/contextforge-integration/prepare_standalone_config.py:ro
-
   dataplane:
     image: ${CF_DATAPLANE_IMAGE:?Set CF_DATAPLANE_IMAGE to the cf-dataplane image tag}
     pull_policy: ${CF_DATAPLANE_PULL_POLICY:-always}
