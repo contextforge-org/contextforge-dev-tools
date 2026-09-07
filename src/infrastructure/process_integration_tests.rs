@@ -19,8 +19,6 @@ use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 
 fn assert_runner_interface(_runner: &dyn ProcessRunner) {}
 
@@ -98,7 +96,7 @@ impl ProcessRunner for FakeProcessRunner {
 #[tokio::test(flavor = "current_thread")]
 async fn logging_runner_hides_ordinary_output_in_an_aggregate_log() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
-    let script = executable_script(
+    let script = shell_script(
         &directory,
         "aggregate-log.sh",
         "printf 'ordinary stdout\\n'; printf 'ordinary stderr\\n' >&2",
@@ -124,15 +122,10 @@ async fn logging_runner_hides_ordinary_output_in_an_aggregate_log() {
 }
 
 #[cfg(unix)]
-fn executable_script(directory: &TempDir, name: &str, body: &str) -> PathBuf {
+fn shell_script(directory: &TempDir, name: &str, body: &str) -> PathBuf {
     let path = directory.path().join(name);
     fs::write(&path, format!("#!/bin/sh\nset -eu\n{body}\n"))
         .expect("temporary script should be written");
-    let mut permissions = fs::metadata(&path)
-        .expect("temporary script metadata should be readable")
-        .permissions();
-    permissions.set_mode(0o700);
-    fs::set_permissions(&path, permissions).expect("temporary script should be executable");
     path
 }
 
@@ -249,12 +242,13 @@ fn command_spec_preserves_non_utf8_arguments_and_environment() {
 #[test]
 fn runner_propagates_cwd_and_environment_overrides() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
-    let script = executable_script(
+    let script = shell_script(
         &directory,
         "cwd-env.sh",
         "printf '%s\\n%s\\n' \"$PWD\" \"$PROCESS_TEST_VALUE\"",
     );
-    let spec = CommandSpec::new(script)
+    let spec = CommandSpec::new("/bin/sh")
+        .arg(script)
         .cwd(directory.path())
         .env("PROCESS_TEST_VALUE", "from-command-spec");
 
@@ -272,13 +266,14 @@ fn runner_propagates_cwd_and_environment_overrides() {
 #[test]
 fn runner_clears_parent_environment_when_requested() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
-    let script = executable_script(
+    let script = shell_script(
         &directory,
         "isolated-env.sh",
         "if env | grep '^CARGO_MANIFEST_DIR=' >/dev/null; then exit 41; fi\nprintf '%s\\n' \"$PROCESS_ALLOWED_VALUE\"",
     );
     let result = SystemProcessRunner.capture_stdout(
-        &CommandSpec::new(script)
+        &CommandSpec::new("/bin/sh")
+            .arg(script)
             .clear_environment()
             .env("PATH", "/usr/bin:/bin")
             .env("PROCESS_ALLOWED_VALUE", "allowed"),
@@ -294,12 +289,12 @@ fn runner_clears_parent_environment_when_requested() {
 #[test]
 fn inherited_mode_returns_success() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
-    let script = executable_script(&directory, "success.sh", ":");
+    let script = shell_script(&directory, "success.sh", ":");
     let runner = SystemProcessRunner;
     assert_runner_interface(&runner);
 
     runner
-        .run(&CommandSpec::new(script))
+        .run(&CommandSpec::new("/bin/sh").arg(script))
         .expect("successful inherited process should return success");
 }
 
@@ -307,7 +302,7 @@ fn inherited_mode_returns_success() {
 #[tokio::test(flavor = "current_thread")]
 async fn async_runner_keeps_a_single_thread_executor_responsive() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
-    let script = executable_script(&directory, "slow-success.sh", "sleep 0.2");
+    let script = shell_script(&directory, "slow-success.sh", "sleep 0.2");
     let executor_progressed = Arc::new(AtomicBool::new(false));
     let progress_flag = Arc::clone(&executor_progressed);
     let heartbeat = tokio::spawn(async move {
@@ -316,7 +311,7 @@ async fn async_runner_keeps_a_single_thread_executor_responsive() {
     });
 
     SystemProcessRunner
-        .run_async(&CommandSpec::new(script))
+        .run_async(&CommandSpec::new("/bin/sh").arg(script))
         .await
         .expect("asynchronous child should succeed");
 
@@ -332,12 +327,14 @@ async fn async_runner_keeps_a_single_thread_executor_responsive() {
 async fn cancellable_async_runner_kills_and_reaps_active_child() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
     let pid_path = directory.path().join("child.pid");
-    let script = executable_script(
+    let script = shell_script(
         &directory,
         "long-lived.sh",
         "printf '%s' \"$$\" > \"$PROCESS_PID_FILE\"\nexec sleep 60",
     );
-    let spec = CommandSpec::new(script).env("PROCESS_PID_FILE", pid_path.as_os_str());
+    let spec = CommandSpec::new("/bin/sh")
+        .arg(script)
+        .env("PROCESS_PID_FILE", pid_path.as_os_str());
     let (cancellation_sender, cancellation_receiver) = tokio::sync::watch::channel(false);
     let cancellation_pid_path = pid_path.clone();
     let cancel = tokio::spawn(async move {
@@ -379,14 +376,14 @@ async fn cancellable_async_runner_kills_and_reaps_active_child() {
 #[test]
 fn capture_stdout_returns_exact_bytes_while_stderr_is_inherited() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
-    let script = executable_script(
+    let script = shell_script(
         &directory,
         "stdout.sh",
         "printf 'out\\000bytes'; printf 'inherited stderr\\n' >&2",
     );
 
     let stdout = SystemProcessRunner
-        .capture_stdout(&CommandSpec::new(script))
+        .capture_stdout(&CommandSpec::new("/bin/sh").arg(script))
         .expect("stdout should be captured");
 
     assert_eq!(stdout, b"out\0bytes");
@@ -396,7 +393,7 @@ fn capture_stdout_returns_exact_bytes_while_stderr_is_inherited() {
 #[tokio::test(flavor = "current_thread")]
 async fn cancellable_log_runner_records_both_streams_and_replaces_stale_output() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
-    let script = executable_script(
+    let script = shell_script(
         &directory,
         "logged-async.sh",
         "printf 'stdout-line\\n'; printf 'stderr-line\\n' >&2",
@@ -406,7 +403,11 @@ async fn cancellable_log_runner_records_both_streams_and_replaces_stale_output()
     let (_cancellation_sender, cancellation_receiver) = tokio::sync::watch::channel(false);
 
     SystemProcessRunner
-        .run_async_cancellable_to_log(&CommandSpec::new(script), cancellation_receiver, &log_path)
+        .run_async_cancellable_to_log(
+            &CommandSpec::new("/bin/sh").arg(script),
+            cancellation_receiver,
+            &log_path,
+        )
         .await
         .expect("logged child should succeed");
 
@@ -420,7 +421,7 @@ async fn cancellable_log_runner_records_both_streams_and_replaces_stale_output()
 #[test]
 fn capture_output_returns_exact_stdout_and_stderr_bytes() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
-    let script = executable_script(
+    let script = shell_script(
         &directory,
         "output.sh",
         "printf 'stdout\\n'; printf 'stderr\\000bytes' >&2",
@@ -438,7 +439,7 @@ fn capture_output_returns_exact_stdout_and_stderr_bytes() {
 #[test]
 fn log_mode_appends_both_streams_to_one_file() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
-    let script = executable_script(
+    let script = shell_script(
         &directory,
         "logged.sh",
         "printf 'stdout-line\\n'; printf 'stderr-line\\n' >&2",
@@ -447,7 +448,7 @@ fn log_mode_appends_both_streams_to_one_file() {
     fs::write(&log_path, b"existing-line\n").expect("initial log should be written");
 
     SystemProcessRunner
-        .run_to_log(&CommandSpec::new(script), &log_path)
+        .run_to_log(&CommandSpec::new("/bin/sh").arg(script), &log_path)
         .expect("logged process should run successfully");
 
     let log = fs::read(&log_path).expect("process log should be readable");
@@ -502,10 +503,10 @@ fn missing_program_without_configured_cwd_reports_inherited_cwd() {
 #[test]
 fn child_exit_code_is_preserved_without_process_output() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
-    let script = executable_script(&directory, "exit-seven.sh", "exit 7");
+    let script = shell_script(&directory, "exit-seven.sh", "exit 7");
 
     let failure = SystemProcessRunner
-        .run(&CommandSpec::new(script))
+        .run(&CommandSpec::new("/bin/sh").arg(script))
         .expect_err("exit seven should be represented as a child failure");
 
     assert!(matches!(failure, InfrastructureError::ChildExit { .. }));
@@ -516,7 +517,7 @@ fn child_exit_code_is_preserved_without_process_output() {
 #[test]
 fn signaled_child_maps_to_shell_exit_code() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
-    let script = executable_script(&directory, "sigterm.sh", "kill -TERM $$");
+    let script = shell_script(&directory, "sigterm.sh", "kill -TERM $$");
 
     let failure = SystemProcessRunner
         .run(&CommandSpec::new("/bin/sh").arg(script))
