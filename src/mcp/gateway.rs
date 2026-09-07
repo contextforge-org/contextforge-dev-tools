@@ -4,9 +4,6 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
-use reqwest::{Method, StatusCode};
-#[cfg(test)]
-use serde_json::Map;
 use serde_json::Value;
 use thiserror::Error;
 use url::Url;
@@ -17,8 +14,6 @@ use crate::mcp::backend_identity::{BACKEND_HEADER, BackendIdentity, sanitized_ba
 use crate::mcp::protocol::{
     ACCEPT as MCP_ACCEPT, PROTOCOL_VERSION, is_stateless_protocol, parse_mcp_body, routing_name,
 };
-#[cfg(test)]
-use crate::mcp::protocol::{initialize_with_id_and_version, jsonrpc_with_id};
 
 /// Default MCP protocol version used in request bodies and HTTP headers.
 pub(crate) const DEFAULT_PROTOCOL_VERSION: &str = PROTOCOL_VERSION;
@@ -28,7 +23,7 @@ pub(crate) const MCP_PROTOCOL_VERSION: &str = "mcp-protocol-version";
 pub(crate) const MCP_SESSION_ID: &str = "mcp-session-id";
 
 const JSON_CONTENT_TYPE: &str = "application/json";
-const SSE_ACCEPT: &str = "text/event-stream";
+const SSE_CONTENT_TYPE: &str = "text/event-stream";
 const REDACTED: &str = "<redacted>";
 /// Maximum response body buffered by the MCP client.
 pub(crate) const MAX_RESPONSE_BODY_BYTES: usize = 8 * 1024 * 1024;
@@ -59,164 +54,36 @@ impl fmt::Debug for HeaderOverride {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-enum Payload {
-    #[cfg(test)]
-    Initialize {
-        id: Value,
-    },
-    Json(Value),
-    #[cfg(test)]
-    Raw(Vec<u8>),
-    #[cfg(test)]
-    None,
-}
-
-#[derive(Clone, PartialEq)]
-enum ResponseExpectation {
-    #[cfg(test)]
-    JsonRpc {
-        id: Value,
-    },
-    #[cfg(test)]
-    NotificationAccepted,
-    Unchecked,
-}
-
-impl fmt::Debug for ResponseExpectation {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            #[cfg(test)]
-            Self::JsonRpc { .. } => formatter.write_str("JsonRpc { id: <redacted> }"),
-            #[cfg(test)]
-            Self::NotificationAccepted => formatter.write_str("NotificationAccepted"),
-            Self::Unchecked => formatter.write_str("Unchecked"),
-        }
-    }
-}
-
 /// One protected HTTP exchange to issue against the public MCP endpoint.
 #[derive(Clone, PartialEq)]
 pub(crate) struct GatewayRequest {
-    method: Method,
-    payload: Payload,
+    payload: Value,
     authorization: HeaderOverride,
     protocol_version: HeaderOverride,
     session: HeaderOverride,
-    expectation: ResponseExpectation,
 }
 
 impl fmt::Debug for GatewayRequest {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let payload = match &self.payload {
-            #[cfg(test)]
-            Payload::Initialize { .. } => "initialize",
-            Payload::Json(_) => "json:<redacted>",
-            #[cfg(test)]
-            Payload::Raw(_) => "raw:<redacted>",
-            #[cfg(test)]
-            Payload::None => "none",
-        };
         formatter
             .debug_struct("GatewayRequest")
-            .field("method", &self.method)
-            .field("payload", &payload)
+            .field("payload", &REDACTED)
             .field("authorization", &self.authorization)
             .field("protocol_version", &self.protocol_version)
             .field("session", &self.session)
-            .field("expectation", &self.expectation)
             .finish()
     }
 }
 
 impl GatewayRequest {
-    /// Builds an MCP initialize request.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn initialize(id: Value) -> Self {
-        let mut request = Self::post(
-            Payload::Initialize { id: id.clone() },
-            ResponseExpectation::JsonRpc { id },
-        );
-        // The negotiated version header is required on subsequent HTTP
-        // requests, not on the initialize request that establishes it.
-        request.protocol_version = HeaderOverride::Omit;
-        request
-    }
-
-    /// Builds the required `notifications/initialized` notification.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn initialized() -> Self {
-        Self::notification("notifications/initialized", None)
-    }
-
-    /// Builds a generic JSON-RPC request whose response must match `id`.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn request(method: &str, params: Option<Value>, id: Value) -> Self {
-        Self::post(
-            Payload::Json(jsonrpc_with_id(method, params, id.clone())),
-            ResponseExpectation::JsonRpc { id },
-        )
-    }
-
-    /// Builds a generic JSON-RPC notification.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn notification(method: &str, params: Option<Value>) -> Self {
-        Self::post(
-            Payload::Json(notification_message(method, params)),
-            ResponseExpectation::NotificationAccepted,
-        )
-    }
-
-    /// Builds an unchecked streamable-HTTP GET request.
-    ///
-    /// The response body is intentionally not consumed because a successful
-    /// Streamable HTTP GET can remain open indefinitely. The returned exchange
-    /// contains the status and headers with an empty body.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn get() -> Self {
-        Self {
-            method: Method::GET,
-            payload: Payload::None,
-            authorization: HeaderOverride::Automatic,
-            protocol_version: HeaderOverride::Automatic,
-            session: HeaderOverride::Automatic,
-            expectation: ResponseExpectation::Unchecked,
-        }
-    }
-
-    /// Builds an unchecked streamable-HTTP DELETE request.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn delete() -> Self {
-        Self {
-            method: Method::DELETE,
-            payload: Payload::None,
-            authorization: HeaderOverride::Automatic,
-            protocol_version: HeaderOverride::Automatic,
-            session: HeaderOverride::Automatic,
-            expectation: ResponseExpectation::Unchecked,
-        }
-    }
-
-    /// Builds an unchecked JSON POST with an arbitrary, potentially malformed body.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn raw_post(body: impl AsRef<[u8]>) -> Self {
-        Self::post(
-            Payload::Raw(body.as_ref().to_vec()),
-            ResponseExpectation::Unchecked,
-        )
-    }
-
-    /// Builds an unchecked JSON POST for workflow-level validation.
-    #[must_use]
+    /// Builds a JSON POST whose protocol outcome is checked by the workflow.
     pub(crate) fn probe(payload: Value) -> Self {
-        Self::post(Payload::Json(payload), ResponseExpectation::Unchecked)
+        Self {
+            payload,
+            authorization: HeaderOverride::Automatic,
+            protocol_version: HeaderOverride::Automatic,
+            session: HeaderOverride::Automatic,
+        }
     }
 
     /// Overrides or omits the configured authorization header.
@@ -239,30 +106,6 @@ impl GatewayRequest {
         self.session = session;
         self
     }
-
-    fn post(payload: Payload, expectation: ResponseExpectation) -> Self {
-        Self {
-            method: Method::POST,
-            payload,
-            authorization: HeaderOverride::Automatic,
-            protocol_version: HeaderOverride::Automatic,
-            session: HeaderOverride::Automatic,
-            expectation,
-        }
-    }
-}
-
-/// Builds a JSON-RPC 2.0 notification without an `id` member.
-#[must_use]
-#[cfg(test)]
-pub(crate) fn notification_message(method: &str, params: Option<Value>) -> Value {
-    let mut payload = Map::new();
-    payload.insert("jsonrpc".to_owned(), Value::String("2.0".to_owned()));
-    payload.insert("method".to_owned(), Value::String(method.to_owned()));
-    if let Some(params) = params {
-        payload.insert("params".to_owned(), params);
-    }
-    Value::Object(payload)
 }
 
 /// Safe diagnostic snapshot of an outbound HTTP request.
@@ -352,8 +195,7 @@ impl Exchange {
         &self.headers
     }
 
-    /// Sanitized response body. This is empty for GET requests because an SSE
-    /// stream can remain open indefinitely and is not consumed by this client.
+    /// Sanitized response body.
     #[must_use]
     pub(crate) fn body(&self) -> &str {
         &self.body
@@ -524,20 +366,10 @@ impl GatewayClient {
         self.session_id.as_deref()
     }
 
-    /// Sends and validates one protected gateway request.
-    ///
-    /// JSON-RPC request builders require a successful HTTP response and validate
-    /// the version, ID, and result/error shape. Notification builders require an
-    /// empty `202 Accepted` response. GET, DELETE, raw, and explicitly unchecked
-    /// requests return any HTTP status for scenario-level assertions.
-    ///
-    /// # Errors
-    ///
-    /// Returns a mode-aware error with a safe request or full exchange capture
-    /// for header, transport, body parsing, status, or JSON-RPC failures.
+    /// Sends an MCP POST, checking backend identity and parsing JSON/SSE responses.
+    /// HTTP status and JSON-RPC semantics are evaluated by the calling workflow.
     pub(crate) async fn send(&mut self, request: GatewayRequest) -> Result<Exchange, GatewayError> {
-        let body = materialize_payload(self.mode, &request.payload, &self.protocol_version)?;
-        let outbound = self.build_request(&request, body.as_deref())?;
+        let outbound = self.build_request(&request)?;
         let outbound_session = outbound
             .headers()
             .get(MCP_SESSION_ID)
@@ -578,28 +410,6 @@ impl GatewayClient {
             };
             return Err(GatewayError::with_exchange(self.mode, message, exchange));
         }
-        if request.method == Method::GET {
-            let session_id = session_result.as_ref().ok().cloned().flatten();
-            let exchange = Exchange {
-                mode: self.mode,
-                request: request_capture,
-                status: status.as_u16(),
-                headers: capture_headers(&raw_headers, &response_secrets),
-                body: String::new(),
-                message: None,
-                session_id,
-            };
-            if let Err(message) = session_result {
-                return Err(GatewayError::with_exchange(self.mode, message, exchange));
-            }
-            self.validate_exchange(&request.expectation, status, Ok(None), &exchange)?;
-            if status.is_success()
-                && let Some(session_id) = exchange.session_id.as_ref()
-            {
-                self.session_id = Some(session_id.clone());
-            }
-            return Ok(exchange);
-        }
         let raw_body = match bounded_response_body(&mut response).await {
             Ok(body) => body,
             Err(error) => {
@@ -639,7 +449,11 @@ impl GatewayClient {
             return Err(GatewayError::with_exchange(self.mode, message, exchange));
         }
 
-        self.validate_exchange(&request.expectation, status, parsed, &exchange)?;
+        if status.is_success()
+            && let Err(message) = parsed
+        {
+            return Err(GatewayError::with_exchange(self.mode, message, exchange));
+        }
         if status.is_success()
             && let Some(session_id) = exchange.session_id.as_ref()
         {
@@ -648,22 +462,13 @@ impl GatewayClient {
         Ok(exchange)
     }
 
-    fn build_request(
-        &self,
-        request: &GatewayRequest,
-        body: Option<&[u8]>,
-    ) -> Result<reqwest::Request, GatewayError> {
+    fn build_request(&self, request: &GatewayRequest) -> Result<reqwest::Request, GatewayError> {
         let mut builder = self
             .http
-            .request(request.method.clone(), self.endpoint.clone())
-            .header(
-                ACCEPT,
-                if request.method == Method::GET {
-                    SSE_ACCEPT
-                } else {
-                    MCP_ACCEPT
-                },
-            );
+            .post(self.endpoint.clone())
+            .header(ACCEPT, MCP_ACCEPT)
+            .header(CONTENT_TYPE, JSON_CONTENT_TYPE)
+            .json(&request.payload);
         let automatic_authorization = format!("Bearer {}", self.bearer_token);
         builder = apply_header(
             self.mode,
@@ -672,9 +477,6 @@ impl GatewayClient {
             &request.authorization,
             Some(&automatic_authorization),
         )?;
-        if request.method == Method::POST {
-            builder = builder.header(CONTENT_TYPE, JSON_CONTENT_TYPE);
-        }
         builder = apply_header(
             self.mode,
             builder,
@@ -682,20 +484,17 @@ impl GatewayClient {
             &request.protocol_version,
             Some(&self.protocol_version),
         )?;
-        if request.method == Method::POST {
-            let protocol_version = match &request.protocol_version {
-                HeaderOverride::Automatic => Some(self.protocol_version.as_str()),
-                HeaderOverride::Omit => None,
-                HeaderOverride::Value(value) => Some(value.as_str()),
-            };
-            if protocol_version.is_some_and(is_stateless_protocol)
-                && let Payload::Json(payload) = &request.payload
-                && let Some(method) = payload.get("method").and_then(Value::as_str)
-            {
-                builder = apply_literal_header(self.mode, builder, "mcp-method", method)?;
-                if let Some(name) = routing_name(method, payload.get("params")) {
-                    builder = apply_literal_header(self.mode, builder, "mcp-name", name)?;
-                }
+        let protocol_version = match &request.protocol_version {
+            HeaderOverride::Automatic => Some(self.protocol_version.as_str()),
+            HeaderOverride::Omit => None,
+            HeaderOverride::Value(value) => Some(value.as_str()),
+        };
+        if protocol_version.is_some_and(is_stateless_protocol)
+            && let Some(method) = request.payload.get("method").and_then(Value::as_str)
+        {
+            builder = apply_literal_header(self.mode, builder, "mcp-method", method)?;
+            if let Some(name) = routing_name(method, request.payload.get("params")) {
+                builder = apply_literal_header(self.mode, builder, "mcp-name", name)?;
             }
         }
         builder = apply_header(
@@ -705,85 +504,12 @@ impl GatewayClient {
             &request.session,
             self.session_id.as_deref(),
         )?;
-        if let Some(body) = body {
-            builder = builder.body(body.to_vec());
-        }
         builder.build().map_err(|error| {
             GatewayError::configuration(
                 self.mode,
                 redact_and_sanitize(&error.to_string(), &self.bearer_token),
             )
         })
-    }
-
-    fn validate_exchange(
-        &self,
-        expectation: &ResponseExpectation,
-        status: StatusCode,
-        parsed: Result<Option<Value>, String>,
-        exchange: &Exchange,
-    ) -> Result<(), GatewayError> {
-        match expectation {
-            #[cfg(test)]
-            ResponseExpectation::JsonRpc { id } => {
-                if status != StatusCode::OK {
-                    return Err(GatewayError::with_exchange(
-                        self.mode,
-                        format!(
-                            "JSON-RPC response expected HTTP 200, got status {}",
-                            status.as_u16()
-                        ),
-                        exchange.clone(),
-                    ));
-                }
-                let message = parsed
-                    .map_err(|message| {
-                        GatewayError::with_exchange(self.mode, message, exchange.clone())
-                    })?
-                    .ok_or_else(|| {
-                        GatewayError::with_exchange(
-                            self.mode,
-                            "response did not contain a JSON or SSE message",
-                            exchange.clone(),
-                        )
-                    })?;
-                validate_jsonrpc_response(&message, id).map_err(|message| {
-                    GatewayError::with_exchange(self.mode, message, exchange.clone())
-                })?;
-            }
-            #[cfg(test)]
-            ResponseExpectation::NotificationAccepted => {
-                if status != StatusCode::ACCEPTED {
-                    return Err(GatewayError::with_exchange(
-                        self.mode,
-                        format!(
-                            "notification expected status 202, got status {}",
-                            status.as_u16()
-                        ),
-                        exchange.clone(),
-                    ));
-                }
-                if !exchange.body.is_empty() {
-                    return Err(GatewayError::with_exchange(
-                        self.mode,
-                        "notification response body must be empty",
-                        exchange.clone(),
-                    ));
-                }
-            }
-            ResponseExpectation::Unchecked => {
-                if status.is_success()
-                    && let Err(message) = parsed
-                {
-                    return Err(GatewayError::with_exchange(
-                        self.mode,
-                        message,
-                        exchange.clone(),
-                    ));
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -846,27 +572,6 @@ pub(crate) enum GatewayError {
 }
 
 impl GatewayError {
-    /// Stack mode in which the failure occurred.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn mode(&self) -> GatewayTopology {
-        match self {
-            Self::Configuration { mode, .. }
-            | Self::Request { mode, .. }
-            | Self::Exchange { mode, .. } => *mode,
-        }
-    }
-
-    /// Full exchange for response-time failures.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn exchange(&self) -> Option<&Exchange> {
-        match self {
-            Self::Exchange { exchange, .. } => Some(exchange),
-            Self::Configuration { .. } | Self::Request { .. } => None,
-        }
-    }
-
     fn configuration(mode: GatewayTopology, message: impl Into<String>) -> Self {
         Self::Configuration {
             mode,
@@ -939,31 +644,6 @@ fn gateway_endpoint(
     segments.push("mcp");
     drop(segments);
     Ok(endpoint)
-}
-
-fn materialize_payload(
-    mode: GatewayTopology,
-    payload: &Payload,
-    _protocol_version: &str,
-) -> Result<Option<Vec<u8>>, GatewayError> {
-    let value = match payload {
-        #[cfg(test)]
-        Payload::Initialize { id } => Some(initialize_with_id_and_version(
-            id.clone(),
-            _protocol_version,
-        )),
-        Payload::Json(value) => Some(value.clone()),
-        #[cfg(test)]
-        Payload::Raw(body) => return Ok(Some(body.clone())),
-        #[cfg(test)]
-        Payload::None => None,
-    };
-    value
-        .map(|value| {
-            serde_json::to_vec(&value)
-                .map_err(|_| GatewayError::configuration(mode, "failed to serialize JSON request"))
-        })
-        .transpose()
 }
 
 fn apply_header(
@@ -1086,7 +766,7 @@ fn parse_response_body(body: &[u8], headers: &HeaderMap) -> Result<Option<Value>
         .map_or(content_type, |(media_type, _)| media_type)
         .trim();
     if !media_type.eq_ignore_ascii_case(JSON_CONTENT_TYPE)
-        && !media_type.eq_ignore_ascii_case(SSE_ACCEPT)
+        && !media_type.eq_ignore_ascii_case(SSE_CONTENT_TYPE)
     {
         return Ok(None);
     }
@@ -1094,37 +774,6 @@ fn parse_response_body(body: &[u8], headers: &HeaderMap) -> Result<Option<Value>
         std::str::from_utf8(body).map_err(|_| "response body is not valid UTF-8".to_owned())?;
     parse_mcp_body(body, content_type)
         .map_err(|_| "response body is not valid JSON or SSE".to_owned())
-}
-
-#[cfg(test)]
-fn validate_jsonrpc_response(message: &Value, expected_id: &Value) -> Result<(), String> {
-    let object = message
-        .as_object()
-        .ok_or_else(|| "JSON-RPC response must be an object".to_owned())?;
-    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
-        return Err("invalid JSON-RPC version".to_owned());
-    }
-    if object.get("id") != Some(expected_id) {
-        return Err("JSON-RPC response id does not match request id".to_owned());
-    }
-    let has_result = object.contains_key("result");
-    let has_error = object.contains_key("error");
-    if has_result == has_error {
-        return Err("JSON-RPC response must contain exactly one of result or error".to_owned());
-    }
-    if let Some(error) = object.get("error") {
-        let error = error
-            .as_object()
-            .ok_or_else(|| "JSON-RPC error object must be an object".to_owned())?;
-        if error.get("code").and_then(Value::as_i64).is_none()
-            || error.get("message").and_then(Value::as_str).is_none()
-        {
-            return Err(
-                "JSON-RPC error object must contain an integer code and string message".to_owned(),
-            );
-        }
-    }
-    Ok(())
 }
 
 fn redact_and_sanitize(value: &str, token: &str) -> String {

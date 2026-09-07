@@ -11,8 +11,7 @@ use std::time::Duration;
 
 use crate::conformance::baseline::{
     BaselineComparison, BaselineUpdate, bless_baselines_transactionally, evaluate_baselines,
-    evaluate_client_baselines, validate_scored_results, write_baseline_report,
-    write_client_baseline_report,
+    validate_scored_results, write_baseline_report,
 };
 use crate::conformance::client::{
     CLIENT_BASE_URL_ENV, CLIENT_COMPOSE_ARGS_ENV, CLIENT_DRIVER_FAILURE_PREFIX,
@@ -36,8 +35,9 @@ use crate::infrastructure::compose::{ComposeProject, validate_integration_contra
 use crate::infrastructure::config::{AppConfig, ImagePullPolicy};
 use crate::infrastructure::process::{CommandSpec, LoggingProcessRunner, ProcessRunner};
 use crate::infrastructure::stack::{
-    BuildInputs, BuildMode, CleanupKind, FreshnessSnapshot, ServiceSnapshot, StackCommandPlan,
-    StackFreshness, resolve_build,
+    BuildInputs, BuildMode, CleanupKind, FreshnessSnapshot, ServiceSnapshot, StackFreshness,
+    resolve_build, stack_cleanup_command, stack_config_command, stack_logs_command,
+    stack_up_command,
 };
 use crate::infrastructure::{InfrastructureError, StackMode};
 use crate::mcp::GatewayTopology;

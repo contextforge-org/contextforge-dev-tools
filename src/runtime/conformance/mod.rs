@@ -357,9 +357,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                         Ok(outcome) if outcome.operational_failures.is_empty()
                     );
                     let results = if run_completed {
-                        executor.load_selected_conformance_results(&paths, &lanes)
+                        load_selected_conformance_results(&paths, &lanes)
                     } else {
-                        executor.load_completed_conformance_results(&paths, &lanes)
+                        load_completed_conformance_results(&paths, &lanes)
                     };
                     let operational_failures = match run_result {
                         Ok(outcome) => outcome.operational_failures,
@@ -379,249 +379,95 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     if !operational_failures.is_empty() {
                         reported_failure = true;
                     }
-                    let server_operational_failures = operational_failures
-                        .iter()
-                        .filter(|failure| failure.direction == ConformanceDirection::Server)
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    let client_operational_failures = operational_failures
-                        .iter()
-                        .filter(|failure| failure.direction == ConformanceDirection::Client)
-                        .cloned()
-                        .collect::<Vec<_>>();
-
-                    if results.is_err() && !server_operational_failures.is_empty() {
-                        println!(
-                            "{}",
-                            render_conformance_results(
-                                &BTreeMap::new(),
-                                (&client_version, server_era),
-                                ConformanceDirection::Server,
-                                ConformanceGateDisplay::new(
-                                    None,
-                                    &server_operational_failures,
-                                    bless,
-                                ),
-                                matrix_started.elapsed(),
-                                OutputStyle::stdout(),
-                            )
-                        );
-                    }
-                    let evaluated = results.and_then(|results| {
-                        if results.is_empty() {
-                            if !server_operational_failures.is_empty() {
-                                println!(
-                                    "{}",
-                                    render_conformance_results(
-                                        &results,
-                                        (&client_version, server_era),
-                                        ConformanceDirection::Server,
-                                        ConformanceGateDisplay::new(
-                                            None,
-                                            &server_operational_failures,
-                                            bless,
-                                        ),
-                                        matrix_started.elapsed(),
-                                        OutputStyle::stdout(),
-                                    )
-                                );
-                            }
-                            return Ok(None);
-                        }
-                        let completed_lanes = results.keys().copied().collect::<Vec<_>>();
-                        match evaluate_baselines(
-                            &results,
-                            &completed_lanes,
-                            &baseline_root,
-                            &client_version,
-                            server_era,
-                            bless,
-                        ) {
-                            Ok(evaluation) => {
-                                println!(
-                                    "{}",
-                                    render_conformance_results(
-                                        &results,
-                                        (&client_version, server_era),
-                                        ConformanceDirection::Server,
-                                        ConformanceGateDisplay::new(
-                                            Some(&evaluation.comparisons),
-                                            &server_operational_failures,
-                                            bless,
-                                        ),
-                                        matrix_started.elapsed(),
-                                        OutputStyle::stdout(),
-                                    )
-                                );
-                                Ok(Some(evaluation))
-                            }
+                    for (direction, results) in [
+                        (ConformanceDirection::Server, results),
+                        (
+                            ConformanceDirection::Client,
+                            load_completed_client_conformance_results(&paths),
+                        ),
+                    ] {
+                        let direction_failures = operational_failures
+                            .iter()
+                            .filter(|failure| failure.direction == direction)
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let results = match results {
+                            Ok(results) => results,
                             Err(error) => {
-                                println!(
-                                    "{}",
-                                    render_conformance_results(
-                                        &results,
-                                        (&client_version, server_era),
-                                        ConformanceDirection::Server,
-                                        ConformanceGateDisplay::new(
-                                            None,
-                                            &server_operational_failures,
-                                            bless,
-                                        ),
-                                        matrix_started.elapsed(),
-                                        OutputStyle::stdout(),
-                                    )
-                                );
-                                Err(AppFailure::from(error))
+                                failures.push(format!(
+                                    "{} {direction} artifacts: {error}",
+                                    paths.identity()
+                                ));
+                                BTreeMap::new()
                             }
-                        }
-                    });
-                    match evaluated {
-                        Ok(Some(evaluation)) => {
-                            for comparison in &evaluation.comparisons {
-                                let report = paths.baseline_report(comparison.lane);
-                                if let Err(error) = write_baseline_report(
-                                    &report,
-                                    &client_version,
-                                    server_era,
-                                    comparison,
-                                ) {
-                                    failures.push(format!(
-                                        "{} {} baseline report: {error}",
-                                        paths.identity(),
-                                        comparison.lane.slug()
-                                    ));
-                                }
-                                if !bless && !comparison.matches() {
-                                    failures.push(format!(
-                                        "{} {} baseline mismatch: unexpected={:?}; stale={:?}",
-                                        paths.identity(),
-                                        comparison.lane.slug(),
-                                        comparison.unexpected,
-                                        comparison.stale
-                                    ));
-                                }
-                            }
-                            updates.extend(evaluation.updates);
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            failures.push(format!("{} baseline gate: {error}", paths.identity()));
-                        }
-                    }
-
-                    match executor.load_completed_client_conformance_results(&paths) {
-                        Err(error) => {
-                            if !client_operational_failures.is_empty() {
-                                println!(
-                                    "{}",
-                                    render_conformance_results(
-                                        &BTreeMap::new(),
-                                        (&client_version, server_era),
-                                        ConformanceDirection::Client,
-                                        ConformanceGateDisplay::new(
-                                            None,
-                                            &client_operational_failures,
-                                            bless,
-                                        ),
-                                        matrix_started.elapsed(),
-                                        OutputStyle::stdout(),
-                                    )
-                                );
-                            }
-                            failures.push(format!("{} client artifacts: {error}", paths.identity()))
-                        }
-                        Ok(client_results) if !client_results.is_empty() => {
-                            match evaluate_client_baselines(
-                                &client_results,
-                                &[SemanticLane::ExternalDataPlane],
+                        };
+                        let evaluation = if results.is_empty() {
+                            Ok(None)
+                        } else {
+                            evaluate_baselines(
+                                direction,
+                                &results,
+                                &results.keys().copied().collect::<Vec<_>>(),
                                 &baseline_root,
                                 &client_version,
                                 server_era,
                                 bless,
-                            ) {
-                                Ok(evaluation) => {
-                                    println!(
-                                        "{}",
-                                        render_conformance_results(
-                                            &client_results,
-                                            (&client_version, server_era),
-                                            ConformanceDirection::Client,
-                                            ConformanceGateDisplay::new(
-                                                Some(&evaluation.comparisons),
-                                                &client_operational_failures,
-                                                bless,
-                                            ),
-                                            matrix_started.elapsed(),
-                                            OutputStyle::stdout(),
-                                        )
-                                    );
-                                    for comparison in &evaluation.comparisons {
-                                        let report = paths.client_baseline_report(comparison.lane);
-                                        if let Err(error) = write_client_baseline_report(
-                                            &report,
-                                            &client_version,
-                                            server_era,
-                                            comparison,
-                                        ) {
-                                            failures.push(format!(
-                                                "{} client {} baseline report: {error}",
-                                                paths.identity(),
-                                                comparison.lane.slug()
-                                            ));
-                                        }
-                                        if !bless && !comparison.matches() {
-                                            failures.push(format!(
-                                                "{} client {} baseline mismatch: unexpected={:?}; stale={:?}",
-                                                paths.identity(),
-                                                comparison.lane.slug(),
-                                                comparison.unexpected,
-                                                comparison.stale
-                                            ));
-                                        }
-                                    }
-                                    updates.extend(evaluation.updates);
-                                }
-                                Err(error) => {
-                                    println!(
-                                        "{}",
-                                        render_conformance_results(
-                                            &client_results,
-                                            (&client_version, server_era),
-                                            ConformanceDirection::Client,
-                                            ConformanceGateDisplay::new(
-                                                None,
-                                                &client_operational_failures,
-                                                bless,
-                                            ),
-                                            matrix_started.elapsed(),
-                                            OutputStyle::stdout(),
-                                        )
-                                    );
-                                    failures.push(format!(
-                                        "{} client baseline gate: {error}",
-                                        paths.identity()
-                                    ));
-                                }
-                            }
+                            )
+                            .map(Some)
+                        };
+                        if !results.is_empty() || !direction_failures.is_empty() {
+                            println!(
+                                "{}",
+                                render_conformance_results(
+                                    &results,
+                                    (&client_version, server_era),
+                                    direction,
+                                    ConformanceGateDisplay::new(
+                                        evaluation
+                                            .as_ref()
+                                            .ok()
+                                            .and_then(|value| value.as_ref())
+                                            .map(|evaluation| evaluation.comparisons.as_slice()),
+                                        &direction_failures,
+                                        bless,
+                                    ),
+                                    matrix_started.elapsed(),
+                                    OutputStyle::stdout(),
+                                )
+                            );
                         }
-                        Ok(client_results) => {
-                            if !client_operational_failures.is_empty() {
-                                println!(
-                                    "{}",
-                                    render_conformance_results(
-                                        &client_results,
-                                        (&client_version, server_era),
-                                        ConformanceDirection::Client,
-                                        ConformanceGateDisplay::new(
-                                            None,
-                                            &client_operational_failures,
-                                            bless,
-                                        ),
-                                        matrix_started.elapsed(),
-                                        OutputStyle::stdout(),
-                                    )
-                                );
+                        match evaluation {
+                            Ok(Some(evaluation)) => {
+                                for comparison in &evaluation.comparisons {
+                                    let report = paths.baseline_report(direction, comparison.lane);
+                                    if let Err(error) = write_baseline_report(
+                                        direction,
+                                        &report,
+                                        &client_version,
+                                        server_era,
+                                        comparison,
+                                    ) {
+                                        failures.push(format!(
+                                            "{} {direction} {} baseline report: {error}",
+                                            paths.identity(),
+                                            comparison.lane.slug()
+                                        ));
+                                    }
+                                    if !bless && !comparison.matches() {
+                                        failures.push(format!(
+                                            "{} {direction} {} baseline mismatch: unexpected={:?}; stale={:?}",
+                                            paths.identity(), comparison.lane.slug(),
+                                            comparison.unexpected, comparison.stale
+                                        ));
+                                    }
+                                }
+                                updates.extend(evaluation.updates);
                             }
+                            Ok(None) => {}
+                            Err(error) => failures.push(format!(
+                                "{} {direction} baseline gate: {error}",
+                                paths.identity()
+                            )),
                         }
                     }
                     if !operational_failures.is_empty() {
@@ -724,14 +570,15 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                         revision: OFFICIAL_CONFORMANCE_REVISION.to_owned(),
                         server_id: OFFICIAL_CONFORMANCE_SERVER_ID.to_owned(),
                     };
-                    let direct_run = DirectConformanceRun {
+                    let direct_run = SemanticLaneRun {
+                        target: SemanticLane::FixtureDirect,
                         endpoint: &endpoint,
                         spec_version,
                         server_era,
                         fixture: &metadata,
                         cancellation: cancellation_receiver.clone(),
                     };
-                    let direct = self.run_official_conformance_direct(&direct_run, paths);
+                    let direct = self.run_official_conformance_target(&direct_run, paths);
                     tokio::pin!(direct);
                     tokio::select! {
                         result = &mut direct => result.err(),
@@ -1057,7 +904,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .iter()
             .all(|lane| lanes.contains(lane))
         {
-            match self.write_comparison_from_artifacts(
+            match write_comparison_from_artifacts(
                 paths,
                 Some((spec_version, server_era, DEFAULT_CONFORMANCE_SUITE)),
             ) {
@@ -1283,7 +1130,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let expected_scenarios =
             expected_client_scenarios(spec_version).map_err(AppFailure::from)?;
         let target = SemanticLane::ExternalDataPlane;
-        let lane_paths = paths.client_conformance_lane(target);
+        let lane_paths = paths.lane(ConformanceDirection::Client, target);
         remove_file_if_exists(&lane_paths.completion)?;
         recreate_directory(&lane_paths.official_results)?;
         fs::create_dir_all(&lane_paths.root)
@@ -1427,25 +1274,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         result
     }
 
-    async fn run_official_conformance_direct(
-        &self,
-        run: &DirectConformanceRun<'_>,
-        paths: &ConformancePaths,
-    ) -> AppResult<()> {
-        self.run_official_conformance_target(
-            &SemanticLaneRun {
-                target: SemanticLane::FixtureDirect,
-                endpoint: run.endpoint,
-                spec_version: run.spec_version,
-                server_era: run.server_era,
-                fixture: run.fixture,
-                cancellation: run.cancellation.clone(),
-            },
-            paths,
-        )
-        .await
-    }
-
     async fn run_official_conformance_target(
         &self,
         run: &SemanticLaneRun<'_>,
@@ -1454,7 +1282,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let expected_scenarios =
             expected_server_scenarios(DEFAULT_CONFORMANCE_SUITE, run.spec_version)
                 .map_err(AppFailure::from)?;
-        let lane_paths = paths.conformance_lane(run.target);
+        let lane_paths = paths.lane(ConformanceDirection::Server, run.target);
         remove_file_if_exists(&lane_paths.completion)?;
         recreate_directory(&lane_paths.official_results)?;
         fs::create_dir_all(&lane_paths.root)
@@ -1837,14 +1665,6 @@ struct OfficialConformanceRun<'a> {
     topology: StackMode,
     server_id: &'a str,
     token: &'a str,
-    spec_version: &'a str,
-    server_era: ConformanceServerEra,
-    fixture: &'a ConformanceFixtureMetadata,
-    cancellation: tokio::sync::watch::Receiver<bool>,
-}
-
-struct DirectConformanceRun<'a> {
-    endpoint: &'a url::Url,
     spec_version: &'a str,
     server_era: ConformanceServerEra,
     fixture: &'a ConformanceFixtureMetadata,

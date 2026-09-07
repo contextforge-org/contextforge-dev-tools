@@ -1,4 +1,4 @@
-//! Pure stack lifecycle decisions and Docker Compose command plans.
+//! Stack lifecycle decisions and Docker Compose commands.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -150,127 +150,48 @@ pub(crate) enum CleanupKind {
     Reset,
 }
 
-/// One immutable stack command.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StackCommandPlan {
-    command: CommandSpec,
+/// Builds a mode-specific Compose `up` command.
+pub(crate) fn stack_up_command(
+    project: ComposeProject,
+    mode: StackMode,
+    build: bool,
+    start_locust_ui: bool,
+    locust_workers: usize,
+) -> CommandSpec {
+    let mut command = project.command(["up", "-d", "--remove-orphans"]);
+    if build {
+        command = command.arg("--build");
+    }
+    if mode == StackMode::Controlplane && start_locust_ui {
+        command = command.args(["--scale", &format!("locust_worker={locust_workers}")]);
+    }
+    command
 }
 
-impl StackCommandPlan {
-    /// Builds a mode-specific Compose `up` command.
-    #[must_use]
-    pub(crate) fn up(
-        project: ComposeProject,
-        mode: StackMode,
-        build: bool,
-        start_locust_ui: bool,
-        locust_workers: usize,
-    ) -> Self {
-        let mut arguments = vec![
-            OsString::from("up"),
-            OsString::from("-d"),
-            OsString::from("--remove-orphans"),
-        ];
-        if build {
-            arguments.push(OsString::from("--build"));
-        }
-        if mode == StackMode::Controlplane && start_locust_ui {
-            arguments.push(OsString::from("--scale"));
-            arguments.push(OsString::from(format!("locust_worker={locust_workers}")));
-        }
-        Self {
-            command: project.command(arguments),
-        }
+pub(crate) fn stack_cleanup_command(project: ComposeProject, kind: CleanupKind) -> CommandSpec {
+    let mut command = project.command(["down"]);
+    if kind == CleanupKind::Reset {
+        command = command.arg("--volumes");
     }
+    command.arg("--remove-orphans")
+}
 
-    /// Builds a Compose command that stops one service without removing it.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn stop_service(project: ComposeProject, service: &str) -> Self {
-        Self {
-            command: project.command(["stop", "--timeout", "5", service]),
-        }
-    }
+/// Translates public display names to Compose service names.
+pub(crate) fn stack_logs_command(
+    project: ComposeProject,
+    services: impl IntoIterator<Item = OsString>,
+) -> CommandSpec {
+    project
+        .command(["logs", "-f"])
+        .args(services.into_iter().map(compose_service_name))
+}
 
-    /// Builds a Compose command that restarts one previously stopped service.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn start_service(project: ComposeProject, service: &str) -> Self {
-        Self {
-            command: project.command(["start", service]),
-        }
+pub(crate) fn stack_config_command(project: ComposeProject, mode: StackMode) -> CommandSpec {
+    let mut command = project.command(std::iter::empty::<&str>());
+    if mode == StackMode::Dataplane {
+        command = command.args(["--profile", "testing"]);
     }
-
-    /// Builds a Compose command that restarts one service without its dependencies.
-    #[must_use]
-    #[cfg(test)]
-    pub(crate) fn restart_service(project: ComposeProject, service: &str) -> Self {
-        Self {
-            command: project.command(["restart", "--timeout", "5", service]),
-        }
-    }
-
-    /// Builds a Compose cleanup command.
-    #[must_use]
-    pub(crate) fn cleanup(project: ComposeProject, kind: CleanupKind) -> Self {
-        let mut arguments = vec![OsString::from("down")];
-        if kind == CleanupKind::Reset {
-            arguments.push(OsString::from("--volumes"));
-        }
-        arguments.push(OsString::from("--remove-orphans"));
-        Self {
-            command: project.command(arguments),
-        }
-    }
-
-    /// Builds a Compose service-status command.
-    #[must_use]
-    pub(crate) fn status(project: ComposeProject) -> Self {
-        Self {
-            command: project.command(["ps"]),
-        }
-    }
-
-    /// Builds a Compose log-follow command, translating the public control-plane service name.
-    #[must_use]
-    pub(crate) fn logs<I>(project: ComposeProject, services: I) -> Self
-    where
-        I: IntoIterator<Item = OsString>,
-    {
-        let mut arguments = vec![OsString::from("logs"), OsString::from("-f")];
-        arguments.extend(services.into_iter().map(compose_service_name));
-        Self {
-            command: project.command(arguments),
-        }
-    }
-
-    /// Builds a Compose rendered-config command.
-    #[must_use]
-    pub(crate) fn config(project: ComposeProject, mode: StackMode) -> Self {
-        let arguments = if mode == StackMode::Dataplane {
-            vec![
-                OsString::from("--profile"),
-                OsString::from("testing"),
-                OsString::from("config"),
-                OsString::from("--no-interpolate"),
-                OsString::from("--no-env-resolution"),
-            ]
-        } else {
-            vec![
-                OsString::from("config"),
-                OsString::from("--no-interpolate"),
-                OsString::from("--no-env-resolution"),
-            ]
-        };
-        Self {
-            command: project.command(arguments),
-        }
-    }
-
-    /// Returns the executable process specification.
-    pub(crate) fn command(&self) -> &CommandSpec {
-        &self.command
-    }
+    command.args(["config", "--no-interpolate", "--no-env-resolution"])
 }
 
 fn compose_service_name(service: OsString) -> OsString {

@@ -92,57 +92,15 @@ pub(crate) struct BaselineEvaluation {
     pub(crate) updates: Vec<BaselineUpdate>,
 }
 
-/// Evaluates every selected lane against its strict baseline.
-///
-/// Routed findings reproduced by the direct fixture are removed before the
-/// routed lane is compared. Blessing still parses existing files when present,
-/// so malformed baselines cannot be silently replaced.
+/// Evaluates selected lanes; server findings reproduced by the direct fixture
+/// are subtracted from routed results. Client findings are compared directly.
 pub(crate) fn evaluate_baselines(
-    results: &BTreeMap<SemanticLane, ConformanceResults>,
-    selected_lanes: &[SemanticLane],
-    baseline_root: &Path,
-    client_version: &str,
-    server_era: ConformanceServerEra,
-    bless: bool,
-) -> Result<BaselineEvaluation> {
-    evaluate_direction_baselines(
-        results,
-        selected_lanes,
-        baseline_root,
-        client_version,
-        server_era,
-        ConformanceDirection::Server,
-        bless,
-    )
-}
-
-/// Evaluates scoped client-conformance results without fixture subtraction.
-pub(crate) fn evaluate_client_baselines(
-    results: &BTreeMap<SemanticLane, ConformanceResults>,
-    selected_lanes: &[SemanticLane],
-    baseline_root: &Path,
-    client_version: &str,
-    server_era: ConformanceServerEra,
-    bless: bool,
-) -> Result<BaselineEvaluation> {
-    evaluate_direction_baselines(
-        results,
-        selected_lanes,
-        baseline_root,
-        client_version,
-        server_era,
-        ConformanceDirection::Client,
-        bless,
-    )
-}
-
-fn evaluate_direction_baselines(
-    results: &BTreeMap<SemanticLane, ConformanceResults>,
-    selected_lanes: &[SemanticLane],
-    baseline_root: &Path,
-    client_version: &str,
-    server_era: ConformanceServerEra,
     direction: ConformanceDirection,
+    results: &BTreeMap<SemanticLane, ConformanceResults>,
+    selected_lanes: &[SemanticLane],
+    baseline_root: &Path,
+    client_version: &str,
+    server_era: ConformanceServerEra,
     bless: bool,
 ) -> Result<BaselineEvaluation> {
     let selected = selected_lanes.iter().copied().collect::<BTreeSet<_>>();
@@ -221,41 +179,10 @@ fn evaluate_direction_baselines(
 
 /// Writes one deterministic machine-readable lane report.
 pub(crate) fn write_baseline_report(
-    path: &Path,
-    client_version: &str,
-    server_era: ConformanceServerEra,
-    comparison: &BaselineComparison,
-) -> Result<()> {
-    write_direction_baseline_report(
-        path,
-        client_version,
-        server_era,
-        ConformanceDirection::Server,
-        comparison,
-    )
-}
-
-/// Writes one deterministic machine-readable client-lane report.
-pub(crate) fn write_client_baseline_report(
-    path: &Path,
-    client_version: &str,
-    server_era: ConformanceServerEra,
-    comparison: &BaselineComparison,
-) -> Result<()> {
-    write_direction_baseline_report(
-        path,
-        client_version,
-        server_era,
-        ConformanceDirection::Client,
-        comparison,
-    )
-}
-
-fn write_direction_baseline_report(
-    path: &Path,
-    client_version: &str,
-    server_era: ConformanceServerEra,
     direction: ConformanceDirection,
+    path: &Path,
+    client_version: &str,
+    server_era: ConformanceServerEra,
     comparison: &BaselineComparison,
 ) -> Result<()> {
     #[derive(Serialize)]
@@ -690,6 +617,7 @@ mod tests {
         ]);
 
         let evaluation = evaluate_baselines(
+            ConformanceDirection::Server,
             &actual,
             &[SemanticLane::FixtureDirect, SemanticLane::ExternalDataPlane],
             root,
@@ -735,7 +663,8 @@ mod tests {
             ),
         )]);
 
-        let evaluation = evaluate_client_baselines(
+        let evaluation = evaluate_baselines(
+            ConformanceDirection::Client,
             &actual,
             &[SemanticLane::ExternalDataPlane],
             root,
@@ -772,6 +701,7 @@ mod tests {
         )]);
 
         let evaluation = evaluate_baselines(
+            ConformanceDirection::Server,
             &actual,
             &[SemanticLane::FixtureDirect],
             directory.path(),
@@ -883,6 +813,7 @@ mod tests {
             ),
         )]);
         let error = evaluate_baselines(
+            ConformanceDirection::Server,
             &unknown,
             &[SemanticLane::FixtureDirect],
             Path::new("unused"),
@@ -899,6 +830,7 @@ mod tests {
             results("ping", vec![check("ok", CheckStatus::Success)]),
         )]);
         let error = evaluate_baselines(
+            ConformanceDirection::Server,
             &routed,
             &[SemanticLane::ExternalDataPlane],
             Path::new("unused"),
@@ -922,6 +854,7 @@ mod tests {
             results("ping", vec![check("warning", CheckStatus::Warning)]),
         )]);
         let evaluation = evaluate_baselines(
+            ConformanceDirection::Server,
             &actual,
             &[SemanticLane::FixtureDirect],
             &root,

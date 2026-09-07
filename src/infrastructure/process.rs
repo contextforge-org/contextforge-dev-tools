@@ -333,18 +333,12 @@ impl ProcessRunner for SystemProcessRunner {
         &'a self,
         spec: &'a CommandSpec,
     ) -> Pin<Box<dyn Future<Output = Result<(), InfrastructureError>> + 'a>> {
-        Box::pin(async move {
-            let mut command = tokio::process::Command::from(command(spec));
-            command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
-            let mut child = command
-                .spawn()
-                .with_context(|| operation_context("spawn", spec))?;
-            let status = child
-                .wait()
-                .await
-                .with_context(|| operation_context("wait for", spec))?;
-            require_success(spec, status)
-        })
+        Box::pin(run_async_process(
+            spec,
+            Stdio::inherit(),
+            Stdio::inherit(),
+            None,
+        ))
     }
 
     fn run_async_to_log<'a>(
@@ -353,57 +347,28 @@ impl ProcessRunner for SystemProcessRunner {
         log_path: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<(), InfrastructureError>> + 'a>> {
         Box::pin(async move {
-            let (log, stderr_log) = log_handles(log_path, spec)?;
-            let mut command = tokio::process::Command::from(command(spec));
-            command
-                .stdout(Stdio::from(log))
-                .stderr(Stdio::from(stderr_log));
-            let mut child = command
-                .spawn()
-                .with_context(|| operation_context("spawn", spec))?;
-            let status = child
-                .wait()
-                .await
-                .with_context(|| operation_context("wait for", spec))?;
-            require_success(spec, status)
+            let (stdout, stderr) = log_handles(log_path, spec)?;
+            run_async_process(spec, stdout.into(), stderr.into(), None).await
         })
     }
 
     fn run_async_cancellable<'a>(
         &'a self,
         spec: &'a CommandSpec,
-        mut cancellation: tokio::sync::watch::Receiver<bool>,
+        cancellation: tokio::sync::watch::Receiver<bool>,
     ) -> Pin<Box<dyn Future<Output = Result<(), InfrastructureError>> + 'a>> {
-        Box::pin(async move {
-            let mut command = tokio::process::Command::from(command(spec));
-            command
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .kill_on_drop(true);
-            let mut child = command
-                .spawn()
-                .with_context(|| operation_context("spawn", spec))?;
-            tokio::select! {
-                status = child.wait() => {
-                    let status = status.with_context(|| operation_context("wait for", spec))?;
-                    require_success(spec, status)
-                }
-                () = wait_for_cancellation(&mut cancellation) => {
-                    let _ = child.start_kill();
-                    child
-                        .wait()
-                        .await
-                        .with_context(|| operation_context("reap cancelled", spec))?;
-                    Err(cancelled_failure(spec))
-                }
-            }
-        })
+        Box::pin(run_async_process(
+            spec,
+            Stdio::inherit(),
+            Stdio::inherit(),
+            Some(cancellation),
+        ))
     }
 
     fn run_async_cancellable_to_log<'a>(
         &'a self,
         spec: &'a CommandSpec,
-        mut cancellation: tokio::sync::watch::Receiver<bool>,
+        cancellation: tokio::sync::watch::Receiver<bool>,
         log_path: &'a Path,
     ) -> Pin<Box<dyn Future<Output = Result<(), InfrastructureError>> + 'a>> {
         Box::pin(async move {
@@ -412,28 +377,7 @@ impl ProcessRunner for SystemProcessRunner {
             let stderr_log = log
                 .try_clone()
                 .with_context(|| log_context("clone handle for", log_path, spec))?;
-            let mut command = tokio::process::Command::from(command(spec));
-            command
-                .stdout(Stdio::from(log))
-                .stderr(Stdio::from(stderr_log))
-                .kill_on_drop(true);
-            let mut child = command
-                .spawn()
-                .with_context(|| operation_context("spawn", spec))?;
-            tokio::select! {
-                status = child.wait() => {
-                    let status = status.with_context(|| operation_context("wait for", spec))?;
-                    require_success(spec, status)
-                }
-                () = wait_for_cancellation(&mut cancellation) => {
-                    let _ = child.start_kill();
-                    child
-                        .wait()
-                        .await
-                        .with_context(|| operation_context("reap cancelled", spec))?;
-                    Err(cancelled_failure(spec))
-                }
-            }
+            run_async_process(spec, log.into(), stderr_log.into(), Some(cancellation)).await
         })
     }
 
@@ -498,6 +442,34 @@ impl ProcessRunner for SystemProcessRunner {
             .with_context(|| operation_context("wait for", spec))?;
         require_success(spec, status)
     }
+}
+
+async fn run_async_process(
+    spec: &CommandSpec,
+    stdout: Stdio,
+    stderr: Stdio,
+    cancellation: Option<tokio::sync::watch::Receiver<bool>>,
+) -> Result<(), InfrastructureError> {
+    let mut child = tokio::process::Command::from(command(spec))
+        .stdout(stdout)
+        .stderr(stderr)
+        .kill_on_drop(cancellation.is_some())
+        .spawn()
+        .with_context(|| operation_context("spawn", spec))?;
+    let status = if let Some(mut cancellation) = cancellation {
+        tokio::select! {
+            status = child.wait() => status,
+            () = wait_for_cancellation(&mut cancellation) => {
+                let _ = child.start_kill();
+                child.wait().await.with_context(|| operation_context("reap cancelled", spec))?;
+                return Err(cancelled_failure(spec));
+            }
+        }
+    } else {
+        child.wait().await
+    }
+    .with_context(|| operation_context("wait for", spec))?;
+    require_success(spec, status)
 }
 
 fn log_handles(log_path: &Path, spec: &CommandSpec) -> Result<(File, File), InfrastructureError> {

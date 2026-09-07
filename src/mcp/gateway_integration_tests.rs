@@ -1,10 +1,9 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
+use crate::mcp::protocol::{initialize_with_id_and_version, jsonrpc_with_id};
 use axum::Router;
-use axum::body::{Body, Bytes, to_bytes};
+use axum::body::{Body, to_bytes};
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode};
 use axum::routing::any;
@@ -30,7 +29,6 @@ struct MockResponse {
     status: StatusCode,
     headers: Vec<(String, String)>,
     body: String,
-    open_stream: bool,
 }
 
 impl MockResponse {
@@ -39,7 +37,6 @@ impl MockResponse {
             status,
             headers: vec![("content-type".to_owned(), "application/json".to_owned())],
             body: body.to_string(),
-            open_stream: false,
         }
     }
 
@@ -51,16 +48,6 @@ impl MockResponse {
                 "text/event-stream; charset=utf-8".to_owned(),
             )],
             body: format!("event: message\ndata: {body}\n\n"),
-            open_stream: false,
-        }
-    }
-
-    fn open_sse() -> Self {
-        Self {
-            status: StatusCode::OK,
-            headers: vec![("content-type".to_owned(), "text/event-stream".to_owned())],
-            body: String::new(),
-            open_stream: true,
         }
     }
 
@@ -69,7 +56,6 @@ impl MockResponse {
             status,
             headers: Vec::new(),
             body: String::new(),
-            open_stream: false,
         }
     }
 
@@ -164,12 +150,7 @@ async fn mock_handler(State(state): State<MockState>, request: Request<Body>) ->
 }
 
 fn response_from(spec: MockResponse) -> Response<Body> {
-    let body = if spec.open_stream {
-        Body::from_stream(tokio_stream::pending::<Result<Bytes, Infallible>>())
-    } else {
-        Body::from(spec.body)
-    };
-    let mut response = Response::new(body);
+    let mut response = Response::new(Body::from(spec.body));
     *response.status_mut() = spec.status;
     for (name, value) in spec.headers {
         response.headers_mut().append(
@@ -199,6 +180,15 @@ fn response(id: u64, result: Value) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "result": result})
 }
 
+fn initialize(id: Value) -> GatewayRequest {
+    GatewayRequest::probe(initialize_with_id_and_version(id, DEFAULT_PROTOCOL_VERSION))
+        .protocol_version(HeaderOverride::Omit)
+}
+
+fn rpc(method: &str, params: Option<Value>, id: Value) -> GatewayRequest {
+    GatewayRequest::probe(jsonrpc_with_id(method, params, id))
+}
+
 #[tokio::test]
 async fn initialize_uses_fixed_encoded_route_and_exact_required_headers() {
     let server = MockServer::start([MockResponse::json(
@@ -217,7 +207,7 @@ async fn initialize_uses_fixed_encoded_route_and_exact_required_headers() {
     .expect("valid gateway client should build");
 
     let exchange = client
-        .send(GatewayRequest::initialize(json!(1)))
+        .send(initialize(json!(1)))
         .await
         .expect("initialize should succeed");
 
@@ -261,7 +251,7 @@ async fn initialize_uses_fixed_encoded_route_and_exact_required_headers() {
 }
 
 #[tokio::test]
-async fn response_session_is_propagated_and_notification_requires_202() {
+async fn response_session_is_propagated_to_notifications() {
     let server = MockServer::start([
         MockResponse::json(StatusCode::OK, response(7, json!({})))
             .with_header(MCP_SESSION_ID, "from-response"),
@@ -277,11 +267,13 @@ async fn response_session_is_propagated_and_notification_requires_202() {
     .expect("valid gateway client should build");
 
     client
-        .send(GatewayRequest::initialize(json!(7)))
+        .send(initialize(json!(7)))
         .await
         .expect("initialize should succeed");
     let notification = client
-        .send(GatewayRequest::initialized())
+        .send(GatewayRequest::probe(
+            json!({"jsonrpc":"2.0", "method":"notifications/initialized"}),
+        ))
         .await
         .expect("initialized notification should receive 202");
 
@@ -297,30 +289,7 @@ async fn response_session_is_propagated_and_notification_requires_202() {
 }
 
 #[tokio::test]
-async fn jsonrpc_response_requires_exact_http_200() {
-    let server = MockServer::start([MockResponse::json(
-        StatusCode::CREATED,
-        response(2, json!({"tools": []})),
-    )])
-    .await;
-    let mut client = GatewayClient::new(
-        GatewayTopology::Direct,
-        &server.base_url,
-        "server",
-        "secret-token",
-    )
-    .expect("valid gateway client should build");
-
-    let error = client
-        .send(GatewayRequest::request("tools/list", None, json!(2)))
-        .await
-        .expect_err("JSON-RPC over Streamable HTTP requires status 200");
-
-    assert!(error.to_string().contains("expected HTTP 200"));
-}
-
-#[tokio::test]
-async fn generic_requests_parse_json_and_sse_and_validate_ids() {
+async fn post_requests_parse_json_and_sse() {
     let server = MockServer::start([
         MockResponse::json(StatusCode::OK, response(2, json!({"tools": []}))).dataplane(),
         MockResponse::sse(response(3, json!({"resources": []}))).dataplane(),
@@ -335,19 +304,11 @@ async fn generic_requests_parse_json_and_sse_and_validate_ids() {
     .expect("valid gateway client should build");
 
     let json_exchange = client
-        .send(GatewayRequest::request(
-            "tools/list",
-            Some(json!({})),
-            json!(2),
-        ))
+        .send(rpc("tools/list", Some(json!({})), json!(2)))
         .await
         .expect("JSON response should validate");
     let sse_exchange = client
-        .send(GatewayRequest::request(
-            "resources/list",
-            Some(json!({})),
-            json!(3),
-        ))
+        .send(rpc("resources/list", Some(json!({})), json!(3)))
         .await
         .expect("SSE response should validate");
 
@@ -370,7 +331,6 @@ async fn structured_json_suffix_is_not_accepted_as_mcp_json() {
             "application/problem+json".to_owned(),
         )],
         body: response(2, json!({"tools": []})).to_string(),
-        open_stream: false,
     }])
     .await;
     let mut client = GatewayClient::new(
@@ -381,20 +341,16 @@ async fn structured_json_suffix_is_not_accepted_as_mcp_json() {
     )
     .expect("valid gateway client should build");
 
-    let error = client
-        .send(GatewayRequest::request("tools/list", None, json!(2)))
+    let exchange = client
+        .send(rpc("tools/list", None, json!(2)))
         .await
-        .expect_err("MCP only permits exact JSON and event-stream media types");
-
-    assert!(
-        error
-            .to_string()
-            .contains("did not contain a JSON or SSE message")
-    );
+        .expect("non-MCP media types remain available for workflow diagnostics");
+    assert!(exchange.message().is_none());
+    assert!(!exchange.body().is_empty());
 }
 
 #[tokio::test]
-async fn custom_protocol_version_changes_header_and_initialize_body() {
+async fn custom_protocol_version_sets_the_default_request_header() {
     let server = MockServer::start([MockResponse::json(
         StatusCode::OK,
         response(1, json!({"protocolVersion": "2099-01-01"})),
@@ -411,89 +367,12 @@ async fn custom_protocol_version_changes_header_and_initialize_body() {
     .expect("custom-version client should build");
 
     client
-        .send(GatewayRequest::initialize(json!(1)))
+        .send(rpc("ping", None, json!(1)))
         .await
         .expect("custom-version initialize should succeed");
 
     let request = &server.requests()[0];
-    assert!(!request.headers.contains_key(MCP_PROTOCOL_VERSION));
-    let payload: Value = serde_json::from_slice(&request.body).expect("body should be JSON");
-    assert_eq!(payload["params"]["protocolVersion"], "2099-01-01");
-}
-
-#[tokio::test]
-async fn get_delete_and_malformed_post_support_explicit_invalid_header_overrides() {
-    let server = MockServer::start([
-        MockResponse::empty(StatusCode::METHOD_NOT_ALLOWED).dataplane(),
-        MockResponse::empty(StatusCode::OK).dataplane(),
-        MockResponse::json(
-            StatusCode::BAD_REQUEST,
-            json!({"error": "malformed request"}),
-        )
-        .dataplane(),
-    ])
-    .await;
-    let mut client = GatewayClient::new(
-        GatewayTopology::Dataplane,
-        &server.base_url,
-        "server",
-        "secret-token",
-    )
-    .expect("valid gateway client should build");
-
-    let get = client
-        .send(
-            GatewayRequest::get()
-                .protocol_version(HeaderOverride::Value("invalid-version".to_owned()))
-                .session(HeaderOverride::Value("invalid-session".to_owned())),
-        )
-        .await
-        .expect("unchecked GET should capture 405");
-    let delete = client
-        .send(GatewayRequest::delete().session(HeaderOverride::Omit))
-        .await
-        .expect("DELETE should be captured");
-    let malformed = client
-        .send(GatewayRequest::raw_post(Bytes::from_static(b"{not-json")))
-        .await
-        .expect("raw malformed request should capture server rejection");
-
-    assert_eq!(get.status(), 405);
-    assert_eq!(delete.status(), 200);
-    assert_eq!(malformed.status(), 400);
-    let requests = server.requests();
-    assert_eq!(requests[0].method, "GET");
-    assert_eq!(requests[0].headers[MCP_PROTOCOL_VERSION], "invalid-version");
-    assert_eq!(requests[0].headers[MCP_SESSION_ID], "invalid-session");
-    assert_eq!(requests[0].headers["accept"], "text/event-stream");
-    assert!(!requests[1].headers.contains_key(MCP_SESSION_ID));
-    assert_eq!(requests[2].method, "POST");
-    assert_eq!(requests[2].headers["content-type"], "application/json");
-    assert_eq!(requests[2].body, b"{not-json");
-}
-
-#[tokio::test]
-async fn get_returns_after_headers_without_draining_an_open_sse_stream() {
-    let server = MockServer::start([MockResponse::open_sse().dataplane()]).await;
-    let mut client = GatewayClient::new(
-        GatewayTopology::Dataplane,
-        &server.base_url,
-        "server",
-        "secret-token",
-    )
-    .expect("valid gateway client should build");
-
-    let exchange = tokio::time::timeout(Duration::from_secs(1), client.send(GatewayRequest::get()))
-        .await
-        .expect("GET must return after receiving SSE response headers")
-        .expect("open SSE GET should be captured");
-
-    assert_eq!(exchange.status(), 200);
-    assert_eq!(exchange.body(), "");
-    assert_eq!(
-        exchange.headers().get("content-type").map(String::as_str),
-        Some("text/event-stream")
-    );
+    assert_eq!(request.headers[MCP_PROTOCOL_VERSION], "2099-01-01");
 }
 
 #[tokio::test]
@@ -512,11 +391,13 @@ async fn absent_response_session_is_never_synthesized_or_sent() {
     .expect("valid gateway client should build");
 
     client
-        .send(GatewayRequest::initialize(json!(1)))
+        .send(initialize(json!(1)))
         .await
         .expect("initialize should succeed without a session header");
     client
-        .send(GatewayRequest::initialized())
+        .send(GatewayRequest::probe(
+            json!({"jsonrpc":"2.0", "method":"notifications/initialized"}),
+        ))
         .await
         .expect("notification should succeed without a session header");
 
@@ -545,7 +426,7 @@ async fn assigned_session_must_be_nonempty_visible_ascii_without_spaces() {
         .expect("valid gateway client should build");
 
         let error = client
-            .send(GatewayRequest::initialize(json!(1)))
+            .send(initialize(json!(1)))
             .await
             .expect_err("invalid response session IDs must be rejected");
 
@@ -561,7 +442,6 @@ async fn http_failure_diagnostics_capture_exchange_without_leaking_secrets_or_co
         status: StatusCode::INTERNAL_SERVER_ERROR,
         headers: vec![("x-debug".to_owned(), format!("leaked-{token}"))],
         body: format!("failed {token}\nnext\u{0007}"),
-        open_stream: false,
     }
     .dataplane()])
     .await;
@@ -573,18 +453,15 @@ async fn http_failure_diagnostics_capture_exchange_without_leaking_secrets_or_co
     )
     .expect("valid gateway client should build");
 
-    let error = client
-        .send(GatewayRequest::request("tools/list", None, json!(4)))
+    let exchange = client
+        .send(rpc("tools/list", None, json!(4)))
         .await
-        .expect_err("500 should fail a JSON-RPC request");
-    let diagnostic = format!("{error}\n{error:?}");
-    let exchange = error.exchange().expect("HTTP error should retain exchange");
-
-    assert_eq!(error.mode(), GatewayTopology::Dataplane);
+        .expect("HTTP errors are returned for workflow validation");
+    let diagnostic = format!("{exchange:?}");
     assert_eq!(exchange.status(), 500);
     assert_eq!(exchange.request().mode(), GatewayTopology::Dataplane);
     assert!(diagnostic.contains("Dataplane"));
-    assert!(diagnostic.contains("status 500"));
+    assert!(diagnostic.contains("status: 500"));
     assert!(diagnostic.contains("<redacted>"));
     assert!(diagnostic.contains("\\n"));
     assert!(diagnostic.contains("\\u{0007}"));
@@ -613,7 +490,6 @@ async fn failure_exchange_redacts_session_ids_reflected_in_response_bodies() {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             headers: vec![("x-debug".to_owned(), format!("reflected {session}"))],
             body: format!("failed session {session}"),
-            open_stream: false,
         }
         .dataplane(),
     ])
@@ -626,64 +502,20 @@ async fn failure_exchange_redacts_session_ids_reflected_in_response_bodies() {
     )
     .expect("valid gateway client should build");
     client
-        .send(GatewayRequest::initialize(json!(1)))
+        .send(initialize(json!(1)))
         .await
         .expect("initialize should assign a session");
 
-    let error = client
-        .send(GatewayRequest::request("tools/list", None, json!(2)))
+    let exchange = client
+        .send(rpc("tools/list", None, json!(2)))
         .await
-        .expect_err("500 should fail");
-    let exchange = error.exchange().expect("failure should retain exchange");
-    let diagnostic = format!("{error:?}");
+        .expect("HTTP failure should retain its diagnostic capture");
+    let diagnostic = format!("{exchange:?}");
 
     assert!(!exchange.body().contains(session));
     assert!(!exchange.headers()["x-debug"].contains(session));
     assert!(!diagnostic.contains(session));
     assert!(exchange.body().contains("<redacted>"));
-}
-
-#[tokio::test]
-async fn malformed_jsonrpc_version_id_and_error_shapes_are_rejected_with_exchange() {
-    let server = MockServer::start([
-        MockResponse::json(
-            StatusCode::OK,
-            json!({"jsonrpc": "1.0", "id": 1, "result": {}}),
-        ),
-        MockResponse::json(StatusCode::OK, response(99, json!({}))),
-        MockResponse::json(
-            StatusCode::OK,
-            json!({"jsonrpc": "2.0", "id": 3, "error": {"code": "bad", "message": 7}}),
-        ),
-        MockResponse::json(
-            StatusCode::OK,
-            json!({"jsonrpc": "2.0", "id": 4, "result": {}, "error": {"code": -1, "message": "bad"}}),
-        ),
-    ])
-    .await;
-    let mut client = GatewayClient::new(
-        GatewayTopology::Direct,
-        &server.base_url,
-        "server",
-        "secret-token",
-    )
-    .expect("valid gateway client should build");
-
-    let cases = [
-        (1_u64, "JSON-RPC version"),
-        (2, "response id"),
-        (3, "error object"),
-        (4, "exactly one of result or error"),
-    ];
-    for (id, expected) in cases {
-        let error = client
-            .send(GatewayRequest::request("tools/list", None, json!(id)))
-            .await
-            .expect_err("malformed JSON-RPC response should fail");
-        assert!(error.to_string().contains(expected), "{error}");
-        assert!(error.exchange().is_some());
-        assert_eq!(error.mode(), GatewayTopology::Direct);
-    }
 }
 
 #[tokio::test]
@@ -701,12 +533,13 @@ async fn debug_output_redacts_bearer_token_session_and_payload() {
     )
     .expect("valid gateway client should build");
     client
-        .send(GatewayRequest::initialize(json!(1)))
+        .send(initialize(json!(1)))
         .await
         .expect("initialize should succeed");
-    let request =
-        GatewayRequest::notification("notifications/custom", Some(json!({"token": token})))
-            .session(HeaderOverride::Value("debug-secret-session".to_owned()));
+    let request = GatewayRequest::probe(
+        json!({"jsonrpc":"2.0", "method":"notifications/custom", "params":{"token":token}}),
+    )
+    .session(HeaderOverride::Value("debug-secret-session".to_owned()));
 
     let diagnostic = format!("{client:?}\n{request:?}");
 
@@ -757,7 +590,7 @@ async fn dataplane_rejects_absent_fallback_forged_and_duplicate_backend_markers(
         .expect("valid gateway client should build");
 
         let error = client
-            .send(GatewayRequest::initialize(json!(1)))
+            .send(initialize(json!(1)))
             .await
             .expect_err("dataplane responses must carry one exact backend marker");
         let diagnostic = format!("{error}\n{error:?}");
@@ -781,7 +614,7 @@ async fn controlplane_does_not_require_the_harness_only_backend_marker() {
     .expect("valid gateway client should build");
 
     client
-        .send(GatewayRequest::initialize(json!(1)))
+        .send(initialize(json!(1)))
         .await
         .expect("stock controlplane nginx has no integration backend marker");
 }

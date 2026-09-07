@@ -17,7 +17,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let runs = discover_conformance_runs(artifact_root, &report_root)?;
         let mut failures = Vec::new();
         for paths in runs {
-            match self.write_comparison_from_artifacts(&paths, None) {
+            match write_comparison_from_artifacts(&paths, None) {
                 Ok(comparison) => println!(
                     "{} {}",
                     OutputStyle::stdout().info("Conformance comparison:"),
@@ -35,195 +35,183 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             )))
         }
     }
+}
 
-    pub(super) fn write_comparison_from_artifacts(
-        &self,
-        paths: &ConformancePaths,
-        expected_run: Option<(&str, ConformanceServerEra, &str)>,
-    ) -> AppResult<PathBuf> {
-        let fixture = self.load_conformance_artifact(paths, SemanticLane::FixtureDirect)?;
-        let built_in = self.load_conformance_artifact(paths, SemanticLane::BuiltInDataPlane)?;
-        let external = self.load_conformance_artifact(paths, SemanticLane::ExternalDataPlane)?;
-        if fixture.is_none() && built_in.is_none() && external.is_none() {
-            return Err(AppFailure::from(anyhow!(
-                "no official conformance artifacts found beneath {}",
-                paths.conformance_root.display()
-            )));
-        }
-        let missing = [
-            (SemanticLane::FixtureDirect, fixture.is_none()),
-            (SemanticLane::BuiltInDataPlane, built_in.is_none()),
-            (SemanticLane::ExternalDataPlane, external.is_none()),
-        ]
-        .into_iter()
-        .filter_map(|(lane, missing)| missing.then_some(lane.slug()))
-        .collect::<Vec<_>>();
-        if !missing.is_empty() {
-            return Err(AppFailure::from(anyhow!(
-                "missing conformance lanes for {}: {}",
-                paths.identity(),
-                missing.join(", ")
-            )));
-        }
-
-        let fixture = fixture.ok_or_else(|| {
-            AppFailure::from(anyhow!("missing fixture-direct conformance artifact"))
-        })?;
-        let built_in = built_in.ok_or_else(|| {
-            AppFailure::from(anyhow!("missing built-in dataplane conformance artifact"))
-        })?;
-        let external = external.ok_or_else(|| {
-            AppFailure::from(anyhow!("missing external dataplane conformance artifact"))
-        })?;
-        let metadata = compatible_metadata(
-            Some(&fixture.metadata),
-            Some(&built_in.metadata),
-            Some(&external.metadata),
-            expected_run,
-        )?;
-        let scenarios = compare_result_sets(&fixture.results, &built_in.results, &external.results);
-        let output = paths.report_output.join("mcp-conformance-comparison.md");
-        write_comparison_report(
-            &output,
-            &ComparisonReport {
-                client_version: metadata.client_version.clone(),
-                server_era: metadata.server_era,
-                suite: metadata.suite.clone(),
-                fixture: metadata.fixture.clone(),
-                scenarios,
-            },
-        )
-        .map_err(AppFailure::from)?;
-        Ok(output)
+pub(super) fn write_comparison_from_artifacts(
+    paths: &ConformancePaths,
+    expected_run: Option<(&str, ConformanceServerEra, &str)>,
+) -> AppResult<PathBuf> {
+    let fixture = load_conformance_artifact(
+        paths,
+        ConformanceDirection::Server,
+        SemanticLane::FixtureDirect,
+    )?;
+    let built_in = load_conformance_artifact(
+        paths,
+        ConformanceDirection::Server,
+        SemanticLane::BuiltInDataPlane,
+    )?;
+    let external = load_conformance_artifact(
+        paths,
+        ConformanceDirection::Server,
+        SemanticLane::ExternalDataPlane,
+    )?;
+    if fixture.is_none() && built_in.is_none() && external.is_none() {
+        return Err(AppFailure::from(anyhow!(
+            "no official conformance artifacts found beneath {}",
+            paths.conformance_root.display()
+        )));
+    }
+    let missing = [
+        (SemanticLane::FixtureDirect, fixture.is_none()),
+        (SemanticLane::BuiltInDataPlane, built_in.is_none()),
+        (SemanticLane::ExternalDataPlane, external.is_none()),
+    ]
+    .into_iter()
+    .filter_map(|(lane, missing)| missing.then_some(lane.slug()))
+    .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(AppFailure::from(anyhow!(
+            "missing conformance lanes for {}: {}",
+            paths.identity(),
+            missing.join(", ")
+        )));
     }
 
-    fn load_conformance_artifact(
-        &self,
-        paths: &ConformancePaths,
-        target: SemanticLane,
-    ) -> AppResult<Option<LoadedConformanceArtifact>> {
-        let artifact = paths.conformance_lane(target);
-        if !artifact.metadata.is_file()
-            && !artifact.official_results.is_dir()
-            && !artifact.completion.is_file()
-        {
-            return Ok(None);
-        }
-        if !artifact.metadata.is_file()
-            || !artifact.official_results.is_dir()
-            || !artifact.completion.is_file()
-        {
-            return Err(AppFailure::from(anyhow!(
-                "incomplete conformance artifacts for {target} beneath {}",
-                artifact.root.display()
-            )));
-        }
-        verify_completion_marker(&artifact.completion)?;
-        let metadata = read_run_metadata(&artifact.metadata)?;
-        if metadata.direction != ConformanceDirection::Server {
-            return Err(AppFailure::from(anyhow!(
-                "conformance metadata direction {} does not match server",
-                metadata.direction
-            )));
-        }
-        if metadata.target != target.label() {
-            return Err(AppFailure::from(anyhow!(
-                "conformance metadata target {:?} does not match {target}",
-                metadata.target
-            )));
-        }
-        if metadata.oracle != crate::conformance::results::OFFICIAL_CONFORMANCE_PACKAGE {
-            return Err(AppFailure::from(anyhow!(
-                "conformance artifacts used oracle {:?}, expected {:?}",
-                metadata.oracle,
-                crate::conformance::results::OFFICIAL_CONFORMANCE_PACKAGE
-            )));
-        }
-        if !is_trusted_official_fixture(&metadata.fixture) {
-            return Err(AppFailure::from(anyhow!(
-                "conformance artifacts do not identify the pinned official fixture"
-            )));
-        }
-        let results = load_server_results(&artifact.official_results).map_err(AppFailure::from)?;
-        validate_server_scenario_set(&results, &metadata.suite, &metadata.client_version)
-            .map_err(AppFailure::from)?;
-        validate_scored_results(&results).map_err(AppFailure::from)?;
-        Ok(Some(LoadedConformanceArtifact { results, metadata }))
-    }
+    let fixture = fixture
+        .ok_or_else(|| AppFailure::from(anyhow!("missing fixture-direct conformance artifact")))?;
+    let built_in = built_in.ok_or_else(|| {
+        AppFailure::from(anyhow!("missing built-in dataplane conformance artifact"))
+    })?;
+    let external = external.ok_or_else(|| {
+        AppFailure::from(anyhow!("missing external dataplane conformance artifact"))
+    })?;
+    let metadata = compatible_metadata(
+        &fixture.metadata,
+        &built_in.metadata,
+        &external.metadata,
+        expected_run,
+    )?;
+    let scenarios = compare_result_sets(&fixture.results, &built_in.results, &external.results);
+    let output = paths.report_output.join("mcp-conformance-comparison.md");
+    write_comparison_report(
+        &output,
+        &ComparisonReport {
+            client_version: metadata.client_version.clone(),
+            server_era: metadata.server_era,
+            suite: metadata.suite.clone(),
+            fixture: metadata.fixture.clone(),
+            scenarios,
+        },
+    )
+    .map_err(AppFailure::from)?;
+    Ok(output)
+}
 
-    pub(super) fn load_selected_conformance_results(
-        &self,
-        paths: &ConformancePaths,
-        lanes: &[SemanticLane],
-    ) -> AppResult<BTreeMap<SemanticLane, ConformanceResults>> {
-        let results = self.load_completed_conformance_results(paths, lanes)?;
-        for lane in conformance_evidence_lanes(lanes) {
-            if !results.contains_key(&lane) {
-                return Err(AppFailure::from(anyhow!(
-                    "missing required conformance lane {} for {}",
-                    lane.slug(),
-                    paths.identity()
-                )));
-            }
-        }
-        Ok(results)
+fn load_conformance_artifact(
+    paths: &ConformancePaths,
+    direction: ConformanceDirection,
+    target: SemanticLane,
+) -> AppResult<Option<LoadedConformanceArtifact>> {
+    let artifact = paths.lane(direction, target);
+    if !artifact.metadata.is_file()
+        && !artifact.official_results.is_dir()
+        && !artifact.completion.is_file()
+    {
+        return Ok(None);
     }
+    if !artifact.metadata.is_file()
+        || !artifact.official_results.is_dir()
+        || !artifact.completion.is_file()
+    {
+        return Err(AppFailure::from(anyhow!(
+            "incomplete conformance artifacts for {target} beneath {}",
+            artifact.root.display()
+        )));
+    }
+    verify_completion_marker(&artifact.completion)?;
+    let metadata = read_run_metadata(&artifact.metadata)?;
+    if metadata.direction != direction {
+        return Err(AppFailure::from(anyhow!(
+            "conformance metadata direction {} does not match {direction}",
+            metadata.direction
+        )));
+    }
+    if metadata.target != target.label() {
+        return Err(AppFailure::from(anyhow!(
+            "conformance metadata target {:?} does not match {target}",
+            metadata.target
+        )));
+    }
+    if metadata.oracle != crate::conformance::results::OFFICIAL_CONFORMANCE_PACKAGE {
+        return Err(AppFailure::from(anyhow!(
+            "conformance artifacts used oracle {:?}, expected {:?}",
+            metadata.oracle,
+            crate::conformance::results::OFFICIAL_CONFORMANCE_PACKAGE
+        )));
+    }
+    if !is_trusted_official_fixture(&metadata.fixture) {
+        return Err(AppFailure::from(anyhow!(
+            "conformance artifacts do not identify the pinned official fixture"
+        )));
+    }
+    let results = match direction {
+        ConformanceDirection::Server => {
+            let results = load_server_results(&artifact.official_results)?;
+            validate_server_scenario_set(&results, &metadata.suite, &metadata.client_version)?;
+            results
+        }
+        ConformanceDirection::Client => {
+            let results = load_client_results(&artifact.official_results)?;
+            validate_client_scenario_set(&results, &metadata.client_version)?;
+            results
+        }
+    };
+    validate_scored_results(&results).map_err(AppFailure::from)?;
+    Ok(Some(LoadedConformanceArtifact { results, metadata }))
+}
 
-    pub(super) fn load_completed_conformance_results(
-        &self,
-        paths: &ConformancePaths,
-        lanes: &[SemanticLane],
-    ) -> AppResult<BTreeMap<SemanticLane, ConformanceResults>> {
-        let mut results = BTreeMap::new();
-        for lane in conformance_evidence_lanes(lanes) {
-            if let Some(artifact) = self.load_conformance_artifact(paths, lane)? {
-                results.insert(lane, artifact.results);
-            }
+pub(super) fn load_selected_conformance_results(
+    paths: &ConformancePaths,
+    lanes: &[SemanticLane],
+) -> AppResult<BTreeMap<SemanticLane, ConformanceResults>> {
+    let results = load_completed_conformance_results(paths, lanes)?;
+    for lane in conformance_evidence_lanes(lanes) {
+        if !results.contains_key(&lane) {
+            return Err(AppFailure::from(anyhow!(
+                "missing required conformance lane {} for {}",
+                lane.slug(),
+                paths.identity()
+            )));
         }
-        Ok(results)
     }
+    Ok(results)
+}
 
-    pub(super) fn load_completed_client_conformance_results(
-        &self,
-        paths: &ConformancePaths,
-    ) -> AppResult<BTreeMap<SemanticLane, ConformanceResults>> {
-        let lane = SemanticLane::ExternalDataPlane;
-        let artifact = paths.client_conformance_lane(lane);
-        if !artifact.metadata.is_file()
-            && !artifact.official_results.is_dir()
-            && !artifact.completion.is_file()
+pub(super) fn load_completed_conformance_results(
+    paths: &ConformancePaths,
+    lanes: &[SemanticLane],
+) -> AppResult<BTreeMap<SemanticLane, ConformanceResults>> {
+    let mut results = BTreeMap::new();
+    for lane in conformance_evidence_lanes(lanes) {
+        if let Some(artifact) =
+            load_conformance_artifact(paths, ConformanceDirection::Server, lane)?
         {
-            return Ok(BTreeMap::new());
+            results.insert(lane, artifact.results);
         }
-        if !artifact.metadata.is_file()
-            || !artifact.official_results.is_dir()
-            || !artifact.completion.is_file()
-        {
-            return Err(AppFailure::from(anyhow!(
-                "incomplete client-conformance artifacts for {lane} beneath {}",
-                artifact.root.display()
-            )));
-        }
-        verify_completion_marker(&artifact.completion)?;
-        let metadata = read_run_metadata(&artifact.metadata)?;
-        if metadata.direction != ConformanceDirection::Client || metadata.target != lane.label() {
-            return Err(AppFailure::from(anyhow!(
-                "client-conformance metadata does not match external dataplane"
-            )));
-        }
-        if metadata.oracle != crate::conformance::results::OFFICIAL_CONFORMANCE_PACKAGE
-            || !is_trusted_official_fixture(&metadata.fixture)
-        {
-            return Err(AppFailure::from(anyhow!(
-                "client-conformance artifacts do not identify the pinned official runner"
-            )));
-        }
-        let results = load_client_results(&artifact.official_results).map_err(AppFailure::from)?;
-        validate_client_scenario_set(&results, &metadata.client_version)
-            .map_err(AppFailure::from)?;
-        validate_scored_results(&results).map_err(AppFailure::from)?;
-        Ok(BTreeMap::from([(lane, results)]))
     }
+    Ok(results)
+}
+
+pub(super) fn load_completed_client_conformance_results(
+    paths: &ConformancePaths,
+) -> AppResult<BTreeMap<SemanticLane, ConformanceResults>> {
+    let lane = SemanticLane::ExternalDataPlane;
+    Ok(
+        load_conformance_artifact(paths, ConformanceDirection::Client, lane)?
+            .map(|artifact| BTreeMap::from([(lane, artifact.results)]))
+            .unwrap_or_default(),
+    )
 }
 
 fn conformance_evidence_lanes(selected: &[SemanticLane]) -> Vec<SemanticLane> {
@@ -286,33 +274,28 @@ impl ConformancePaths {
         self.conformance_root.join("setup.log")
     }
 
-    pub(super) fn baseline_report(&self, target: SemanticLane) -> PathBuf {
-        self.report_output
-            .join(target.slug())
-            .join("baseline-comparison.yml")
+    pub(super) fn baseline_report(
+        &self,
+        direction: ConformanceDirection,
+        target: SemanticLane,
+    ) -> PathBuf {
+        let root = match direction {
+            ConformanceDirection::Server => self.report_output.clone(),
+            ConformanceDirection::Client => self.report_output.join("client"),
+        };
+        root.join(target.slug()).join("baseline-comparison.yml")
     }
 
-    pub(super) fn client_baseline_report(&self, target: SemanticLane) -> PathBuf {
-        self.report_output
-            .join("client")
-            .join(target.slug())
-            .join("baseline-comparison.yml")
-    }
-
-    pub(super) fn conformance_lane(&self, target: SemanticLane) -> ConformanceLanePaths {
-        let root = self.conformance_root.join(target.slug());
-        ConformanceLanePaths {
-            official_results: root.join("official"),
-            runner_log: root.join("runner.log"),
-            expected_failures: root.join("expected-failures.yml"),
-            metadata: root.join("metadata.json"),
-            completion: root.join("complete"),
-            root,
+    pub(super) fn lane(
+        &self,
+        direction: ConformanceDirection,
+        target: SemanticLane,
+    ) -> ConformanceLanePaths {
+        let root = match direction {
+            ConformanceDirection::Server => self.conformance_root.clone(),
+            ConformanceDirection::Client => self.conformance_root.join("client"),
         }
-    }
-
-    pub(super) fn client_conformance_lane(&self, target: SemanticLane) -> ConformanceLanePaths {
-        let root = self.conformance_root.join("client").join(target.slug());
+        .join(target.slug());
         ConformanceLanePaths {
             official_results: root.join("official"),
             runner_log: root.join("runner.log"),
@@ -329,11 +312,14 @@ impl ConformancePaths {
             SemanticLane::BuiltInDataPlane,
             SemanticLane::ExternalDataPlane,
         ] {
-            remove_artifact_directory(&self.conformance_lane(target).root)?;
+            remove_artifact_directory(&self.lane(ConformanceDirection::Server, target).root)?;
         }
         remove_artifact_directory(
             &self
-                .client_conformance_lane(SemanticLane::ExternalDataPlane)
+                .lane(
+                    ConformanceDirection::Client,
+                    SemanticLane::ExternalDataPlane,
+                )
                 .root,
         )?;
         Ok(())
@@ -522,17 +508,13 @@ fn read_run_metadata(path: &Path) -> AppResult<ConformanceRunMetadata> {
 }
 
 fn compatible_metadata<'a>(
-    fixture: Option<&'a ConformanceRunMetadata>,
-    built_in: Option<&'a ConformanceRunMetadata>,
-    external: Option<&'a ConformanceRunMetadata>,
+    fixture: &'a ConformanceRunMetadata,
+    built_in: &'a ConformanceRunMetadata,
+    external: &'a ConformanceRunMetadata,
     expected_run: Option<(&str, ConformanceServerEra, &str)>,
 ) -> AppResult<&'a ConformanceRunMetadata> {
-    let metadata = fixture.or(built_in).or(external).ok_or_else(|| {
-        AppFailure::from(anyhow!(
-            "no conformance metadata is available for reporting"
-        ))
-    })?;
-    for candidate in [fixture, built_in, external].into_iter().flatten() {
+    let metadata = fixture;
+    for candidate in [built_in, external] {
         if candidate.fixture != metadata.fixture {
             return Err(AppFailure::from(anyhow!(
                 "direct fixture, built-in dataplane, and external dataplane conformance fixture provenance mismatch"
@@ -612,19 +594,28 @@ mod tests {
         );
 
         assert_eq!(
-            paths.conformance_lane(SemanticLane::FixtureDirect).root,
+            paths
+                .lane(ConformanceDirection::Server, SemanticLane::FixtureDirect)
+                .root,
             PathBuf::from("artifacts/conformance/2026-07-28/modern/fixture-direct")
         );
         assert_eq!(
-            paths.conformance_lane(SemanticLane::BuiltInDataPlane).root,
+            paths
+                .lane(ConformanceDirection::Server, SemanticLane::BuiltInDataPlane)
+                .root,
             PathBuf::from("artifacts/conformance/2026-07-28/modern/built-in-data-plane")
         );
         assert_eq!(
-            paths.conformance_lane(SemanticLane::ExternalDataPlane).root,
+            paths
+                .lane(
+                    ConformanceDirection::Server,
+                    SemanticLane::ExternalDataPlane
+                )
+                .root,
             PathBuf::from("artifacts/conformance/2026-07-28/modern/external-data-plane")
         );
         assert_eq!(
-            paths.baseline_report(SemanticLane::BuiltInDataPlane),
+            paths.baseline_report(ConformanceDirection::Server, SemanticLane::BuiltInDataPlane),
             PathBuf::from(
                 "reports/conformance/2026-07-28/modern/built-in-data-plane/baseline-comparison.yml"
             )
@@ -633,6 +624,101 @@ mod tests {
             paths.identity(),
             "client modern [2026-07-28], server modern [2026-07-28]"
         );
+    }
+
+    #[test]
+    fn both_directions_require_complete_trusted_artifacts() {
+        for direction in [ConformanceDirection::Server, ConformanceDirection::Client] {
+            let directory = tempfile::tempdir().expect("artifact root");
+            let paths = ConformancePaths::new(
+                directory.path(),
+                directory.path().join("reports"),
+                "2026-07-28",
+                ConformanceServerEra::Modern,
+            );
+            let lane = SemanticLane::ExternalDataPlane;
+            let artifact = paths.lane(direction, lane);
+            assert!(
+                load_conformance_artifact(&paths, direction, lane)
+                    .expect("missing artifacts")
+                    .is_none()
+            );
+            fs::create_dir_all(&artifact.official_results).expect("results directory");
+            let mut original = metadata(lane);
+            original.direction = direction;
+            original.server_era = ConformanceServerEra::Modern;
+            original.suite = if direction == ConformanceDirection::Server {
+                "all"
+            } else {
+                "scoped"
+            }
+            .to_owned();
+            write_run_metadata(&artifact.metadata, &original).expect("metadata");
+            let scenarios = match direction {
+                ConformanceDirection::Server => expected_server_scenarios("all", "2026-07-28"),
+                ConformanceDirection::Client => expected_client_scenarios("2026-07-28"),
+            }
+            .expect("scenario catalog");
+            for scenario in &scenarios {
+                let prefix = if direction == ConformanceDirection::Server {
+                    "server-"
+                } else {
+                    ""
+                };
+                let result = artifact
+                    .official_results
+                    .join(format!("{prefix}{scenario}-2026-09-07T12-00-00-000Z"));
+                fs::create_dir_all(&result).expect("scenario directory");
+                fs::write(
+                    result.join("checks.json"),
+                    r#"[{"id":"check","status":"SUCCESS"}]"#,
+                )
+                .expect("checks");
+            }
+            assert!(
+                load_conformance_artifact(&paths, direction, lane).is_err(),
+                "missing completion marker"
+            );
+            write_completion_marker(&artifact.completion).expect("completion");
+            let loaded = load_conformance_artifact(&paths, direction, lane)
+                .expect("valid artifacts")
+                .expect("present artifacts");
+            assert_eq!(loaded.results.scenarios.len(), scenarios.len());
+            for field in ["direction", "target", "oracle", "fixture"] {
+                let mut invalid = original.clone();
+                match field {
+                    "direction" => {
+                        invalid.direction = match direction {
+                            ConformanceDirection::Server => ConformanceDirection::Client,
+                            ConformanceDirection::Client => ConformanceDirection::Server,
+                        }
+                    }
+                    "target" => invalid.target = "wrong-lane".to_owned(),
+                    "oracle" => invalid.oracle = "untrusted-runner".to_owned(),
+                    _ => invalid.fixture.revision = "untrusted-revision".to_owned(),
+                }
+                write_run_metadata(&artifact.metadata, &invalid).expect("invalid metadata");
+                assert!(
+                    load_conformance_artifact(&paths, direction, lane).is_err(),
+                    "accepted invalid {direction} {field}"
+                );
+            }
+            write_run_metadata(&artifact.metadata, &original).expect("restore metadata");
+            fs::write(&artifact.completion, "partial").expect("invalid marker");
+            assert!(load_conformance_artifact(&paths, direction, lane).is_err());
+            write_completion_marker(&artifact.completion).expect("restore marker");
+            let result = fs::read_dir(&artifact.official_results)
+                .expect("result directories")
+                .next()
+                .expect("one result")
+                .expect("result entry")
+                .path();
+            fs::remove_file(result.join("checks.json")).expect("remove one scenario");
+            assert!(
+                load_conformance_artifact(&paths, direction, lane).is_err(),
+                "incomplete scenarios must not pass"
+            );
+        }
     }
 
     #[test]
@@ -665,7 +751,7 @@ mod tests {
             SemanticLane::BuiltInDataPlane,
             SemanticLane::ExternalDataPlane,
         ] {
-            fs::create_dir_all(paths.conformance_lane(target).root)
+            fs::create_dir_all(paths.lane(ConformanceDirection::Server, target).root)
                 .expect("lane directory should be created");
         }
 
@@ -678,19 +764,25 @@ mod tests {
             SemanticLane::BuiltInDataPlane,
             SemanticLane::ExternalDataPlane,
         ] {
-            assert!(!paths.conformance_lane(target).root.exists());
+            assert!(
+                !paths
+                    .lane(ConformanceDirection::Server, target)
+                    .root
+                    .exists()
+            );
         }
     }
 
     #[test]
-    fn partial_lane_metadata_is_reportable_when_provenance_matches() {
+    fn complete_lane_metadata_is_reportable_when_provenance_matches() {
         let fixture = metadata(SemanticLane::FixtureDirect);
         let dataplane = metadata(SemanticLane::ExternalDataPlane);
 
+        let builtin = metadata(SemanticLane::BuiltInDataPlane);
         let selected = compatible_metadata(
-            Some(&fixture),
-            None,
-            Some(&dataplane),
+            &fixture,
+            &builtin,
+            &dataplane,
             Some(("2026-07-28", ConformanceServerEra::Dual, "all")),
         )
         .expect("selected lanes should be compatible");
@@ -704,9 +796,14 @@ mod tests {
         let mut dataplane = metadata(SemanticLane::ExternalDataPlane);
         dataplane.fixture.revision = "different".to_owned();
 
-        let error = compatible_metadata(Some(&fixture), None, Some(&dataplane), None)
-            .expect_err("mismatched provenance must fail")
-            .to_string();
+        let error = compatible_metadata(
+            &fixture,
+            &metadata(SemanticLane::BuiltInDataPlane),
+            &dataplane,
+            None,
+        )
+        .expect_err("mismatched provenance must fail")
+        .to_string();
 
         assert!(error.contains("provenance mismatch"));
         assert!(!error.contains("different"));
@@ -718,9 +815,14 @@ mod tests {
         let mut dataplane = metadata(SemanticLane::ExternalDataPlane);
         dataplane.server_era = ConformanceServerEra::Legacy;
 
-        let error = compatible_metadata(Some(&fixture), None, Some(&dataplane), None)
-            .expect_err("different server eras must not be compared")
-            .to_string();
+        let error = compatible_metadata(
+            &fixture,
+            &metadata(SemanticLane::BuiltInDataPlane),
+            &dataplane,
+            None,
+        )
+        .expect_err("different server eras must not be compared")
+        .to_string();
 
         assert!(error.contains("incompatible runs"));
     }

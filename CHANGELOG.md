@@ -7,6 +7,14 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Changed
+
+- Consolidated server and client conformance artifact validation, baseline gates,
+  and reporting into one direction-aware path.
+- Removed unused MCP transport features and stack command wrappers; tests now
+  exercise the same MCP POST client used by probes and conformance.
+- Shared asynchronous child-process execution and CI/release quality checks.
+
 ## [0.3.2] - 2026-09-07
 
 ### Changed

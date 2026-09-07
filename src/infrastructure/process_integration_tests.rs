@@ -325,51 +325,56 @@ async fn async_runner_keeps_a_single_thread_executor_responsive() {
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn cancellable_async_runner_kills_and_reaps_active_child() {
-    let directory = tempfile::tempdir().expect("temporary directory should be created");
-    let pid_path = directory.path().join("child.pid");
-    let script = shell_script(
-        &directory,
-        "long-lived.sh",
-        "printf '%s' \"$$\" > \"$PROCESS_PID_FILE\"\nexec sleep 60",
-    );
-    let spec = CommandSpec::new("/bin/sh")
-        .arg(script)
-        .env("PROCESS_PID_FILE", pid_path.as_os_str());
-    let (cancellation_sender, cancellation_receiver) = tokio::sync::watch::channel(false);
-    let cancellation_pid_path = pid_path.clone();
-    let cancel = tokio::spawn(async move {
-        for _ in 0..200 {
-            if cancellation_pid_path.is_file() {
-                cancellation_sender.send_replace(true);
-                return;
+    for logged in [false, true] {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let pid_path = directory.path().join("child.pid");
+        let script = shell_script(
+            &directory,
+            "long-lived.sh",
+            "printf '%s' \"$$\" > \"$PROCESS_PID_FILE\"\nexec sleep 60",
+        );
+        let spec = CommandSpec::new("/bin/sh")
+            .arg(script)
+            .env("PROCESS_PID_FILE", pid_path.as_os_str());
+        let (cancellation_sender, cancellation_receiver) = tokio::sync::watch::channel(false);
+        let cancellation_pid_path = pid_path.clone();
+        let cancel = tokio::spawn(async move {
+            for _ in 0..200 {
+                if cancellation_pid_path.is_file() {
+                    cancellation_sender.send_replace(true);
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("child did not publish its PID before cancellation deadline");
-    });
+            panic!("child did not publish its PID before cancellation deadline");
+        });
 
-    let error = tokio::time::timeout(
-        Duration::from_secs(5),
-        SystemProcessRunner.run_async_cancellable(&spec, cancellation_receiver),
-    )
-    .await
-    .expect("cancellable child should return promptly")
-    .expect_err("cancellation should be reported");
-    cancel.await.expect("cancellation task should join");
+        let log = directory.path().join("child.log");
+        let process = if logged {
+            SystemProcessRunner.run_async_cancellable_to_log(&spec, cancellation_receiver, &log)
+        } else {
+            SystemProcessRunner.run_async_cancellable(&spec, cancellation_receiver)
+        };
+        let error = tokio::time::timeout(Duration::from_secs(5), process)
+            .await
+            .expect("cancellable child should return promptly")
+            .expect_err("cancellation should be reported");
+        cancel.await.expect("cancellation task should join");
 
-    assert!(error.to_string().contains("cancelled and reaped"));
-    let pid = fs::read_to_string(&pid_path)
-        .expect("child PID should be recorded")
-        .parse::<u32>()
-        .expect("child PID should be numeric");
-    let still_running = std::process::Command::new("/bin/kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .expect("kill probe should execute")
-        .success();
-    assert!(!still_running, "cancelled child {pid} must be gone");
+        assert!(error.to_string().contains("cancelled and reaped"));
+        let pid = fs::read_to_string(&pid_path)
+            .expect("child PID should be recorded")
+            .parse::<u32>()
+            .expect("child PID should be numeric");
+        let still_running = std::process::Command::new("/bin/kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("kill probe should execute")
+            .success();
+        assert!(!still_running, "cancelled child {pid} must be gone");
+    }
 }
 
 #[cfg(unix)]
