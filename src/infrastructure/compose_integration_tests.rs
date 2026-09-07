@@ -69,7 +69,9 @@ fn dataplane_compose_files_are_in_override_order() {
         repository_root
             .join("docker")
             .join("docker-compose.cf-integration.yaml"),
-        repository_root.join("docker/docker-compose.cf-dataplane-config.yaml"),
+        repository_root
+            .join("docker")
+            .join("docker-compose.cf-dataplane-config.yaml"),
     ];
 
     assert_eq!(project.files(), expected_files);
