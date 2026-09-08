@@ -37,7 +37,7 @@ fn messages(config: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-fn run_fixture_patch(source: &str) -> (std::process::ExitStatus, String) {
+fn run_fixture_patch(source: &str) -> (std::process::Output, String) {
     let directory = tempfile::tempdir().expect("create patch test directory");
     let relative = Path::new("examples/servers/typescript/everything-server.ts");
     let target = directory.path().join(relative);
@@ -50,7 +50,7 @@ fn run_fixture_patch(source: &str) -> (std::process::ExitStatus, String) {
         .output()
         .expect("apply conformance fixture patch");
     let contents = fs::read_to_string(target).expect("read patch test output");
-    (output.status, contents)
+    (output, contents)
 }
 
 #[test]
@@ -853,8 +853,12 @@ fn conformance_fixture_patch_is_fail_closed_and_adds_server_era_routing() {
         }
     }
     let source = format!("{}\n", original.join("\n"));
-    let (status, patched) = run_fixture_patch(&source);
-    assert!(status.success());
+    let (output, patched) = run_fixture_patch(&source);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(patched.contains("createMcpExpressApp({ allowedHosts:"));
     assert!(patched.contains("CONFORMANCE_SERVER_ERA === 'legacy' && isModernEraRequest"));
     assert!(patched.contains("CONFORMANCE_SERVER_ERA === 'modern'"));
@@ -863,8 +867,8 @@ fn conformance_fixture_patch_is_fail_closed_and_adds_server_era_routing() {
         "const app = createMcpExpressApp();",
         "changed upstream host setup",
     );
-    let (status, contents) = run_fixture_patch(&unchanged);
-    assert!(!status.success());
+    let (output, contents) = run_fixture_patch(&unchanged);
+    assert!(!output.status.success());
     assert_eq!(contents, unchanged);
 }
 
