@@ -644,7 +644,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .env("CF_DATAPLANE_PLATFORM", self.dataplane_platform()?))
     }
 
-    fn host_identity_environment(&self, mut command: CommandSpec) -> AppResult<CommandSpec> {
+    pub(super) fn host_identity_environment(
+        &self,
+        mut command: CommandSpec,
+    ) -> AppResult<CommandSpec> {
         for (key, argument) in [("HOST_UID", "-u"), ("HOST_GID", "-g")] {
             if self.config.environment().get(OsStr::new(key)).is_none() {
                 let value = self.host_identity(argument)?;

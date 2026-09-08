@@ -285,11 +285,6 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
         "the default MCP Host allowlist must accept containerized Locust through nginx"
     );
     assert_eq!(
-        compose["services"]["dataplane"]["extra_hosts"][0].as_str(),
-        Some("host.docker.internal:host-gateway"),
-        "client conformance must let the dataplane reach the official scenario server"
-    );
-    assert_eq!(
         compose["services"]["dataplane"]["pull_policy"].as_str(),
         Some("${CF_DATAPLANE_PULL_POLICY:-always}")
     );
@@ -695,6 +690,9 @@ fn observability_is_ephemeral_and_exports_both_routed_services() {
 #[test]
 fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
     let root = workspace_root();
+    let tools =
+        fs::read_to_string(root.join("docker/helpers.Dockerfile")).expect("tooling Dockerfile");
+    assert!(tools.contains(cf_integration::conformance::profile::OFFICIAL_CONFORMANCE_PACKAGE));
     let dockerfile = fs::read_to_string(root.join("docker/mcp-conformance-server.Dockerfile"))
         .expect("read conformance Dockerfile");
     let patch = fs::read_to_string(root.join("docker/mcp-conformance.patch"))

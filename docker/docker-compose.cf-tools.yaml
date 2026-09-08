@@ -1,0 +1,20 @@
+services:
+  mcp_tools:
+    profiles: ["tools"]
+    image: cf-integration-tools:0.3.2
+    build:
+      context: ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}
+      dockerfile: docker/helpers.Dockerfile
+      target: tools
+    labels:
+      name: cf-mcp-tools
+    init: true
+    restart: "no"
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      MCP_CONFORMANCE_TOKEN:
+      CF_CLIENT_CONFORMANCE_BASE_URL:
+      CF_CLIENT_CONFORMANCE_SERVER_ID:
+      CF_CONFIG_REDIS_URL: ${CF_CONFIG_REDIS_URL:-redis://redis:6379}
+    # Keep the upstream runner's localhost checks local to the target service.
+    network_mode: service:${CF_MCP_TOOLS_NETWORK_SERVICE:-nginx}

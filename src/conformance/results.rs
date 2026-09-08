@@ -290,10 +290,7 @@ pub(crate) fn official_server_command(
     expected_failures: &Path,
     output_dir: &Path,
 ) -> CommandSpec {
-    CommandSpec::new("npx")
-        .clear_environment()
-        .arg("-y")
-        .arg(OFFICIAL_CONFORMANCE_PACKAGE)
+    CommandSpec::new("conformance")
         .arg("server")
         .arg("--url")
         .arg(endpoint)
@@ -317,10 +314,7 @@ pub(crate) fn official_client_command(
     expected_failures: &Path,
     output_dir: &Path,
 ) -> CommandSpec {
-    CommandSpec::new("npx")
-        .clear_environment()
-        .arg("-y")
-        .arg(OFFICIAL_CONFORMANCE_PACKAGE)
+    CommandSpec::new("conformance")
         .arg("client")
         .arg("--command")
         .arg(client_command)

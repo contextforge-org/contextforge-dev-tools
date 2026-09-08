@@ -9,6 +9,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Changed
 
+- Run official conformance and Inspector inside a Docker tooling image, removing
+  the host Node/npm requirement. Client drivers publish directly to Redis, and
+  runner containers are removed after completion, failure, or interruption.
+
 - Moved standalone auth and config publishing into the Rust CLI, replacing the Node
   helper image and npm dependencies. Fixture customization uses a checked patch.
 

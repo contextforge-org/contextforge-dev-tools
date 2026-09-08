@@ -573,6 +573,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     let direct_run = SemanticLaneRun {
                         target: SemanticLane::FixtureDirect,
                         endpoint: &endpoint,
+                        token: None,
+                        standalone: false,
                         spec_version,
                         server_era,
                         fixture: &metadata,
@@ -776,6 +778,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                                     self.run_official_conformance_mode(
                                         &OfficialConformanceRun {
                                             topology,
+                                            standalone: standalone_topology,
                                             server_id,
                                             token: &token.value,
                                             spec_version,
@@ -950,33 +953,20 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         .map_err(AppFailure::from)?
         .endpoint()
         .clone();
-        let proxy = match run.topology {
-            StackMode::Controlplane => {
-                AuthProxy::start_builtin_data_plane(endpoint, run.token).await
-            }
-            StackMode::Dataplane => AuthProxy::start(endpoint, run.token).await,
-        }
-        .context("failed to start the conformance authentication proxy")
-        .map_err(AppFailure::from)?;
-        let result = self
-            .run_official_conformance_target(
-                &SemanticLaneRun {
-                    target,
-                    endpoint: proxy.url(),
-                    spec_version: run.spec_version,
-                    server_era: run.server_era,
-                    fixture: run.fixture,
-                    cancellation: run.cancellation.clone(),
-                },
-                paths,
-            )
-            .await;
-        let shutdown = proxy
-            .shutdown()
-            .await
-            .context("failed to stop the conformance authentication proxy")
-            .map_err(AppFailure::from);
-        finish_with_cleanup(result.err(), shutdown)
+        self.run_official_conformance_target(
+            &SemanticLaneRun {
+                target,
+                endpoint: &endpoint,
+                token: Some(run.token),
+                standalone: run.standalone,
+                spec_version: run.spec_version,
+                server_era: run.server_era,
+                fixture: run.fixture,
+                cancellation: run.cancellation.clone(),
+            },
+            paths,
+        )
+        .await
     }
 
     async fn run_external_client_conformance(
@@ -1171,72 +1161,40 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             self.standalone_conformance_compose_project(true)
         } else {
             self.conformance_runtime_project(StackMode::Dataplane)
-        };
-        let compose = if standalone {
-            self.standalone_dataplane_environment(
-                compose_project.command(std::iter::empty::<&str>()),
-                true,
-            )?
-        } else {
-            self.compose_environment(
+        }
+        .with_tools(self.config.asset_root());
+        let compose = self
+            .target_environment(
                 compose_project.command(std::iter::empty::<&str>()),
                 StackMode::Dataplane,
-                true,
+                standalone,
             )?
-        };
-        let compose_args = compose
-            .arguments()
-            .iter()
-            .map(|argument| {
-                argument
-                    .to_str()
-                    .context("client conformance Compose argument is not UTF-8")
-            })
-            .collect::<anyhow::Result<Vec<_>>>()
-            .and_then(|arguments| {
-                serde_json::to_string(&arguments)
-                    .context("failed to serialize client conformance Compose arguments")
-            })
-            .map_err(AppFailure::from)?;
-        let (client_command, client_path) = client_driver_command().map_err(AppFailure::from)?;
+            .env(CLIENT_BASE_URL_ENV, "http://nginx")
+            .env(CLIENT_SERVER_ID_ENV, CLIENT_CONFORMANCE_SERVER_ID)
+            .env(CLIENT_TOKEN_ENV, token);
         let progress = Activity::spinner(format!(
             "Run external dataplane client ({} scenarios)",
             expected_scenarios.len()
         ));
         let mut operational_failures = Vec::new();
         for scenario in DEFAULT_CLIENT_CONFORMANCE_SCENARIOS {
-            let mut command = allowlisted_npx_environment(
-                official_client_command(
-                    &client_command,
-                    scenario,
-                    spec_version,
-                    &lane_paths.expected_failures,
-                    &lane_paths.official_results,
-                )
-                .cwd(self.config.root()),
-            );
-            for (key, value) in compose.environment() {
-                command = command.env(key.clone(), value.clone());
-            }
-            command = command
-                .env(CLIENT_COMPOSE_ARGS_ENV, &compose_args)
-                .env(CLIENT_BASE_URL_ENV, self.base_url()?)
-                .env(CLIENT_SERVER_ID_ENV, CLIENT_CONFORMANCE_SERVER_ID)
-                .env(CLIENT_TOKEN_ENV, token)
-                .env("PATH", client_path.clone());
+            let arguments = ["client", scenario, spec_version].map(OsString::from);
             let result = self
-                .runner
-                .run_async_cancellable_to_log(
-                    &command,
+                .run_tool(
+                    compose.clone(),
+                    &arguments,
+                    Some(&lane_paths.root),
+                    Some(&lane_paths.root.join(format!("runner-{scenario}.log"))),
                     cancellation.clone(),
-                    &lane_paths.root.join(format!("runner-{scenario}.log")),
                 )
-                .await
-                .map_err(AppFailure::from);
+                .await;
             if !conformance_process_completed(&result)
                 && let Err(error) = result
             {
                 operational_failures.push(format!("{scenario}: {error}"));
+            }
+            if *cancellation.borrow() {
+                break;
             }
         }
 
@@ -1315,30 +1273,68 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             },
         )?;
 
-        let command = allowlisted_npx_environment(
-            official_server_command(
-                run.endpoint.as_str(),
-                DEFAULT_CONFORMANCE_SUITE,
-                run.spec_version,
-                &lane_paths.expected_failures,
-                &lane_paths.official_results,
+        let (compose, endpoint) = if run.target == SemanticLane::FixtureDirect {
+            (
+                self.standalone_conformance_environment(
+                    self.standalone_conformance_project()
+                        .with_tools(self.config.asset_root())
+                        .command(std::iter::empty::<&str>()),
+                    run.server_era,
+                )
+                .env("CF_MCP_TOOLS_NETWORK_SERVICE", OFFICIAL_CONFORMANCE_SERVICE),
+                "http://127.0.0.1:3000/mcp".to_owned(),
             )
-            .cwd(self.config.root()),
-        );
+        } else {
+            let topology = match run.target {
+                SemanticLane::BuiltInDataPlane => StackMode::Controlplane,
+                _ => StackMode::Dataplane,
+            };
+            let project = self
+                .routed_conformance_project(topology, run.standalone, true)
+                .with_tools(self.config.asset_root());
+            (
+                self.target_environment(
+                    project.command(std::iter::empty::<&str>()),
+                    topology,
+                    run.standalone,
+                )?
+                .env(
+                    CLIENT_TOKEN_ENV,
+                    run.token.context("routed conformance requires a token")?,
+                ),
+                run.endpoint.to_string(),
+            )
+        };
+        let mut arguments = vec![
+            OsString::from("server"),
+            endpoint.into(),
+            run.spec_version.into(),
+        ];
+        if run.target != SemanticLane::FixtureDirect {
+            arguments.extend([
+                "--proxy".into(),
+                if run.target == SemanticLane::BuiltInDataPlane {
+                    "builtin"
+                } else {
+                    "external"
+                }
+                .into(),
+            ]);
+        }
         let runner_progress = Activity::spinner(format!(
             "Run {} ({} scenarios)",
             run.target,
             expected_scenarios.len()
         ));
         let process_result = self
-            .runner
-            .run_async_cancellable_to_log(
-                &command,
+            .run_tool(
+                compose,
+                &arguments,
+                Some(&lane_paths.root),
+                Some(&lane_paths.runner_log),
                 run.cancellation.clone(),
-                &lane_paths.runner_log,
             )
-            .await
-            .map_err(AppFailure::from);
+            .await;
         runner_progress.finish(conformance_process_completed(&process_result));
 
         let results = load_server_results(&lane_paths.official_results).map_err(AppFailure::from);
@@ -1664,6 +1660,7 @@ fn parse_conformance_fixture_endpoint(output: &[u8]) -> anyhow::Result<url::Url>
 
 struct OfficialConformanceRun<'a> {
     topology: StackMode,
+    standalone: bool,
     server_id: &'a str,
     token: &'a str,
     spec_version: &'a str,
@@ -1674,6 +1671,8 @@ struct OfficialConformanceRun<'a> {
 
 struct SemanticLaneRun<'a> {
     target: SemanticLane,
+    token: Option<&'a str>,
+    standalone: bool,
     endpoint: &'a url::Url,
     spec_version: &'a str,
     server_era: ConformanceServerEra,
@@ -1738,35 +1737,6 @@ where
 
 fn interrupted_conformance_failure() -> AppFailure {
     AppFailure::from(anyhow!("conformance workflow interrupted by Ctrl-C"))
-}
-
-fn client_driver_command() -> anyhow::Result<(String, OsString)> {
-    let executable =
-        std::env::current_exe().context("failed to locate the cf-integration binary")?;
-    let file_name = executable
-        .file_name()
-        .and_then(OsStr::to_str)
-        .context("cf-integration binary name is not UTF-8")?;
-    if !file_name
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-    {
-        return Err(anyhow!(
-            "cf-integration binary name contains characters unsupported by the official client runner"
-        ));
-    }
-    let directory = executable
-        .parent()
-        .context("cf-integration binary path has no parent directory")?;
-    let inherited = std::env::var_os("PATH").context("PATH is required for client conformance")?;
-    let search_path = std::env::join_paths(
-        std::iter::once(directory.to_owned()).chain(std::env::split_paths(&inherited)),
-    )
-    .context("failed to prepend cf-integration to the client-conformance PATH")?;
-    Ok((
-        format!("{file_name} {INTERNAL_CLIENT_COMMAND}"),
-        search_path,
-    ))
 }
 
 #[cfg(test)]

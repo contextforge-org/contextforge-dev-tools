@@ -19,7 +19,7 @@ use tokio::task::JoinHandle;
 use url::Url;
 use uuid::Uuid;
 
-use crate::mcp::backend_identity::{BackendIdentity, is_dataplane_endpoint};
+use crate::mcp::backend_identity::BackendIdentity;
 
 const REDACTED: &str = "<redacted>";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -57,6 +57,7 @@ pub(crate) enum AuthProxyError {
 
 struct ProxyState {
     upstream: Url,
+    destination: Url,
     authorization: HeaderValue,
     proxy_path: String,
     loopback_authority: String,
@@ -77,65 +78,16 @@ pub(crate) struct AuthProxy {
 }
 
 impl AuthProxy {
-    /// Starts a proxy for one fixed upstream and bearer token.
-    ///
-    /// The listener is always bound to `127.0.0.1` on an operating-system
-    /// selected port. Redirect following and environment HTTP proxies are
-    /// disabled, and HTTPS uses normal certificate validation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the upstream or token is invalid, the HTTP client
-    /// cannot be configured, or the loopback listener cannot be bound.
-    pub(crate) async fn start(
+    /// Routes over the container network while preserving the public authority.
+    pub(crate) async fn start_routed(
         upstream: Url,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, AuthProxyError> {
-        Self::start_with_protocol_version(upstream, bearer_token, None).await
-    }
-
-    /// Starts a proxy for a routed endpoint backed by the built-in dataplane.
-    ///
-    /// Unlike [`Self::start`], this does not require the Rust data-plane
-    /// response marker merely because the endpoint uses `/servers/{id}/mcp`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Self::start`].
-    pub(crate) async fn start_builtin_data_plane(
-        upstream: Url,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, AuthProxyError> {
-        Self::start_configured(upstream, bearer_token, None, false).await
-    }
-
-    /// Starts a proxy that also rewrites MCP initialize requests to one version.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same errors as [`Self::start`].
-    pub(crate) async fn start_with_protocol_version(
-        upstream: Url,
-        bearer_token: impl AsRef<str>,
-        protocol_version: Option<&str>,
-    ) -> Result<Self, AuthProxyError> {
-        let require_dataplane_backend = is_dataplane_endpoint(&upstream);
-        Self::start_configured(
-            upstream,
-            bearer_token,
-            protocol_version,
-            require_dataplane_backend,
-        )
-        .await
-    }
-
-    async fn start_configured(
-        upstream: Url,
+        destination: Url,
         bearer_token: impl AsRef<str>,
         protocol_version: Option<&str>,
         require_dataplane_backend: bool,
     ) -> Result<Self, AuthProxyError> {
         validate_upstream(&upstream)?;
+        validate_upstream(&destination)?;
         let mut authorization = HeaderValue::from_str(&format!("Bearer {}", bearer_token.as_ref()))
             .map_err(|_| AuthProxyError::InvalidBearerToken)?;
         authorization.set_sensitive(true);
@@ -158,6 +110,7 @@ impl AuthProxy {
         let state = Arc::new(ProxyState {
             require_dataplane_backend,
             upstream,
+            destination,
             authorization,
             proxy_path,
             loopback_authority,
@@ -251,17 +204,20 @@ async fn forward(State(state): State<Arc<ProxyState>>, request: Request) -> Resp
         .and_then(|value| value.to_str().ok())
         .is_some_and(|authority| authority == state.loopback_authority)
     {
-        // A normal client addresses the loopback shim. Removing that Host lets
-        // reqwest synthesize the fixed upstream authority. Deliberately
-        // mutated Host values remain untouched for the rebinding scenario.
-        headers.remove(HOST);
+        // Preserve the public authority even when connecting over Docker DNS.
+        // Mutated Host values still reach the gateway's rebinding checks.
+        if let Ok(authority) = HeaderValue::from_str(
+            &state.upstream[url::Position::BeforeHost..url::Position::AfterPort],
+        ) {
+            headers.insert(HOST, authority);
+        }
     }
     rewrite_loopback_origin(&mut headers, &state.loopback_authority, &state.upstream);
     headers.insert(AUTHORIZATION, state.authorization.clone());
 
     let upstream_response = match state
         .client
-        .request(parts.method, state.upstream.clone())
+        .request(parts.method, state.destination.clone())
         .headers(headers)
         .body(body)
         .send()

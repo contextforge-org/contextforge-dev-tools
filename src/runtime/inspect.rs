@@ -2,21 +2,6 @@
 
 use super::*;
 
-const INSPECTOR_PACKAGE: &str = "@modelcontextprotocol/inspector@2.2.0";
-pub(super) const NPM_ENV_ALLOWLIST: &[&str] = &[
-    "PATH",
-    "HOME",
-    "TMPDIR",
-    "TMP",
-    "TEMP",
-    "XDG_CACHE_HOME",
-    "NPM_CONFIG_CACHE",
-    "npm_config_cache",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-    "NODE_EXTRA_CA_CERTS",
-];
-
 impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn inspect(
         &self,
@@ -47,53 +32,38 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 .map_err(AppFailure::from)?
                 .endpoint()
                 .clone();
-                let proxy = AuthProxy::start_with_protocol_version(
-                    endpoint,
-                    &token,
-                    Some(protocol_version.wire_version()),
-                )
-                .await
-                .context("failed to start the Inspector authentication proxy")
-                .map_err(AppFailure::from)?;
-                let command = allowlisted_npx_environment(
-                    inspector_command(proxy.url().as_str(), method).cwd(self.config.root()),
-                );
-                let process_result = self
-                    .runner
-                    .run_async(&command)
-                    .await
-                    .map_err(AppFailure::from);
-                let shutdown_result = proxy
-                    .shutdown()
-                    .await
-                    .context("failed to stop the Inspector authentication proxy")
-                    .map_err(AppFailure::from);
-                finish_with_cleanup(process_result.err(), shutdown_result)
+                let project = if standalone {
+                    self.standalone_conformance_compose_project(true)
+                } else {
+                    self.compose_project(mode)
+                }
+                .with_tools(self.config.asset_root());
+                let compose = self
+                    .target_environment(
+                        project.command(std::iter::empty::<&str>()),
+                        mode,
+                        standalone,
+                    )?
+                    .env(CLIENT_TOKEN_ENV, token);
+                let arguments = [
+                    "inspect",
+                    endpoint.as_str(),
+                    protocol_version.wire_version(),
+                    method,
+                ]
+                .map(OsString::from);
+                let (sender, receiver) = tokio::sync::watch::channel(false);
+                let run = self.run_tool(compose, &arguments, None, None, receiver);
+                tokio::pin!(run);
+                tokio::select! {
+                    result = &mut run => result,
+                    _ = tokio::signal::ctrl_c() => {
+                        sender.send_replace(true);
+                        run.await
+                    }
+                }
             },
         )
         .await
     }
-}
-
-pub(super) fn inspector_command(endpoint: &str, method: &str) -> CommandSpec {
-    CommandSpec::new("npx").clear_environment().args([
-        "-y",
-        INSPECTOR_PACKAGE,
-        "--cli",
-        endpoint,
-        "--transport",
-        "http",
-        "--method",
-        method,
-    ])
-}
-
-pub(super) fn allowlisted_npx_environment(mut command: CommandSpec) -> CommandSpec {
-    command = command.clear_environment();
-    for key in NPM_ENV_ALLOWLIST {
-        if let Some(value) = std::env::var_os(key) {
-            command = command.env(key, value);
-        }
-    }
-    command
 }

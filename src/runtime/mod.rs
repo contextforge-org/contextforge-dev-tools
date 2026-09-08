@@ -14,8 +14,7 @@ use crate::conformance::baseline::{
     validate_scored_results, write_baseline_report,
 };
 use crate::conformance::client::{
-    CLIENT_BASE_URL_ENV, CLIENT_COMPOSE_ARGS_ENV, CLIENT_DRIVER_FAILURE_PREFIX,
-    CLIENT_SERVER_ID_ENV, CLIENT_TOKEN_ENV, INTERNAL_CLIENT_COMMAND,
+    CLIENT_BASE_URL_ENV, CLIENT_DRIVER_FAILURE_PREFIX, CLIENT_SERVER_ID_ENV, CLIENT_TOKEN_ENV,
 };
 use crate::conformance::fixture::{
     ConformanceFixtureClient, OFFICIAL_CONFORMANCE_BACKEND_URL, OFFICIAL_CONFORMANCE_PROXY_SERVICE,
@@ -26,9 +25,8 @@ use crate::conformance::results::{
     ComparisonReport, ConformanceDirection, ConformanceFixtureMetadata, ConformanceResults,
     ConformanceRunMetadata, ConformanceServerEra, DEFAULT_CLIENT_CONFORMANCE_SCENARIOS,
     SemanticLane, compare_result_sets, expected_client_scenarios, expected_server_scenarios,
-    is_trusted_official_fixture, load_client_results, load_server_results, official_client_command,
-    official_server_command, validate_client_scenario_set, validate_server_scenario_set,
-    write_comparison_report,
+    is_trusted_official_fixture, load_client_results, load_server_results,
+    validate_client_scenario_set, validate_server_scenario_set, write_comparison_report,
 };
 use crate::infrastructure::checkout::{CheckoutManager, CheckoutRequest};
 use crate::infrastructure::compose::{ComposeProject, validate_integration_contract};
@@ -41,7 +39,6 @@ use crate::infrastructure::stack::{
 };
 use crate::infrastructure::{InfrastructureError, StackMode};
 use crate::mcp::GatewayTopology;
-use crate::mcp::auth_proxy::AuthProxy;
 use crate::mcp::gateway::GatewayClient;
 use crate::mcp::probe::{ProbeConfig, run_probe};
 use crate::mcp::protocol::ACCEPT as MCP_ACCEPT;
@@ -72,11 +69,11 @@ mod performance;
 mod probe;
 mod session;
 mod stack;
+mod tools;
 
 #[cfg(test)]
 use control_plane::CONFORMANCE_TOKEN_DESCRIPTION;
 use control_plane::{ControlPlaneClient, ManagedBearerToken};
-use inspect::*;
 
 /// Runtime dependencies and execution of resolved CLI actions.
 pub(crate) struct RuntimeContext<R> {
@@ -388,7 +385,7 @@ mod tests {
         }
     }
 
-    fn app_config(root: &Path, base_url: &str, extra: &[(&str, &str)]) -> AppConfig {
+    pub(super) fn app_config(root: &Path, base_url: &str, extra: &[(&str, &str)]) -> AppConfig {
         fs::write(
             root.join("Cargo.toml"),
             "[package]\nname='test'\nversion='0.0.0'\n",

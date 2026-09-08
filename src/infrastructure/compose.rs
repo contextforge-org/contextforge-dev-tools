@@ -33,6 +33,7 @@ pub(crate) const SERVICE_DISPLAY_NAMES: &[(&str, &str)] = &[
     ("a2a_echo_agent_v0_3_0", "cf-a2a-echo-agent-v0-3-0"),
     ("register_a2a_echo", "cf-register-a2a-echo"),
     ("mcp_inspector", "cf-mcp-inspector"),
+    ("mcp_tools", "cf-mcp-tools"),
     ("keycloak", "cf-keycloak"),
     ("mcp_conformance_server", "cf-conformance-server"),
     ("mcp_conformance_proxy", "cf-conformance-proxy"),
@@ -279,6 +280,14 @@ impl ComposeProject {
         }
 
         project
+    }
+
+    /// Adds the private container used for conformance and Inspector.
+    #[must_use]
+    pub(crate) fn with_tools(mut self, repository_root: &Path) -> Self {
+        self.files
+            .push(repository_root.join("docker/docker-compose.cf-tools.yaml"));
+        self
     }
 
     /// Creates a `docker compose` command with project, files, and profiles.

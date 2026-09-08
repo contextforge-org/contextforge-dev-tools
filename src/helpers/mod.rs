@@ -10,6 +10,7 @@ mod auth;
 mod config;
 #[cfg(test)]
 mod tests;
+pub(crate) mod tools;
 
 const KEY_PATH: &str = "/keys/jwt.key";
 const JWKS_ADDRESS: &str = "127.0.0.1:4446";
@@ -24,16 +25,8 @@ struct HelperArgs {
 enum HelperCommand {
     Auth,
     Health,
-    Token {
-        tenant_id: String,
-        user_id: String,
-    },
+    Token { tenant_id: String, user_id: String },
     Fixture(ConfigArgs),
-    Client {
-        #[command(flatten)]
-        config: ConfigArgs,
-        tool_names_json: String,
-    },
 }
 
 #[derive(Args)]
@@ -44,7 +37,7 @@ struct ConfigArgs {
 }
 
 pub(crate) async fn run(arguments: &[OsString]) -> Result<()> {
-    let (args, tools) = match HelperArgs::try_parse_from(arguments)?.command {
+    let args = match HelperArgs::try_parse_from(arguments)?.command {
         HelperCommand::Auth => {
             let router = auth::router(std::path::Path::new(KEY_PATH))?;
             let listener = tokio::net::TcpListener::bind(JWKS_ADDRESS).await?;
@@ -74,19 +67,7 @@ pub(crate) async fn run(arguments: &[OsString]) -> Result<()> {
             );
             return Ok(());
         }
-        HelperCommand::Fixture(args) => (args, None),
-        HelperCommand::Client {
-            config,
-            tool_names_json,
-        } => {
-            let tools: Vec<String> = serde_json::from_str(&tool_names_json)
-                .context("tool-names-json must be a JSON string array")?;
-            ensure!(
-                tools.iter().all(|name| !name.is_empty()),
-                "tool names must not be empty"
-            );
-            (config, Some(tools))
-        }
+        HelperCommand::Fixture(args) => args,
     };
     ensure!(
         !args.server_id.is_empty() && !args.protocol_version.is_empty(),
@@ -99,10 +80,7 @@ pub(crate) async fn run(arguments: &[OsString]) -> Result<()> {
     let token =
         std::env::var("MCP_CONFORMANCE_TOKEN").context("MCP_CONFORMANCE_TOKEN is required")?;
     let subject = auth::token_subject(&token)?;
-    let catalog = match tools {
-        Some(tools) => config::Catalog::for_client(tools),
-        None => config::fixture_catalog(args.backend_url.clone(), &args.protocol_version).await?,
-    };
+    let catalog = config::fixture_catalog(args.backend_url.clone(), &args.protocol_version).await?;
     let body = catalog.config(
         &args.server_id,
         args.backend_url.as_str(),
@@ -113,6 +91,20 @@ pub(crate) async fn run(arguments: &[OsString]) -> Result<()> {
     config::publish(&redis_url, &subject, &body).await?;
     println!("{}", serde_json::to_string(&catalog.tool_names())?);
     Ok(())
+}
+
+pub(crate) async fn publish_client_config(
+    server_id: &str,
+    backend_url: &str,
+    protocol_version: &str,
+    token: &str,
+    tools: Vec<String>,
+) -> Result<()> {
+    let subject = auth::token_subject(token)?;
+    let body = config::Catalog::for_client(tools).config(server_id, backend_url, protocol_version);
+    let redis_url =
+        std::env::var("CF_CONFIG_REDIS_URL").unwrap_or_else(|_| "redis://redis:6379".to_owned());
+    config::publish(&redis_url, &subject, &body).await
 }
 
 async fn shutdown_signal() {

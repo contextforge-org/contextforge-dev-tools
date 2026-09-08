@@ -29,6 +29,12 @@ use runtime::RuntimeContext;
 /// Runs the CLI using the current process arguments and environment.
 pub async fn run() -> ExitCode {
     let arguments = std::env::args_os().collect::<Vec<_>>();
+    if arguments.get(1).is_some_and(|arg| arg == "__tool") {
+        return match helpers::tools::run(&arguments[1..]).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => report_failure(error),
+        };
+    }
     if arguments.get(1).is_some_and(|arg| arg == "__helper") {
         return match helpers::run(&arguments[1..]).await {
             Ok(()) => ExitCode::SUCCESS,

@@ -20,7 +20,8 @@ cargo install cf-integration --locked
 ```
 
 Use `cargo run --` before a command when running this checkout. Runtime use
-requires Docker Compose v2, Git, and Node.js 22.7.5 or newer. Rust 1.97 is
+requires Docker Compose v2 and Git. Node/npm are installed and run only inside
+Docker images, including conformance and Inspector. Rust 1.97 is
 needed only to compile the CLI or a local dataplane image.
 
 Published images are the default. Set `CF_DATAPLANE_REF` to build and test a
@@ -49,8 +50,12 @@ directly to Redis. Production dataplane images work without `with_tools`; that
 feature is only for testing the dataplane's optional administrative helpers.
 The helper image builds this Rust CLI from its embedded sources on first use,
 with Docker caching subsequent builds. JWT/JWKS and Redis configuration run as
-private CLI commands. Node.js is used only by the upstream conformance tools;
-Python remains for Locust and upstream live-test integration.
+private CLI commands. The tooling image also contains pinned upstream conformance
+and Inspector packages; Docker caches their installation without using the host npm
+cache. Authentication proxies and the Rust client driver run in that container,
+which joins the stack network without a Docker socket mount. Reports are written
+to the integration directory. Python remains for Locust and upstream live-test
+integration.
 Standalone commands also work from an installed binary without control-plane
 checkouts or generated control-plane secrets.
 Routes and tool schemas are discovered from every catalog page of the running
@@ -177,7 +182,7 @@ cf-integration conformance report \
 
 ```bash
 cf-integration debug inspect --lane external \
-  --protocol-version modern --method tools/list
+  --protocol-version legacy --method tools/list
 cf-integration debug inspect --lane builtin \
   --protocol-version legacy --server-id <virtual-server-id>
 
@@ -189,7 +194,8 @@ cf-integration debug token --kind admin
 cf-integration debug token --kind scoped --standalone
 ```
 
-`inspect` uses the official MCP Inspector. Control-plane tokens are revoked when
+`inspect` uses the official MCP Inspector in Docker. The pinned Inspector uses
+initialization, so select `--protocol-version legacy`. Control-plane tokens are revoked when
 the workflow owns them; caller-supplied `MCPGATEWAY_BEARER_TOKEN` values are
 never revoked.
 
