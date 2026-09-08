@@ -22,6 +22,11 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   exercise the same MCP POST client used by probes and conformance.
 - Shared asynchronous child-process execution and CI/release quality checks.
 
+### Fixed
+
+- Preserve configured Docker connection settings when removing conformance and
+  Inspector containers, including after failure or interruption.
+
 ## [0.3.2] - 2026-09-07
 
 ### Changed
