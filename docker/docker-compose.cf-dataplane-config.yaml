@@ -1,17 +1,14 @@
 services:
   config_writer:
     profiles: ["helpers"]
-    image: cf-integration-helpers:0.3.2
-    pull_policy: never
+    image: cf-integration-helpers:0.3.2-rust
+    pull_policy: build
     build:
-      context: ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/conformance
+      context: ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}
+      dockerfile: docker/helpers.Dockerfile
     labels:
       name: cf-dataplane-config-writer
     restart: "no"
     networks:
       - mcpnet
-    volumes:
-      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/conformance/write_dataplane_config.mjs:/opt/contextforge-integration/write_dataplane_config.mjs:ro
-    entrypoint:
-      - node
-      - /opt/contextforge-integration/write_dataplane_config.mjs
+    entrypoint: ["cf-integration", "__helper"]

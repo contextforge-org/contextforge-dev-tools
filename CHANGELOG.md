@@ -9,6 +9,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Changed
 
+- Moved standalone auth and config publishing into the Rust CLI, replacing the Node
+  helper image and npm dependencies. Fixture customization uses a checked patch.
+
 - Consolidated server and client conformance artifact validation, baseline gates,
   and reporting into one direction-aware path.
 - Removed unused MCP transport features and stack command wrappers; tests now

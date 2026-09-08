@@ -11,6 +11,7 @@ mod app;
 mod cli;
 mod conformance;
 mod error;
+mod helpers;
 mod infrastructure;
 mod mcp;
 mod output;
@@ -28,6 +29,12 @@ use runtime::RuntimeContext;
 /// Runs the CLI using the current process arguments and environment.
 pub async fn run() -> ExitCode {
     let arguments = std::env::args_os().collect::<Vec<_>>();
+    if arguments.get(1).is_some_and(|arg| arg == "__helper") {
+        return match helpers::run(&arguments[1..]).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => report_failure(AppFailure::from(error)),
+        };
+    }
     if conformance::client::is_internal_client_invocation(&arguments) {
         return match conformance::client::run_internal_client(&arguments).await {
             Ok(()) => ExitCode::SUCCESS,

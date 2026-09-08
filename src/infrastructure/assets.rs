@@ -2,6 +2,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+
+use include_dir::{Dir, include_dir};
 
 use anyhow::{Context, Result, bail};
 use uuid::Uuid;
@@ -9,60 +12,74 @@ use uuid::Uuid;
 const COMPLETE_MARKER: &str = ".complete";
 
 struct EmbeddedAsset {
-    path: &'static str,
+    path: PathBuf,
     contents: &'static [u8],
 }
 
 macro_rules! asset {
     ($path:literal) => {
         EmbeddedAsset {
-            path: $path,
+            path: PathBuf::from($path),
             contents: include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $path)),
         }
     };
 }
 
-const ASSETS: &[EmbeddedAsset] = &[
-    asset!("docker/clickstack/collector.yaml"),
-    asset!("docker/docker-compose.cf-conformance-fixture.yaml"),
-    asset!("docker/docker-compose.cf-conformance-controlplane.yaml"),
-    asset!("docker/docker-compose.cf-conformance-runtime.yaml"),
-    asset!("docker/docker-compose.cf-conformance.yaml"),
-    asset!("docker/docker-compose.cf-controlplane-build-labels.yaml"),
-    asset!("docker/docker-compose.cf-controlplane-observability.yaml"),
-    asset!("docker/docker-compose.cf-dataplane-build.yaml"),
-    asset!("docker/docker-compose.cf-dataplane-config.yaml"),
-    asset!("docker/docker-compose.cf-dataplane-observability.yaml"),
-    asset!("docker/docker-compose.cf-dataplane-standalone.yaml"),
-    asset!("docker/docker-compose.cf-dataplane.yaml"),
-    asset!("docker/docker-compose.cf-integration.yaml"),
-    asset!("docker/docker-compose.cf-telemetry.yaml"),
-    asset!("docker/mcp-conformance-server.Dockerfile"),
-    asset!("docker/nginx.cf-conformance-proxy.conf"),
-    asset!("docker/nginx.cf-dataplane.conf"),
-    asset!("docker/nginx.cf-dataplane-standalone.conf.template"),
-    asset!("docker/patch-mcp-conformance-hosts.mjs"),
-    asset!("scripts/live_protocol/sitecustomize.py"),
-    asset!("scripts/conformance/write_dataplane_config.mjs"),
-    asset!("scripts/locustfile_mcp.py"),
-    asset!("scripts/standalone/auth.mjs"),
-    asset!("scripts/conformance/package.json"),
-    asset!("scripts/conformance/package-lock.json"),
-    asset!("scripts/conformance/Dockerfile"),
-    asset!("tests/conformance/baselines/2026-07-28/legacy/built-in-data-plane.yml"),
-    asset!("tests/conformance/baselines/2026-07-28/legacy/client/external-data-plane.yml"),
-    asset!("tests/conformance/baselines/2026-07-28/legacy/external-data-plane.yml"),
-    asset!("tests/conformance/baselines/2026-07-28/legacy/fixture-direct.yml"),
-    asset!("tests/conformance/baselines/2026-07-28/modern/built-in-data-plane.yml"),
-    asset!("tests/conformance/baselines/2026-07-28/modern/client/external-data-plane.yml"),
-    asset!("tests/conformance/baselines/2026-07-28/modern/external-data-plane.yml"),
-    asset!("tests/conformance/baselines/2026-07-28/modern/fixture-direct.yml"),
-];
+static SOURCES: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src");
+
+static ASSETS: LazyLock<Vec<EmbeddedAsset>> = LazyLock::new(|| {
+    let mut assets = vec![
+        asset!("Cargo.toml"),
+        asset!("Cargo.lock"),
+        asset!("docker/clickstack/collector.yaml"),
+        asset!("docker/docker-compose.cf-conformance-fixture.yaml"),
+        asset!("docker/docker-compose.cf-conformance-controlplane.yaml"),
+        asset!("docker/docker-compose.cf-conformance-runtime.yaml"),
+        asset!("docker/docker-compose.cf-conformance.yaml"),
+        asset!("docker/docker-compose.cf-controlplane-build-labels.yaml"),
+        asset!("docker/docker-compose.cf-controlplane-observability.yaml"),
+        asset!("docker/docker-compose.cf-dataplane-build.yaml"),
+        asset!("docker/docker-compose.cf-dataplane-config.yaml"),
+        asset!("docker/docker-compose.cf-dataplane-observability.yaml"),
+        asset!("docker/docker-compose.cf-dataplane-standalone.yaml"),
+        asset!("docker/docker-compose.cf-dataplane.yaml"),
+        asset!("docker/docker-compose.cf-integration.yaml"),
+        asset!("docker/docker-compose.cf-telemetry.yaml"),
+        asset!("docker/mcp-conformance-server.Dockerfile"),
+        asset!("docker/nginx.cf-conformance-proxy.conf"),
+        asset!("docker/nginx.cf-dataplane.conf"),
+        asset!("docker/nginx.cf-dataplane-standalone.conf.template"),
+        asset!("docker/mcp-conformance.patch"),
+        asset!("docker/helpers.Dockerfile"),
+        asset!("scripts/live_protocol/sitecustomize.py"),
+        asset!("scripts/locustfile_mcp.py"),
+        asset!("tests/conformance/baselines/2026-07-28/legacy/built-in-data-plane.yml"),
+        asset!("tests/conformance/baselines/2026-07-28/legacy/client/external-data-plane.yml"),
+        asset!("tests/conformance/baselines/2026-07-28/legacy/external-data-plane.yml"),
+        asset!("tests/conformance/baselines/2026-07-28/legacy/fixture-direct.yml"),
+        asset!("tests/conformance/baselines/2026-07-28/modern/built-in-data-plane.yml"),
+        asset!("tests/conformance/baselines/2026-07-28/modern/client/external-data-plane.yml"),
+        asset!("tests/conformance/baselines/2026-07-28/modern/external-data-plane.yml"),
+        asset!("tests/conformance/baselines/2026-07-28/modern/fixture-direct.yml"),
+    ];
+    add_sources(&SOURCES, &mut assets);
+    assets
+});
+
+fn add_sources(directory: &'static Dir<'static>, assets: &mut Vec<EmbeddedAsset>) {
+    assets.extend(directory.files().map(|file| EmbeddedAsset {
+        path: Path::new("src").join(file.path()),
+        contents: file.contents(),
+    }));
+    for child in directory.dirs() {
+        add_sources(child, assets);
+    }
+}
 
 /// Returns whether `root` contains the complete runtime asset set.
 #[must_use]
 pub(crate) fn contains_runtime_assets(root: &Path) -> bool {
-    ASSETS.iter().all(|asset| root.join(asset.path).is_file())
+    ASSETS.iter().all(|asset| root.join(&asset.path).is_file())
 }
 
 /// Materializes the embedded runtime files below the integration directory.
@@ -106,8 +123,8 @@ pub(crate) fn materialize_runtime_assets(integration_dir: &Path) -> Result<PathB
 fn write_asset_tree(root: &Path) -> Result<()> {
     fs::create_dir(root)
         .with_context(|| format!("failed to create temporary asset tree {}", root.display()))?;
-    for asset in ASSETS {
-        let path = root.join(asset.path);
+    for asset in ASSETS.iter() {
+        let path = root.join(&asset.path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).with_context(|| {
                 format!("failed to create embedded asset path {}", parent.display())
@@ -132,8 +149,8 @@ fn validate_materialized_assets(root: &Path) -> Result<()> {
             root.display()
         );
     }
-    for asset in ASSETS {
-        let path = root.join(asset.path);
+    for asset in ASSETS.iter() {
+        let path = root.join(&asset.path);
         let contents = fs::read(&path).with_context(|| {
             format!(
                 "embedded runtime asset {} is missing; remove {} and retry",
@@ -194,7 +211,7 @@ mod tests {
     fn rejects_corrupted_versioned_assets() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let root = materialize_runtime_assets(directory.path()).expect("materialize assets");
-        let path = root.join(ASSETS[0].path);
+        let path = root.join(&ASSETS[0].path);
         make_writable(&path);
         fs::write(&path, b"corrupt").expect("corrupt test asset");
 

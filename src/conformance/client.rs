@@ -162,6 +162,7 @@ fn publish_scenario_config(
         .context("failed to serialize client conformance tool names")?;
     let command = CommandSpec::new("docker").args(compose_args).args([
         "run",
+        "--quiet-build",
         "--rm",
         "--no-deps",
         "-e",

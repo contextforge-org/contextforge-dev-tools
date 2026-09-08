@@ -1090,6 +1090,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .standalone_conformance_compose_project(observability)
             .command([
                 "run",
+                "--quiet-build",
                 "--rm",
                 "--no-deps",
                 "-e",

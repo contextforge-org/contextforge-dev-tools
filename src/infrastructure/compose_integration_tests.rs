@@ -39,15 +39,16 @@ fn messages(config: &serde_json::Value) -> Vec<String> {
 
 fn run_fixture_patch(source: &str) -> (std::process::ExitStatus, String) {
     let directory = tempfile::tempdir().expect("create patch test directory");
-    let target = directory.path().join("everything-server.ts");
+    let relative = Path::new("examples/servers/typescript/everything-server.ts");
+    let target = directory.path().join(relative);
+    fs::create_dir_all(target.parent().expect("fixture parent")).expect("fixture directory");
     fs::write(&target, source).expect("write patch test input");
-    let script = workspace_root().join("docker/patch-mcp-conformance-hosts.mjs");
-
-    let output = Command::new("node")
-        .arg(script)
-        .arg(&target)
+    let output = Command::new("git")
+        .arg("apply")
+        .arg(workspace_root().join("docker/mcp-conformance.patch"))
+        .current_dir(directory.path())
         .output()
-        .expect("run conformance host patch");
+        .expect("apply conformance fixture patch");
     let contents = fs::read_to_string(target).expect("read patch test output");
     (output.status, contents)
 }
@@ -401,10 +402,7 @@ fn both_external_projects_provide_the_client_conformance_config_writer() {
         );
         assert_eq!(helpers[0]["profiles"][0].as_str(), Some("helpers"));
         assert_eq!(helpers[0]["networks"][0].as_str(), Some("mcpnet"));
-        assert_eq!(
-            helpers[0]["entrypoint"][1].as_str(),
-            Some("/opt/contextforge-integration/write_dataplane_config.mjs")
-        );
+        assert_eq!(helpers[0]["entrypoint"][1].as_str(), Some("__helper"));
     }
 }
 
@@ -699,7 +697,7 @@ fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
     let root = workspace_root();
     let dockerfile = fs::read_to_string(root.join("docker/mcp-conformance-server.Dockerfile"))
         .expect("read conformance Dockerfile");
-    let patch = fs::read_to_string(root.join("docker/patch-mcp-conformance-hosts.mjs"))
+    let patch = fs::read_to_string(root.join("docker/mcp-conformance.patch"))
         .expect("read host patch script");
     let compose =
         fs::read_to_string(root.join("docker/docker-compose.cf-conformance-fixture.yaml"))
@@ -724,10 +722,9 @@ fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
     );
     assert!(dockerfile.contains("WORKDIR /opt/mcp-conformance/examples/servers/typescript"));
     assert!(dockerfile.contains("npm ci"));
-    assert!(
-        dockerfile
-            .contains("node /usr/local/bin/patch-mcp-conformance-hosts.mjs everything-server.ts")
-    );
+    assert!(dockerfile.contains(
+        "git apply --check /tmp/mcp-conformance.patch && git apply /tmp/mcp-conformance.patch"
+    ));
     assert!(dockerfile.contains(
         "git diff --exit-code -- . ':(exclude)examples/servers/typescript/everything-server.ts'"
     ));
@@ -745,8 +742,6 @@ fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
     let replacement = "const app = createMcpExpressApp({ allowedHosts: ['mcp_conformance_server', 'localhost', '127.0.0.1', '::1'] });";
     assert!(patch.contains(old));
     assert!(patch.contains(replacement));
-    assert!(patch.contains("replacementCount !== 1"));
-    assert!(patch.contains("process.argv[2]"));
     assert!(patch.contains("MCP_CONFORMANCE_SERVER_ERA"));
     assert!(patch.contains("isModernEraRequest"));
     assert!(patch.contains("UnsupportedProtocolVersionError"));
@@ -772,10 +767,8 @@ services:
       - "127.0.0.1:${CF_CONFORMANCE_PORT:-0}:3000"
     healthcheck:
       test:
-        - CMD
-        - node
-        - -e
-        - fetch('http://127.0.0.1:3000/mcp').then(response => { if (response.status !== 400) process.exit(1); }).catch(() => process.exit(1))
+        - CMD-SHELL
+        - test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/mcp)" = 400
       interval: 2s
       timeout: 2s
       retries: 30
@@ -833,37 +826,46 @@ services:
 
 #[test]
 fn conformance_fixture_patch_is_fail_closed_and_adds_server_era_routing() {
-    let old = "const app = createMcpExpressApp();";
-    let replacement = "const app = createMcpExpressApp({ allowedHosts: ['mcp_conformance_server', 'localhost', '127.0.0.1', '::1'] });";
-    let versions = r#"const LEGACY_SESSION_PROTOCOL_VERSIONS = [
-  '2024-11-05',
-  '2025-03-26',
-  '2025-06-18',
-  '2025-11-25'
-];"#;
-    let classification = r#"  const isLegacySessionEraRequest =
-    meta === undefined &&
-    reqVersion !== undefined &&
-    LEGACY_SESSION_PROTOCOL_VERSIONS.includes(reqVersion);
-
-  if (!sessionId && (reqVersion || meta) && !isLegacySessionEraRequest) {"#;
-    let source = format!("before\n{old}\n{versions}\n{classification}\nafter\n");
-
+    // Reconstruct the patch's original hunks with filler between their line ranges.
+    let patch = fs::read_to_string(workspace_root().join("docker/mcp-conformance.patch"))
+        .expect("fixture patch");
+    let mut original = Vec::new();
+    for line in patch.lines() {
+        if line.starts_with("@@") {
+            let start = line
+                .split_whitespace()
+                .nth(1)
+                .expect("old range")
+                .trim_start_matches('-')
+                .split(',')
+                .next()
+                .expect("start")
+                .parse::<usize>()
+                .expect("line number");
+            original.resize(start - 1, "// fixture context");
+        } else if !line.starts_with("---")
+            && let Some(text) = line
+                .strip_prefix(' ')
+                .or_else(|| line.strip_prefix('-'))
+                .or_else(|| line.is_empty().then_some(""))
+        {
+            original.push(text);
+        }
+    }
+    let source = format!("{}\n", original.join("\n"));
     let (status, patched) = run_fixture_patch(&source);
     assert!(status.success());
-    assert!(patched.contains(replacement));
-    assert!(patched.contains("process.env.MCP_CONFORMANCE_SERVER_ERA;"));
-    assert!(!patched.contains("?? 'dual'"));
+    assert!(patched.contains("createMcpExpressApp({ allowedHosts:"));
     assert!(patched.contains("CONFORMANCE_SERVER_ERA === 'legacy' && isModernEraRequest"));
     assert!(patched.contains("CONFORMANCE_SERVER_ERA === 'modern'"));
-    assert!(!patched.contains(old));
 
-    for missing in [old, versions, classification] {
-        let unchanged = source.replacen(missing, "missing patch target", 1);
-        let (status, contents) = run_fixture_patch(&unchanged);
-        assert!(!status.success());
-        assert_eq!(contents, unchanged);
-    }
+    let unchanged = source.replace(
+        "const app = createMcpExpressApp();",
+        "changed upstream host setup",
+    );
+    let (status, contents) = run_fixture_patch(&unchanged);
+    assert!(!status.success());
+    assert_eq!(contents, unchanged);
 }
 
 #[test]

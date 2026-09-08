@@ -4,10 +4,11 @@
 
 services:
   auth:
-    image: cf-integration-helpers:0.3.2
-    pull_policy: never
+    image: cf-integration-helpers:0.3.2-rust
+    pull_policy: build
     build:
-      context: ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/conformance
+      context: ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}
+      dockerfile: docker/helpers.Dockerfile
     labels:
       name: cf-dataplane-auth
     restart: "no"
@@ -16,10 +17,9 @@ services:
     network_mode: service:dataplane
     volumes:
       - standalone_auth:/keys
-      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}/scripts/standalone/auth.mjs:/opt/contextforge-integration/auth.mjs:ro
-    command: ["node", "/opt/contextforge-integration/auth.mjs"]
+    command: ["__helper", "auth"]
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4446/.well-known/jwks.json').then(r => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      test: ["CMD", "cf-integration", "__helper", "health"]
       interval: 2s
       timeout: 2s
       retries: 30

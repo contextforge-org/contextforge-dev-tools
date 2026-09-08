@@ -64,6 +64,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     ) -> AppResult<ManagedBearerToken> {
         let command = self.standalone_dataplane_project(observability).command([
             "run",
+            "--quiet-build",
             "--rm",
             "--no-deps",
             "config_writer",
