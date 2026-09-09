@@ -1,0 +1,71 @@
+--- a/examples/servers/typescript/everything-server.ts
++++ b/examples/servers/typescript/everything-server.ts
+@@ -1182,7 +1182,7 @@
+ // ===== EXPRESS APP =====
+
+ // Use createMcpExpressApp for DNS rebinding protection on localhost
+-const app = createMcpExpressApp();
++const app = createMcpExpressApp({ allowedHosts: ['mcp_conformance_server', 'localhost', '127.0.0.1', '::1'] });
+
+ // Open subscriptions/listen streams (SEP-2575). Notifications are delivered
+ // to whichever streams are open *at the time of the change* and whose filter
+@@ -1235,6 +1235,14 @@
+   '2025-11-25'
+ ];
+
++// Harness-only switch for exercising explicit cross-era gateway paths.
++const CONFORMANCE_SERVER_ERA = process.env.MCP_CONFORMANCE_SERVER_ERA;
++if (!['dual', 'legacy', 'modern'].includes(CONFORMANCE_SERVER_ERA)) {
++  throw new Error(
++    `invalid MCP_CONFORMANCE_SERVER_ERA: ${CONFORMANCE_SERVER_ERA}`
++  );
++}
++
+ // Stateless (draft) operations whose results MUST carry the SEP-2549 caching
+ // hints (`ttlMs`, `cacheScope`).
+ const STATELESS_CACHEABLE_METHODS: ReadonlySet<string> = new Set([
+@@ -1283,8 +1291,42 @@
+     meta === undefined &&
+     reqVersion !== undefined &&
+     LEGACY_SESSION_PROTOCOL_VERSIONS.includes(reqVersion);
+-
+-  if (!sessionId && (reqVersion || meta) && !isLegacySessionEraRequest) {
++  const isModernEraRequest =
++    !sessionId && (reqVersion !== undefined || meta !== undefined) &&
++    !isLegacySessionEraRequest;
++
++  // A legacy-only server must return a non-modern 4xx so a dual-era client
++  // recognizes the server as legacy and retries with initialize.
++  if (CONFORMANCE_SERVER_ERA === 'legacy' && isModernEraRequest) {
++    return res.status(400).json({
++      jsonrpc: '2.0',
++      id,
++      error: { code: -32601, message: 'Method not found' }
++    });
++  }
++
++  // A modern-only server rejects initialization and names the only version it
++  // supports, giving legacy clients the most actionable failure available.
++  if (
++    CONFORMANCE_SERVER_ERA === 'modern' &&
++    isInitializeRequest(body) &&
++    !isModernEraRequest
++  ) {
++    return res.status(400).json({
++      jsonrpc: '2.0',
++      id,
++      error: {
++        code: -32022,
++        message: 'UnsupportedProtocolVersionError',
++        data: {
++          supported: ['2026-07-28'],
++          requested: String(reqVersion ?? params.protocolVersion ?? 'legacy')
++        }
++      }
++    });
++  }
++
++  if (isModernEraRequest) {
+     // Missing Transport Header Validation Check
+     if (!reqVersion) {
+       return res.status(400).json({

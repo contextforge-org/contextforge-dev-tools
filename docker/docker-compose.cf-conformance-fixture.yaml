@@ -15,10 +15,8 @@ services:
       - "127.0.0.1:${CF_CONFORMANCE_PORT:-0}:3000"
     healthcheck:
       test:
-        - CMD
-        - node
-        - -e
-        - fetch('http://127.0.0.1:3000/mcp').then(response => { if (response.status !== 400) process.exit(1); }).catch(() => process.exit(1))
+        - CMD-SHELL
+        - test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/mcp)" = 400
       interval: 2s
       timeout: 2s
       retries: 30

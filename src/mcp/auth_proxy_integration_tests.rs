@@ -20,6 +20,14 @@ const INBOUND_TOKEN: &str = "must-not-reach-upstream";
 const INJECTED_TOKEN: &str = "injected-secret-token";
 const SENSITIVE_UPSTREAM_PATH: &str = "private/session-sensitive/mcp";
 
+async fn start_proxy(
+    upstream: Url,
+    token: &str,
+) -> Result<AuthProxy, cf_integration::mcp::auth_proxy::AuthProxyError> {
+    let require_dataplane = cf_integration::mcp::backend_identity::is_dataplane_endpoint(&upstream);
+    AuthProxy::start_routed(upstream.clone(), upstream, token, None, require_dataplane).await
+}
+
 #[derive(Clone, Debug)]
 struct CapturedRequest {
     method: Method,
@@ -127,9 +135,54 @@ fn client() -> Client {
 }
 
 #[tokio::test]
+async fn container_routing_preserves_public_authority_and_rebinding_probes() {
+    let (upstream, capture) = start_capture_server().await;
+    let public = Url::parse(&format!(
+        "https://gateway.example:8443/{SENSITIVE_UPSTREAM_PATH}"
+    ))
+    .expect("public URL");
+    let proxy = AuthProxy::start_routed(public, upstream.url.clone(), INJECTED_TOKEN, None, false)
+        .await
+        .expect("routed proxy");
+    for mutated in [false, true] {
+        let mut request = client().post(proxy.url().clone()).header(
+            "origin",
+            if mutated {
+                "https://attacker.example".to_owned()
+            } else {
+                proxy.url().origin().ascii_serialization()
+            },
+        );
+        if mutated {
+            request = request.header(HOST, "attacker.example");
+        }
+        assert_eq!(
+            request.send().await.expect("forwarded request").status(),
+            StatusCode::CREATED
+        );
+    }
+    let requests = capture.take();
+    assert_eq!(requests[0].headers[HOST], "gateway.example:8443");
+    assert_eq!(
+        requests[0].headers["origin"],
+        "https://gateway.example:8443"
+    );
+    assert_eq!(requests[1].headers[HOST], "attacker.example");
+    assert_eq!(requests[1].headers["origin"], "https://attacker.example");
+    for request in requests {
+        assert_eq!(
+            request.headers[AUTHORIZATION],
+            format!("Bearer {INJECTED_TOKEN}")
+        );
+    }
+    proxy.shutdown().await.expect("stop proxy");
+    upstream.shutdown().await;
+}
+
+#[tokio::test]
 async fn injects_auth_and_preserves_mcp_request_and_response_contract() {
     let (upstream, capture) = start_capture_server().await;
-    let proxy = AuthProxy::start(upstream.url.clone(), INJECTED_TOKEN)
+    let proxy = start_proxy(upstream.url.clone(), INJECTED_TOKEN)
         .await
         .expect("proxy should start");
 
@@ -232,10 +285,12 @@ async fn injects_auth_and_preserves_mcp_request_and_response_contract() {
 #[tokio::test]
 async fn selected_protocol_version_rewrites_only_the_initialize_payload() {
     let (upstream, capture) = start_capture_server().await;
-    let proxy = AuthProxy::start_with_protocol_version(
+    let proxy = AuthProxy::start_routed(
+        upstream.url.clone(),
         upstream.url.clone(),
         INJECTED_TOKEN,
         Some("2025-06-18"),
+        false,
     )
     .await
     .expect("proxy should start");
@@ -264,7 +319,7 @@ async fn selected_protocol_version_rewrites_only_the_initialize_payload() {
 #[tokio::test]
 async fn forwards_host_and_origin_unchanged_for_gateway_dns_rebinding_checks() {
     let (upstream, capture) = start_capture_server().await;
-    let proxy = AuthProxy::start(upstream.url.clone(), INJECTED_TOKEN)
+    let proxy = start_proxy(upstream.url.clone(), INJECTED_TOKEN)
         .await
         .expect("proxy should start");
 
@@ -296,7 +351,7 @@ async fn forwards_host_and_origin_unchanged_for_gateway_dns_rebinding_checks() {
 #[tokio::test]
 async fn rejects_wrong_path_query_and_unsupported_methods() {
     let (upstream, capture) = start_capture_server().await;
-    let proxy = AuthProxy::start(upstream.url.clone(), INJECTED_TOKEN)
+    let proxy = start_proxy(upstream.url.clone(), INJECTED_TOKEN)
         .await
         .expect("proxy should start");
     let client = client();
@@ -355,7 +410,7 @@ async fn supports_delete_and_does_not_follow_upstream_redirects() {
 
     let upstream =
         TestServer::start(Router::new().route("/redirect", any(redirect)), "redirect").await;
-    let proxy = AuthProxy::start(upstream.url.clone(), INJECTED_TOKEN)
+    let proxy = start_proxy(upstream.url.clone(), INJECTED_TOKEN)
         .await
         .expect("proxy should start");
 
@@ -406,7 +461,7 @@ async fn streams_sse_response_chunks_without_buffering() {
     }
 
     let upstream = TestServer::start(Router::new().route("/sse", any(sse)), "sse").await;
-    let proxy = AuthProxy::start(upstream.url.clone(), INJECTED_TOKEN)
+    let proxy = start_proxy(upstream.url.clone(), INJECTED_TOKEN)
         .await
         .expect("proxy should start");
 
@@ -439,7 +494,7 @@ async fn streams_sse_response_chunks_without_buffering() {
 #[tokio::test]
 async fn caps_buffered_request_bodies_before_forwarding() {
     let (upstream, capture) = start_capture_server().await;
-    let proxy = AuthProxy::start(upstream.url.clone(), INJECTED_TOKEN)
+    let proxy = start_proxy(upstream.url.clone(), INJECTED_TOKEN)
         .await
         .expect("proxy should start");
 
@@ -459,10 +514,10 @@ async fn caps_buffered_request_bodies_before_forwarding() {
 #[tokio::test]
 async fn endpoint_is_unguessable_and_debug_and_errors_do_not_leak_secrets() {
     let (upstream, _capture) = start_capture_server().await;
-    let proxy_a = AuthProxy::start(upstream.url.clone(), INJECTED_TOKEN)
+    let proxy_a = start_proxy(upstream.url.clone(), INJECTED_TOKEN)
         .await
         .expect("first proxy should start");
-    let proxy_b = AuthProxy::start(upstream.url.clone(), INJECTED_TOKEN)
+    let proxy_b = start_proxy(upstream.url.clone(), INJECTED_TOKEN)
         .await
         .expect("second proxy should start");
 
@@ -481,7 +536,7 @@ async fn endpoint_is_unguessable_and_debug_and_errors_do_not_leak_secrets() {
     assert!(debug.contains("<redacted>"));
 
     let invalid_token = "sensitive-token\ninvalid";
-    let error = AuthProxy::start(upstream.url.clone(), invalid_token)
+    let error = start_proxy(upstream.url.clone(), invalid_token)
         .await
         .expect_err("invalid Authorization header should be rejected");
     let display = error.to_string();
@@ -497,7 +552,7 @@ async fn endpoint_is_unguessable_and_debug_and_errors_do_not_leak_secrets() {
 #[tokio::test]
 async fn shutdown_stops_accepting_connections() {
     let (upstream, _capture) = start_capture_server().await;
-    let proxy = AuthProxy::start(upstream.url.clone(), INJECTED_TOKEN)
+    let proxy = start_proxy(upstream.url.clone(), INJECTED_TOKEN)
         .await
         .expect("proxy should start");
     let endpoint = proxy.url().clone();
@@ -538,7 +593,7 @@ async fn dataplane_proxy_requires_one_exact_backend_marker_before_forwarding() {
         "servers/test/mcp",
     )
     .await;
-    let proxy = AuthProxy::start(accepted.url.clone(), INJECTED_TOKEN)
+    let proxy = start_proxy(accepted.url.clone(), INJECTED_TOKEN)
         .await
         .expect("dataplane proxy should start");
     let response = client()
@@ -567,7 +622,7 @@ async fn dataplane_proxy_requires_one_exact_backend_marker_before_forwarding() {
             "servers/test/mcp",
         )
         .await;
-        let proxy = AuthProxy::start(upstream.url.clone(), INJECTED_TOKEN)
+        let proxy = start_proxy(upstream.url.clone(), INJECTED_TOKEN)
             .await
             .expect("dataplane proxy should start");
 
@@ -603,9 +658,15 @@ async fn builtin_data_plane_proxy_allows_a_routed_controlplane_response() {
         "servers/test/mcp",
     )
     .await;
-    let proxy = AuthProxy::start_builtin_data_plane(upstream.url.clone(), INJECTED_TOKEN)
-        .await
-        .expect("built-in dataplane proxy should start");
+    let proxy = AuthProxy::start_routed(
+        upstream.url.clone(),
+        upstream.url.clone(),
+        INJECTED_TOKEN,
+        None,
+        false,
+    )
+    .await
+    .expect("built-in dataplane proxy should start");
 
     let response = client()
         .get(proxy.url().clone())

@@ -249,12 +249,10 @@ fn official_command_is_pinned_complete_and_ordered() {
         "@modelcontextprotocol/conformance@0.2.0-alpha.11"
     );
     assert_eq!(DEFAULT_MCP_SPEC_VERSION, "2026-07-28");
-    assert!(!spec.inherits_environment());
+    assert_eq!(spec.program(), "conformance");
     assert_eq!(
         spec.arguments(),
         &[
-            OsString::from("-y"),
-            OsString::from(OFFICIAL_CONFORMANCE_PACKAGE),
             OsString::from("server"),
             OsString::from("--url"),
             OsString::from("http://127.0.0.1:49152/mcp"),
@@ -281,12 +279,10 @@ fn official_client_command_is_scoped_complete_and_ordered() {
         Path::new("results"),
     );
 
-    assert!(!spec.inherits_environment());
+    assert_eq!(spec.program(), "conformance");
     assert_eq!(
         spec.arguments(),
         &[
-            OsString::from("-y"),
-            OsString::from(OFFICIAL_CONFORMANCE_PACKAGE),
             OsString::from("client"),
             OsString::from("--command"),
             OsString::from("cf-integration __client-conformance"),

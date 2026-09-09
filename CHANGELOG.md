@@ -9,6 +9,32 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Changed
 
+- Run official conformance and Inspector inside a Docker tooling image, removing
+  the host Node/npm requirement. Client drivers publish directly to Redis, and
+  runner containers are removed after completion, failure, or interruption.
+
+- Moved standalone auth and config publishing into the Rust CLI, replacing the Node
+  helper image and npm dependencies. Fixture customization uses a checked patch.
+
+- Consolidated server and client conformance artifact validation, baseline gates,
+  and reporting into one direction-aware path.
+- Removed unused MCP transport features and stack command wrappers; tests now
+  exercise the same MCP POST client used by probes and conformance.
+- Shared asynchronous child-process execution and CI/release quality checks.
+
+### Fixed
+
+- Preserve configured Docker connection settings when removing conformance and
+  Inspector containers, including after failure or interruption.
+
+## [0.3.2] - 2026-09-07
+
+### Changed
+
+- Standalone workflows now run against production dataplane images without
+  `with_tools`. The harness signs ephemeral JWTs, serves loopback JWKS, and
+  publishes MessagePack routing snapshots directly to Redis.
+
 - Simplified runtime dispatch and shared authenticated workflow setup, removing
   forwarding wrappers while preserving token revocation and stack cleanup.
 
@@ -25,6 +51,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   setup before a baseline can be blessed.
 - Made the dataplane config writer available to normal external client conformance
   and preserved schemas for its scenario tools.
+- Embedded the ClickStack collector configuration required by installed-binary
+  conformance runs.
 - Accepted empty pagination cursors and legacy SSE keepalives during discovery,
   and used the fixture's protocol era when configuring backends for clients from
   a different era.

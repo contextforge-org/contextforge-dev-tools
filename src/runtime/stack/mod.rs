@@ -83,9 +83,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 standalone,
             } => {
                 let project = self.stack_command_project(topology, standalone)?;
-                let command = StackCommandPlan::status(project);
-                let command =
-                    self.target_environment(command.command().clone(), topology, standalone)?;
+                let command = project.command(["ps"]);
+                let command = self.target_environment(command, topology, standalone)?;
                 Ok(self.runner.run(&command)?)
             }
             StackAction::Logs {
@@ -94,9 +93,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 standalone,
             } => {
                 let project = self.stack_command_project(topology, standalone)?;
-                let command = StackCommandPlan::logs(project, services);
-                let command =
-                    self.target_environment(command.command().clone(), topology, standalone)?;
+                let command = stack_logs_command(project, services);
+                let command = self.target_environment(command, topology, standalone)?;
                 Ok(self.runner.run(&command)?)
             }
             StackAction::Config {
@@ -113,9 +111,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 let command = if standalone {
                     project.command(["config", "--no-interpolate", "--no-env-resolution"])
                 } else {
-                    StackCommandPlan::config(project, topology)
-                        .command()
-                        .clone()
+                    stack_config_command(project, topology)
                 };
                 let command = self.target_environment(command, topology, standalone)?;
                 Ok(self.runner.run(&command)?)
@@ -278,8 +274,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .map_err(|_| {
                 AppFailure::from(anyhow!("CONTROLPLANE_LOCUST_WORKERS must be an integer"))
             })?;
-        let command = StackCommandPlan::up(project, mode, build, start_locust, locust_workers);
-        let command = self.compose_environment(command.command().clone(), mode, true)?;
+        let command = stack_up_command(project, mode, build, start_locust, locust_workers);
+        let command = self.compose_environment(command, mode, true)?;
         let (controlplane_pull_policy, dataplane_pull_policy) = compose_pull_policies(
             mode,
             build,
@@ -648,7 +644,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .env("CF_DATAPLANE_PLATFORM", self.dataplane_platform()?))
     }
 
-    fn host_identity_environment(&self, mut command: CommandSpec) -> AppResult<CommandSpec> {
+    pub(super) fn host_identity_environment(
+        &self,
+        mut command: CommandSpec,
+    ) -> AppResult<CommandSpec> {
         for (key, argument) in [("HOST_UID", "-u"), ("HOST_GID", "-g")] {
             if self.config.environment().get(OsStr::new(key)).is_none() {
                 let value = self.host_identity(argument)?;
@@ -1171,8 +1170,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let project = self
             .standalone_conformance_compose_project(true)
             .with_profiles(["conformance"]);
-        let command = StackCommandPlan::cleanup(project, kind);
-        let command = self.standalone_dataplane_environment(command.command().clone(), false)?;
+        let command = stack_cleanup_command(project, kind);
+        let command = self.standalone_dataplane_environment(command, false)?;
         let primary = self
             .run_cleanup_command(&command, true)
             .map_err(AppFailure::from)
@@ -1202,8 +1201,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     .compose_project(mode)
                     .with_profiles(["testing", "inspector", "sso"])
                     .with_conformance_fixture(self.config.asset_root());
-                let command = StackCommandPlan::cleanup(project, kind);
-                match self.compose_environment(command.command().clone(), mode, false) {
+                let command = stack_cleanup_command(project, kind);
+                match self.compose_environment(command, mode, false) {
                     Ok(command) => {
                         let result = self.run_cleanup_command(&command, inherit_output);
                         if let Err(error) = result {

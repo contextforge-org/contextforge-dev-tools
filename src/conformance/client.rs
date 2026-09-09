@@ -8,12 +8,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::conformance::DEFAULT_MCP_SPEC_VERSION;
-use crate::infrastructure::process::{CommandSpec, ProcessRunner, SystemProcessRunner};
 use crate::mcp::GatewayTopology;
 use crate::mcp::gateway::{GatewayClient, GatewayRequest};
 
 pub(crate) const INTERNAL_CLIENT_COMMAND: &str = "__client-conformance";
-pub(crate) const CLIENT_COMPOSE_ARGS_ENV: &str = "CF_CLIENT_CONFORMANCE_COMPOSE_ARGS";
 pub(crate) const CLIENT_BASE_URL_ENV: &str = "CF_CLIENT_CONFORMANCE_BASE_URL";
 pub(crate) const CLIENT_SERVER_ID_ENV: &str = "CF_CLIENT_CONFORMANCE_SERVER_ID";
 pub(crate) const CLIENT_TOKEN_ENV: &str = "MCP_CONFORMANCE_TOKEN";
@@ -55,7 +53,19 @@ pub(crate) async fn run_internal_client(arguments: &[OsString]) -> Result<()> {
     let base_url = required_environment(CLIENT_BASE_URL_ENV)?;
     let tool_calls = scenario_tool_calls(&scenario)?;
     let backend_url = container_backend_url(scenario_server_url)?;
-    publish_scenario_config(&backend_url, &server_id, &protocol_version, &tool_calls)?;
+    let tool_names = tool_calls
+        .iter()
+        .map(|call| call.name.clone())
+        .collect::<BTreeSet<_>>();
+    crate::helpers::publish_client_config(
+        &server_id,
+        &backend_url,
+        &protocol_version,
+        &token,
+        tool_names.into_iter().collect(),
+    )
+    .await
+    .context("failed to publish the client-conformance dataplane configuration")?;
 
     let mut client =
         GatewayClient::builder(GatewayTopology::Dataplane, &base_url, &server_id, &token)
@@ -136,46 +146,10 @@ fn container_backend_url(value: &str) -> Result<String> {
     if !matches!(url.scheme(), "http" | "https") || !loopback {
         bail!("scenario-server URL must be an absolute loopback HTTP(S) URL");
     }
-    url.set_host(Some("host.docker.internal")).map_err(|_| {
+    url.set_host(Some("nginx")).map_err(|_| {
         anyhow!("failed to address the scenario server from the dataplane container")
     })?;
     Ok(url.into())
-}
-
-fn publish_scenario_config(
-    backend_url: &str,
-    server_id: &str,
-    protocol_version: &str,
-    tool_calls: &[ToolCall],
-) -> Result<()> {
-    let serialized_args = required_environment(CLIENT_COMPOSE_ARGS_ENV)?;
-    let compose_args: Vec<String> = serde_json::from_str(&serialized_args)
-        .context("CF_CLIENT_CONFORMANCE_COMPOSE_ARGS is not a JSON string array")?;
-    if compose_args.first().map(String::as_str) != Some("compose") {
-        bail!("client conformance Compose arguments must begin with compose");
-    }
-    let tool_names = tool_calls
-        .iter()
-        .map(|call| call.name.as_str())
-        .collect::<BTreeSet<_>>();
-    let tool_names = serde_json::to_string(&tool_names)
-        .context("failed to serialize client conformance tool names")?;
-    let command = CommandSpec::new("docker").args(compose_args).args([
-        "run",
-        "--rm",
-        "--no-deps",
-        "-e",
-        CLIENT_TOKEN_ENV,
-        "config_writer",
-        "client",
-        server_id,
-        backend_url,
-        protocol_version,
-        &tool_names,
-    ]);
-    SystemProcessRunner
-        .run(&command)
-        .context("failed to publish the client-conformance dataplane configuration")
 }
 
 fn required_environment(name: &str) -> Result<String> {
@@ -198,7 +172,7 @@ mod tests {
         assert_eq!(
             container_backend_url("http://127.0.0.1:43123/mcp?scenario=tools")
                 .expect("loopback URL should be accepted"),
-            "http://host.docker.internal:43123/mcp?scenario=tools"
+            "http://nginx:43123/mcp?scenario=tools"
         );
         assert!(container_backend_url("https://example.com/mcp").is_err());
     }

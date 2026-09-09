@@ -5,8 +5,9 @@ use std::path::Path;
 use cf_integration::infrastructure::StackMode;
 use cf_integration::infrastructure::compose::ComposeProject;
 use cf_integration::infrastructure::stack::{
-    BuildInputs, BuildMode, CleanupKind, FreshnessSnapshot, ServiceSnapshot, StackCommandPlan,
-    StackFreshness, resolve_build,
+    BuildInputs, BuildMode, CleanupKind, FreshnessSnapshot, ServiceSnapshot, StackFreshness,
+    resolve_build, stack_cleanup_command, stack_config_command, stack_logs_command,
+    stack_up_command,
 };
 
 fn project(mode: StackMode) -> ComposeProject {
@@ -26,8 +27,8 @@ fn project(mode: StackMode) -> ComposeProject {
     }
 }
 
-fn args(plan: StackCommandPlan) -> Vec<OsString> {
-    plan.command().arguments().to_vec()
+fn args(plan: crate::infrastructure::process::CommandSpec) -> Vec<OsString> {
+    plan.arguments().to_vec()
 }
 
 fn ends_with(actual: &[OsString], expected: &[&str]) -> bool {
@@ -117,14 +118,14 @@ fn dataplane_freshness_is_considered_only_for_source_mode() {
 
 #[test]
 fn dataplane_up_always_removes_orphans_and_optionally_builds() {
-    let without_build = args(StackCommandPlan::up(
+    let without_build = args(stack_up_command(
         project(StackMode::Dataplane),
         StackMode::Dataplane,
         false,
         false,
         1,
     ));
-    let with_build = args(StackCommandPlan::up(
+    let with_build = args(stack_up_command(
         project(StackMode::Dataplane),
         StackMode::Dataplane,
         true,
@@ -146,7 +147,7 @@ fn dataplane_up_always_removes_orphans_and_optionally_builds() {
 
 #[test]
 fn controlplane_up_does_not_activate_locust_profile_when_ui_is_disabled() {
-    let disabled = args(StackCommandPlan::up(
+    let disabled = args(stack_up_command(
         project(StackMode::Controlplane),
         StackMode::Controlplane,
         false,
@@ -160,7 +161,7 @@ fn controlplane_up_does_not_activate_locust_profile_when_ui_is_disabled() {
             .all(|argument| !argument.to_string_lossy().starts_with("locust"))
     );
 
-    let enabled = args(StackCommandPlan::up(
+    let enabled = args(stack_up_command(
         project(StackMode::Controlplane),
         StackMode::Controlplane,
         true,
@@ -183,52 +184,27 @@ fn controlplane_up_does_not_activate_locust_profile_when_ui_is_disabled() {
 #[test]
 fn cleanup_status_logs_and_config_use_typed_compose_commands() {
     let dataplane_project = project(StackMode::Dataplane);
-    assert!(ends_with(
-        &args(StackCommandPlan::stop_service(
-            dataplane_project.clone(),
-            "gateway"
-        )),
-        &["stop", "--timeout", "5", "gateway"]
-    ));
-    assert!(ends_with(
-        &args(StackCommandPlan::start_service(
-            dataplane_project.clone(),
-            "gateway"
-        )),
-        &["start", "gateway"]
-    ));
-    assert!(ends_with(
-        &args(StackCommandPlan::restart_service(
-            dataplane_project.clone(),
-            "dataplane"
-        )),
-        &["restart", "--timeout", "5", "dataplane"]
-    ));
-    let down = StackCommandPlan::cleanup(dataplane_project.clone(), CleanupKind::Down);
+    let down = stack_cleanup_command(dataplane_project.clone(), CleanupKind::Down);
     assert!(ends_with(
         &args(down.clone()),
         &["down", "--remove-orphans"]
     ));
     assert!(
         !down
-            .command()
             .environment()
             .contains_key(OsStr::new("COMPOSE_PROGRESS")),
         "Compose must select interactive or plain progress from its actual terminal"
     );
     assert!(ends_with(
-        &args(StackCommandPlan::cleanup(
+        &args(stack_cleanup_command(
             dataplane_project.clone(),
             CleanupKind::Reset
         )),
         &["down", "--volumes", "--remove-orphans"]
     ));
+    assert!(ends_with(&args(dataplane_project.command(["ps"])), &["ps"]));
     assert!(ends_with(
-        &args(StackCommandPlan::status(dataplane_project.clone())),
-        &["ps"]
-    ));
-    assert!(ends_with(
-        &args(StackCommandPlan::logs(
+        &args(stack_logs_command(
             dataplane_project.clone(),
             [
                 OsString::from("cf-controlplane"),
@@ -281,7 +257,7 @@ fn cleanup_status_logs_and_config_use_typed_compose_commands() {
         ]
     ));
     assert!(ends_with(
-        &args(StackCommandPlan::config(
+        &args(stack_config_command(
             dataplane_project,
             StackMode::Dataplane,
         )),
@@ -294,7 +270,7 @@ fn cleanup_status_logs_and_config_use_typed_compose_commands() {
         ]
     ));
     assert!(ends_with(
-        &args(StackCommandPlan::config(
+        &args(stack_config_command(
             project(StackMode::Controlplane),
             StackMode::Controlplane,
         )),
@@ -419,14 +395,14 @@ fn revision_checks_are_conditional_on_image_source() {
 
 #[test]
 fn stack_up_preserves_compose_auto_progress_without_shell_fragments() {
-    let plan = StackCommandPlan::up(
+    let plan = stack_up_command(
         project(StackMode::Dataplane),
         StackMode::Dataplane,
         false,
         false,
         1,
     );
-    let command = plan.command();
+    let command = plan;
     assert_eq!(command.program(), OsStr::new("docker"));
     assert!(command.environment().is_empty());
     assert!(
