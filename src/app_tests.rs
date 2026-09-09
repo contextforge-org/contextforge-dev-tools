@@ -566,6 +566,65 @@ fn conformance_lanes_are_deduplicated_and_normalized() {
 }
 
 #[test]
+fn conformance_selects_exact_client_versions_without_expanding_legacy() {
+    let resolved = action(
+        &[
+            "cf-integration",
+            "conformance",
+            "run",
+            "--lane",
+            "builtin",
+            "--client-version",
+            "2025-11-25",
+            "--client-version",
+            "2026-07-28",
+            "--client-version",
+            "2025-11-25",
+            "--server-era",
+            "dual",
+        ],
+        &[],
+    );
+    let Action::Conformance(ConformanceAction::Run {
+        client_versions,
+        server_eras,
+        ..
+    }) = &resolved
+    else {
+        panic!("expected a conformance run");
+    };
+    assert_eq!(client_versions, &["2025-11-25", "2026-07-28"]);
+    assert_eq!(server_eras, &[ConformanceServerEra::Dual]);
+    assert!(
+        resolved
+            .startup_summary()
+            .contains("Client era: legacy [2025-11-25]; modern [2026-07-28]")
+    );
+}
+
+#[test]
+fn conformance_rejects_unknown_or_ambiguous_client_versions() {
+    for (arguments, expected) in [
+        (
+            vec!["--client-version", "2025-01-01"],
+            clap::error::ErrorKind::InvalidValue,
+        ),
+        (
+            vec!["--client-version", "2025-11-25", "--client-era", "dual"],
+            clap::error::ErrorKind::ArgumentConflict,
+        ),
+    ] {
+        let error = Cli::try_parse_from(
+            ["cf-integration", "conformance", "run"]
+                .into_iter()
+                .chain(arguments),
+        )
+        .expect_err("invalid client selection must fail before execution");
+        assert_eq!(error.kind(), expected);
+    }
+}
+
+#[test]
 fn standalone_conformance_is_external_only() {
     let standalone = action(
         &[

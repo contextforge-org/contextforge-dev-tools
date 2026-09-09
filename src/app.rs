@@ -100,13 +100,14 @@ impl Action {
                 lanes,
                 standalone,
                 client_eras,
+                client_versions,
                 server_eras,
                 ..
             }) => {
                 let mut summary = format!(
                     "Lane: {}\nClient era: {}\nServer era: {}",
                     join_lane_labels(lanes),
-                    join_client_eras(client_eras),
+                    join_client_eras(client_eras, client_versions),
                     join_server_eras(server_eras),
                 );
                 if *standalone {
@@ -238,7 +239,7 @@ fn join_lane_labels(lanes: &[SemanticLane]) -> String {
         .join(", ")
 }
 
-fn join_client_eras(client_eras: &[ConformanceServerEra]) -> String {
+fn join_client_eras(client_eras: &[ConformanceServerEra], client_versions: &[String]) -> String {
     client_eras
         .iter()
         .map(|era| {
@@ -247,7 +248,12 @@ fn join_client_eras(client_eras: &[ConformanceServerEra]) -> String {
                 ConformanceServerEra::Legacy => LEGACY_CLIENT_PROTOCOL_VERSIONS,
                 ConformanceServerEra::Modern => MODERN_CLIENT_PROTOCOL_VERSIONS,
             };
-            format!("{} [{}]", era.label(), versions.join(", "))
+            let selected = client_versions
+                .iter()
+                .filter(|version| versions.contains(&version.as_str()))
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            format!("{} [{}]", era.label(), selected.join(", "))
         })
         .collect::<Vec<_>>()
         .join("; ")
@@ -421,7 +427,8 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
         }
         Command::Conformance(args) => Ok(Action::Conformance(match args.command {
             ConformanceCommand::Run(args) => {
-                let (client_eras, client_versions) = resolve_client_eras(args.client_era);
+                let (client_eras, client_versions) =
+                    resolve_client_protocols(args.client_era, args.client_version);
                 let lanes = if standalone && args.lane.is_empty() {
                     vec![SemanticLane::ExternalDataPlane]
                 } else {
@@ -640,29 +647,46 @@ fn resolve_lanes(lanes: impl IntoIterator<Item = SemanticLane>) -> Vec<SemanticL
     }
 }
 
-fn resolve_client_eras(
+fn resolve_client_protocols(
     eras: Vec<crate::cli::CliConformanceEra>,
+    selected_versions: Vec<String>,
 ) -> (Vec<ConformanceServerEra>, Vec<String>) {
-    let eras = if eras.is_empty() {
-        vec![crate::cli::CliConformanceEra::Modern]
+    let eras = if !selected_versions.is_empty() {
+        selected_versions
+            .iter()
+            .map(|version| {
+                if LEGACY_CLIENT_PROTOCOL_VERSIONS.contains(&version.as_str()) {
+                    ConformanceServerEra::Legacy
+                } else {
+                    ConformanceServerEra::Modern
+                }
+            })
+            .collect()
+    } else if eras.is_empty() {
+        vec![ConformanceServerEra::Modern]
     } else {
-        eras
+        eras.into_iter().map(Into::into).collect()
     };
     let mut seen_eras = BTreeSet::new();
     let eras = eras
         .into_iter()
-        .map(Into::into)
         .filter(|era| seen_eras.insert(*era))
         .collect::<Vec<ConformanceServerEra>>();
+    let versions = if selected_versions.is_empty() {
+        eras.iter()
+            .flat_map(|era| match era {
+                ConformanceServerEra::Dual => DUAL_CLIENT_PROTOCOL_VERSIONS,
+                ConformanceServerEra::Legacy => LEGACY_CLIENT_PROTOCOL_VERSIONS,
+                ConformanceServerEra::Modern => MODERN_CLIENT_PROTOCOL_VERSIONS,
+            })
+            .map(|version| (*version).to_owned())
+            .collect()
+    } else {
+        selected_versions
+    };
     let mut seen_versions = BTreeSet::new();
-    let versions = eras
-        .iter()
-        .flat_map(|era| match era {
-            ConformanceServerEra::Dual => DUAL_CLIENT_PROTOCOL_VERSIONS,
-            ConformanceServerEra::Legacy => LEGACY_CLIENT_PROTOCOL_VERSIONS,
-            ConformanceServerEra::Modern => MODERN_CLIENT_PROTOCOL_VERSIONS,
-        })
-        .map(|version| (*version).to_owned())
+    let versions = versions
+        .into_iter()
         .filter(|version| seen_versions.insert(version.clone()))
         .collect();
     (eras, versions)

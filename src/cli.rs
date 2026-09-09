@@ -5,6 +5,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use crate::conformance::profile::DUAL_CLIENT_PROTOCOL_VERSIONS;
 use crate::mcp::protocol::{LEGACY_PROTOCOL_VERSION, PROTOCOL_VERSION};
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
@@ -416,6 +417,15 @@ pub(crate) struct ConformanceRunArgs {
     /// Protocol era used by the official client; repeat for a matrix.
     #[arg(long, value_enum, action = ArgAction::Append)]
     pub(crate) client_era: Vec<CliConformanceEra>,
+
+    /// Exact client protocol revision; repeat to select a matrix instead of an era.
+    #[arg(
+        long,
+        value_parser = clap::builder::PossibleValuesParser::new(DUAL_CLIENT_PROTOCOL_VERSIONS.iter().copied()),
+        conflicts_with = "client_era",
+        action = ArgAction::Append
+    )]
+    pub(crate) client_version: Vec<String>,
 
     /// Protocol era exposed by the fixture; repeat for a matrix.
     #[arg(long, value_enum, action = ArgAction::Append)]

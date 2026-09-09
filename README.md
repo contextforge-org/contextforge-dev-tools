@@ -165,6 +165,10 @@ cf-integration conformance run --lane external --standalone \
 ```
 
 `--client-era` and `--server-era` accept `legacy`, `modern`, or `dual`.
+To choose exact revisions instead of a client era, use repeatable
+`--client-version` arguments, for example
+`--client-version 2025-11-25 --client-version 2026-07-28`. This excludes
+`2025-06-18` from the client matrix while leaving fixture-server selection unchanged.
 `--bless` replaces only the selected baselines and only after every selected
 run succeeds. `--standalone` permits the external lane only.
 Ctrl-C finishes cleanup for the active run, skips the remaining matrix entries,
