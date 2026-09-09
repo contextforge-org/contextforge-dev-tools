@@ -7,6 +7,13 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-09
+
+### Added
+
+- Select exact conformance client revisions with repeatable `--client-version`
+  arguments, without including every revision in a protocol era.
+
 ### Changed
 
 - Run official conformance and Inspector inside a Docker tooling image, removing

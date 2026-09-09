@@ -201,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "cf-integration"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "aws-lc-rs",

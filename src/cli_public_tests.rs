@@ -576,7 +576,16 @@ fn conformance_accepts_repeatable_exact_lanes_and_protocol_eras() {
         "conformance",
         "run",
         "--client-version",
+        "2025-01-01",
+    ]);
+    rejected(&[
+        "cf-integration",
+        "conformance",
+        "run",
+        "--client-version",
         "2025-11-25",
+        "--client-era",
+        "dual",
     ]);
     rejected(&["cf-integration", "conformance", "run", "--suite", "active"]);
     rejected(&[
