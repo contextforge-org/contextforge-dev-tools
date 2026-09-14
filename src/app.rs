@@ -16,7 +16,7 @@ use anyhow::{Result, bail};
 
 use crate::cli::{
     CiCommand, Cli, CliLane, CliRoutedLane, Command, ConformanceCommand, DebugCommand,
-    LaneSelection, LiveGroup, ProtocolVersion, StackCommand, TokenKind,
+    LaneSelection, LiveGroup, LoadCommand, ProtocolVersion, StackCommand, TokenKind,
 };
 const LANE_ENV: &str = "CF_MCP_LANE";
 const PROTOCOL_VERSION_ENV: &str = "MCP_PROTOCOL_VERSION";
@@ -81,8 +81,15 @@ impl Action {
                 ..
             }) => target_summary(*topology, *standalone, protocol_version),
             Self::Load(args) => {
-                let mut summary =
-                    target_summary(args.topology, args.standalone, &args.protocol_version);
+                let mut summary = format!(
+                    "Lane: {}\nClient era: {}",
+                    args.topology.lane_label(),
+                    args.client_era,
+                );
+                if args.standalone {
+                    summary.push_str("\nControl plane: disabled; Redis config: mocked");
+                    summary.push_str(&format!("\nFixture era: {}", args.client_era));
+                }
                 if args.observability {
                     summary.push_str("\nObservability: ClickStack enabled during load");
                 }
@@ -300,7 +307,7 @@ pub(crate) enum StackAction {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ResolvedLoadArgs {
     pub(crate) topology: StackMode,
-    pub(crate) protocol_version: ProtocolVersion,
+    pub(crate) client_era: ProtocolVersion,
     pub(crate) standalone: bool,
     pub(crate) observability: bool,
     pub(crate) request: LoadRequest,
@@ -386,15 +393,12 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
             })
         }
         Command::Load(args) => {
-            let topology = resolve_lane(args.target.lane, environment)?;
+            let LoadCommand::Run(args) = args.command;
+            let topology = resolve_lane(args.lane, environment)?;
             validate_standalone_lane(standalone, topology)?;
             Ok(Action::Load(ResolvedLoadArgs {
                 topology,
-                protocol_version: resolve_protocol_version(
-                    args.target.protocol_version,
-                    environment,
-                    ProtocolVersion::default(),
-                )?,
+                client_era: args.client_era,
                 standalone,
                 observability: args.observability,
                 request: LoadRequest {

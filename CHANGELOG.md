@@ -7,6 +7,24 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Changed
+
+- Conformance legacy client runs now select only
+  `2025-11-25`. Dual combines it with `2026-07-28`; older exact client revision
+  selectors are rejected.
+- Align load with conformance's command and flag style: use `load run` with
+  `--client-era legacy|modern` (default modern), `--lane`, and `--standalone`.
+  Remove the former flat load command and its `--protocol-version` flag and
+  `MCP_PROTOCOL_VERSION` override. Standalone fixtures match the selected client
+  era; full-stack backend protocol support remains server-owned.
+
+### Fixed
+
+- Legacy load clients now use the revision negotiated during initialization,
+  reject unsupported revisions, and skip workload requests after failed
+  initialization or discovery.
+  Modern clients do not adopt legacy session IDs.
+
 ## [0.3.3] - 2026-09-09
 
 ### Added

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+use crate::cli::ProtocolVersion;
 use crate::infrastructure::StackMode;
 use crate::infrastructure::compose::ComposeProject;
 use crate::infrastructure::config::AppConfig;
@@ -28,26 +29,23 @@ pub(crate) struct LocustCommand {
 }
 
 impl LocustCommand {
-    /// Builds a Locust invocation with an explicit MCP protocol version.
+    /// Builds a Locust invocation for the selected client era.
     ///
     /// # Errors
     ///
-    /// Rejects an empty token or protocol version, a missing dataplane server
+    /// Rejects an empty token, a missing dataplane server
     /// ID, an invalid timeout, or an inaccessible report directory.
-    pub(crate) fn new_with_protocol_version(
+    pub(crate) fn new(
         config: &AppConfig,
         project: ComposeProject,
         mode: StackMode,
         settings: &LoadSettings,
         bearer_token: &str,
         server_id: Option<&str>,
-        protocol_version: &str,
+        client_era: ProtocolVersion,
     ) -> Result<Self> {
         if bearer_token.trim().is_empty() {
             bail!("Locust bearer token must not be empty");
-        }
-        if protocol_version.trim().is_empty() {
-            bail!("Locust MCP protocol version must not be empty");
         }
         if mode == StackMode::Dataplane && server_id.is_none_or(|value| value.trim().is_empty()) {
             bail!("dataplane Locust server ID must not be empty");
@@ -119,7 +117,7 @@ impl LocustCommand {
             .env("LOCUST_SPAWN_RATE", settings.spawn_rate().to_string())
             .env("LOCUST_RUN_TIME", settings.run_time())
             .env(REQUEST_TIMEOUT_ENV, request_timeout.to_string())
-            .env("MCP_PROTOCOL_VERSION", protocol_version);
+            .env("MCP_PROTOCOL_VERSION", client_era.wire_version());
         match mode {
             StackMode::Dataplane => {
                 command = command.env("MCP_SERVER_ID", server_id.unwrap_or_default());

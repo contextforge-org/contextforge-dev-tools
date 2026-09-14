@@ -29,7 +29,7 @@ fn every_subcommand_has_a_stable_progress_description() {
         (&["cf-integration", "stack", "logs"], "stack logs"),
         (&["cf-integration", "stack", "config"], "stack config"),
         (&["cf-integration", "probe"], "probe"),
-        (&["cf-integration", "load"], "load test"),
+        (&["cf-integration", "load", "run"], "load test"),
         (&["cf-integration", "live"], "live tests"),
         (
             &["cf-integration", "conformance", "run"],
@@ -121,8 +121,8 @@ fn every_subcommand_reports_its_resolved_lane_at_startup() {
             "Lane: external\nProtocol version: modern",
         ),
         (
-            &["cf-integration", "load"],
-            "Lane: external\nProtocol version: modern",
+            &["cf-integration", "load", "run"],
+            "Lane: external\nClient era: modern",
         ),
         (
             &["cf-integration", "live"],
@@ -172,7 +172,7 @@ fn conformance_startup_reports_every_selected_client_and_server_protocol() {
 
     assert_eq!(
         resolved.startup_summary(),
-        "Lane: builtin\nClient era: legacy [2025-06-18, 2025-11-25]; modern [2026-07-28]\nServer era: dual [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25, 2026-07-28]"
+        "Lane: builtin\nClient era: legacy [2025-11-25]; modern [2026-07-28]\nServer era: dual [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25, 2026-07-28]"
     );
 }
 
@@ -193,14 +193,14 @@ fn conformance_startup_labels_both_legacy_era_selections() {
 
     assert_eq!(
         resolved.startup_summary(),
-        "Lane: fixture direct, builtin, external\nClient era: legacy [2025-06-18, 2025-11-25]\nServer era: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]"
+        "Lane: fixture direct, builtin, external\nClient era: legacy [2025-11-25]\nServer era: legacy [2024-11-05, 2025-03-26, 2025-06-18, 2025-11-25]"
     );
 }
 
 #[test]
 fn multi_phase_commands_own_detailed_progress_while_simple_commands_use_global_progress() {
     assert!(!action(&["cf-integration", "stack", "up"], &[]).uses_global_activity());
-    assert!(!action(&["cf-integration", "load"], &[]).uses_global_activity());
+    assert!(!action(&["cf-integration", "load", "run"], &[]).uses_global_activity());
     assert!(!action(&["cf-integration", "conformance", "run"], &[]).uses_global_activity());
     assert!(action(&["cf-integration", "stack", "down"], &[]).uses_global_activity());
     assert!(action(&["cf-integration", "probe"], &[]).uses_global_activity());
@@ -338,9 +338,10 @@ fn load_preserves_explicit_locust_settings() {
             &[
                 "cf-integration",
                 "load",
+                "run",
                 "--lane",
                 "builtin",
-                "--protocol-version",
+                "--client-era",
                 "legacy",
                 "--smoke",
                 "--users",
@@ -354,7 +355,7 @@ fn load_preserves_explicit_locust_settings() {
         ),
         Action::Load(ResolvedLoadArgs {
             topology: StackMode::Controlplane,
-            protocol_version: ProtocolVersion::Legacy,
+            client_era: ProtocolVersion::Legacy,
             standalone: false,
             observability: false,
             request: LoadRequest {
@@ -373,6 +374,7 @@ fn standalone_load_is_external_only() {
         &[
             "cf-integration",
             "load",
+            "run",
             "--lane",
             "external",
             "--standalone",
@@ -383,7 +385,7 @@ fn standalone_load_is_external_only() {
         standalone,
         Action::Load(ResolvedLoadArgs {
             topology: StackMode::Dataplane,
-            protocol_version: ProtocolVersion::default(),
+            client_era: ProtocolVersion::default(),
             standalone: true,
             observability: false,
             request: LoadRequest {
@@ -396,12 +398,13 @@ fn standalone_load_is_external_only() {
     );
     assert_eq!(
         standalone.startup_summary(),
-        "Lane: external\nProtocol version: modern\nControl plane: disabled; Redis config: mocked"
+        "Lane: external\nClient era: modern\nControl plane: disabled; Redis config: mocked\nFixture era: modern"
     );
 
     let cli = Cli::try_parse_from([
         "cf-integration",
         "load",
+        "run",
         "--lane",
         "builtin",
         "--standalone",
@@ -414,7 +417,7 @@ fn standalone_load_is_external_only() {
 
 #[test]
 fn load_enables_observability_only_when_requested() {
-    let enabled = action(&["cf-integration", "load", "--observability"], &[]);
+    let enabled = action(&["cf-integration", "load", "run", "--observability"], &[]);
     let Action::Load(args) = &enabled else {
         panic!("expected load action")
     };
@@ -422,7 +425,7 @@ fn load_enables_observability_only_when_requested() {
     assert!(args.observability);
     assert_eq!(
         enabled.startup_summary(),
-        "Lane: external\nProtocol version: modern\nObservability: ClickStack enabled during load"
+        "Lane: external\nClient era: modern\nObservability: ClickStack enabled during load"
     );
 }
 
@@ -551,11 +554,7 @@ fn conformance_lanes_are_deduplicated_and_normalized() {
             lanes: vec![SemanticLane::FixtureDirect, SemanticLane::ExternalDataPlane,],
             standalone: false,
             client_eras: vec![ConformanceServerEra::Legacy, ConformanceServerEra::Modern],
-            client_versions: vec![
-                "2025-06-18".to_owned(),
-                "2025-11-25".to_owned(),
-                "2026-07-28".to_owned(),
-            ],
+            client_versions: vec!["2025-11-25".to_owned(), "2026-07-28".to_owned(),],
             server_eras: vec![ConformanceServerEra::Modern, ConformanceServerEra::Legacy],
             results_dir: Some(PathBuf::from("results")),
             baseline_dir: Some(PathBuf::from("baselines")),
@@ -605,6 +604,10 @@ fn conformance_selects_exact_client_versions_without_expanding_legacy() {
 #[test]
 fn conformance_rejects_unknown_or_ambiguous_client_versions() {
     for (arguments, expected) in [
+        (
+            vec!["--client-version", "2025-06-18"],
+            clap::error::ErrorKind::InvalidValue,
+        ),
         (
             vec!["--client-version", "2025-01-01"],
             clap::error::ErrorKind::InvalidValue,
@@ -742,7 +745,7 @@ fn standalone_workflows_do_not_request_controlplane_secrets() {
         vec!["stack", "down"],
         vec!["stack", "logs"],
         vec!["probe"],
-        vec!["load"],
+        vec!["load", "run"],
         vec!["conformance", "run"],
         vec!["debug", "token", "--kind", "scoped"],
     ] {
@@ -841,5 +844,61 @@ fn standalone_live_rejects_every_group_before_runtime_setup() {
                 .contains("live suites require the control plane")
         );
         assert!(error.to_string().contains("probe --standalone"));
+    }
+}
+
+#[test]
+fn load_era_is_explicit_and_independent_of_protocol_version_environment() {
+    for value in ["legacy", "2025-11-25", "invalid"] {
+        for (flags, expected) in [
+            (vec![], ProtocolVersion::Modern),
+            (vec!["--client-era", "legacy"], ProtocolVersion::Legacy),
+            (vec!["--client-era", "modern"], ProtocolVersion::Modern),
+        ] {
+            let arguments = ["cf-integration", "load", "run"]
+                .into_iter()
+                .chain(flags)
+                .collect::<Vec<_>>();
+            let Action::Load(args) = action(
+                &arguments,
+                &[("MCP_PROTOCOL_VERSION", value), ("CF_MCP_LANE", "builtin")],
+            ) else {
+                panic!("expected load")
+            };
+            assert_eq!(args.client_era, expected);
+            assert_eq!(args.topology, StackMode::Controlplane);
+        }
+    }
+}
+
+#[test]
+fn conformance_legacy_and_dual_run_only_the_current_era_revisions() {
+    for (era, expected) in [
+        ("legacy", vec!["2025-11-25"]),
+        ("modern", vec!["2026-07-28"]),
+        ("dual", vec!["2025-11-25", "2026-07-28"]),
+    ] {
+        let Action::Conformance(ConformanceAction::Run {
+            client_versions,
+            server_eras,
+            ..
+        }) = action(
+            &[
+                "cf-integration",
+                "conformance",
+                "run",
+                "--client-era",
+                era,
+                "--server-era",
+                era,
+            ],
+            &[],
+        )
+        else {
+            panic!("expected conformance");
+        };
+        assert_eq!(client_versions, expected);
+        assert_eq!(server_eras.len(), 1);
+        assert_eq!(server_eras[0].label(), era);
     }
 }

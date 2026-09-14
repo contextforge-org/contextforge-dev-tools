@@ -14,7 +14,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             &server_id,
             args.standalone,
             args.observability,
-            &args.protocol_version,
+            &args.client_era,
             |token, standalone_tool_names| async move {
                 let project = if args.standalone {
                     self.standalone_dataplane_project(args.observability)
@@ -22,14 +22,14 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 } else {
                     self.performance_compose_project(args.topology, args.observability)
                 };
-                let command = LocustCommand::new_with_protocol_version(
+                let command = LocustCommand::new(
                     &self.config,
                     project,
                     args.topology,
                     &settings,
                     &token,
                     (args.topology == StackMode::Dataplane).then_some(operation_server_id.as_str()),
-                    args.protocol_version.wire_version(),
+                    args.client_era,
                 )
                 .map_err(AppFailure::from)?;
                 let mut command_spec = self.target_environment(

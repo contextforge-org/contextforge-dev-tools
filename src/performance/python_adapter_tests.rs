@@ -91,9 +91,11 @@ for unsafe in ("delete_everything_echo", "prefix-get_system_time", "shell"):
     assert adapter.tool_call_args(unsafe) is None
 
 user = adapter.MCPGatewayUser.__new__(adapter.MCPGatewayUser)
+user._protocol_version = adapter.PROTOCOL_VERSION
 user._session_id = None
 initialize_headers = user._headers(include_protocol_version=False)
 assert initialize_headers["Mcp-Protocol-Version"] == "2026-07-28"
+user._protocol_version = adapter.PROTOCOL_VERSION
 user._session_id = "session-id"
 request_headers = user._headers()
 assert request_headers["Mcp-Protocol-Version"] == "2026-07-28"
@@ -151,6 +153,7 @@ class FakeResponse:
         self.headers = {
             "Content-Type": "application/json",
             "X-CF-Integration-Backend": "dataplane",
+            "Mcp-Session-Id": "unexpected-legacy-session",
         }
         self.text = json.dumps({
             "jsonrpc": "2.0",
@@ -186,6 +189,7 @@ class FakeClient:
         raise AssertionError("stateless lifecycle must not delete a session")
 
 user = adapter.MCPGatewayUser.__new__(adapter.MCPGatewayUser)
+user._protocol_version = adapter.PROTOCOL_VERSION
 user._session_id = None
 user._ready = True
 user.client = FakeClient()
@@ -208,6 +212,7 @@ assert headers["Mcp-Protocol-Version"] == "2026-07-28"
 assert headers["Mcp-Method"] == "tools/call"
 assert headers["Mcp-Name"] == "echo"
 assert "Mcp-Session-Id" not in headers
+assert user._session_id is None
 user.on_stop()
 before = len(user.client.requests)
 user.ping()
@@ -292,6 +297,7 @@ class FakeClient:
         return FakeResponse(status=204)
 
 user = adapter.MCPGatewayUser.__new__(adapter.MCPGatewayUser)
+user._protocol_version = adapter.PROTOCOL_VERSION
 user._session_id = "session"
 user.client = FakeClient()
 user.on_start()
@@ -401,6 +407,7 @@ class FakeClient:
 
 def request(method, result):
     user = adapter.MCPGatewayUser.__new__(adapter.MCPGatewayUser)
+    user._protocol_version = adapter.PROTOCOL_VERSION
     user._session_id = "session"
     user.client = FakeClient(result)
     returned = user._mcp_request(method, {}, name=method)
@@ -426,6 +433,7 @@ assert returned == {"content": [{"type": "text", "text": "ok"}]}
 assert response.successes == 1 and not response.failures
 
 user = adapter.MCPGatewayUser.__new__(adapter.MCPGatewayUser)
+user._protocol_version = adapter.PROTOCOL_VERSION
 user._session_id = "session"
 user.client = FakeClient(notification_content=b"unexpected")
 user._mcp_notification("notifications/initialized", None, name="initialized")
@@ -498,6 +506,7 @@ class FakeClient:
 def make_request(mode, marker):
     adapter.MCP_STACK_MODE = mode
     user = adapter.MCPGatewayUser.__new__(adapter.MCPGatewayUser)
+    user._protocol_version = adapter.PROTOCOL_VERSION
     user._session_id = None
     user.client = FakeClient(marker)
     returned = user._mcp_request("ping", None, name="ping")
@@ -533,6 +542,89 @@ assert response.successes == 1 and not response.failures
         output.status.success(),
         "Python adapter backend identity check failed:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn locust_legacy_negotiation_drives_requests_and_failed_setup_stops_workload() {
+    let stub = locust_stub();
+    let python_path = std::env::join_paths([stub.path(), scripts_dir().as_path()])
+        .expect("Python path should join");
+    let code = r#"
+import json
+import locustfile_mcp as adapter
+
+class Response:
+    def __init__(self, payload, result):
+        self.status_code = 200 if "id" in payload else 202
+        self.headers = {"Content-Type": "application/json", "Mcp-Session-Id": "session"}
+        self.text = json.dumps({"jsonrpc": "2.0", "id": payload.get("id"), "result": result})
+        self.content = b"" if self.status_code == 202 else self.text.encode()
+        self.failures = []
+    def __enter__(self): return self
+    def __exit__(self, *_args): return False
+    def success(self): pass
+    def failure(self, message): self.failures.append(message)
+
+class Client:
+    def __init__(self, version):
+        self.version = version
+        self.requests = []
+        self.responses = []
+    def post(self, path, *, data, headers, **_kwargs):
+        payload = json.loads(data)
+        self.requests.append((payload, headers))
+        if payload["method"] == "initialize":
+            assert payload["params"]["protocolVersion"] == "2025-11-25"
+            assert "Mcp-Protocol-Version" not in headers
+            result = {"protocolVersion": self.version, "capabilities": {}, "serverInfo": {"name": "fixture", "version": "1"}}
+        elif payload["method"] == "tools/list":
+            result = {"tools": [{"name": "echo"}]}
+        elif payload["method"] == "tools/call":
+            result = {"content": []}
+        else:
+            result = {}
+        response = Response(payload, result)
+        self.responses.append(response)
+        return response
+
+for version in ["2025-11-25", "2025-06-18", "2026-07-28", "invalid", None]:
+    user = adapter.MCPGatewayUser()
+    user.client = Client(version)
+    user.on_start()
+    user.tools_list()
+    user.tools_call()
+    user.ping()
+    if version in {"2025-11-25", "2025-06-18"}:
+        assert user._ready
+        assert user._protocol_version == version
+        methods = [payload["method"] for payload, _ in user.client.requests]
+        assert methods == ["initialize", "notifications/initialized", "tools/list", "tools/list", "tools/call", "ping"], methods
+        for payload, headers in user.client.requests[1:]:
+            assert headers["Mcp-Protocol-Version"] == version
+            assert headers["Mcp-Session-Id"] == "session"
+            assert "_meta" not in payload.get("params", {})
+        assert all(not response.failures for response in user.client.responses)
+    else:
+        assert not user._ready
+        assert len(user.client.requests) == 1
+        assert user.client.responses[0].failures
+"#;
+    let output = Command::new(python())
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .args(["-c", code])
+        .env("PYTHONPATH", python_path)
+        .env("MCP_STACK_MODE", "controlplane")
+        .env("MCP_PROTOCOL_VERSION", "2025-11-25")
+        .env("MCPGATEWAY_BEARER_TOKEN", "token")
+        .env_remove("MCP_TOOL_NAMES")
+        .env_remove("MCP_SKIP_TOOL_LIST")
+        .output()
+        .expect("Python legacy lifecycle check should run");
+    assert!(
+        output.status.success(),
+        "legacy lifecycle failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 }

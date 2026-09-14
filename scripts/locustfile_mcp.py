@@ -6,6 +6,7 @@ endpoint. This file negotiates ``application/json, text/event-stream`` and
 parses either response form.
 
 Env:
+  MCP_PROTOCOL_VERSION                   harness-selected wire revision (internal)
   MCP_STACK_MODE                         controlplane or dataplane
   MCP_SERVER_ID                         virtual server id (dataplane only)
   MCPGATEWAY_BEARER_TOKEN                bearer token (required)
@@ -25,7 +26,10 @@ from urllib.parse import quote
 from locust import HttpUser, between, events, task
 
 PROTOCOL_VERSION = os.environ.get("MCP_PROTOCOL_VERSION", "2026-07-28")
-STATELESS = PROTOCOL_VERSION >= "2026-07-28"
+STATELESS = PROTOCOL_VERSION == "2026-07-28"
+LEGACY_PROTOCOL_VERSIONS = {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"}
+if PROTOCOL_VERSION not in {"2025-11-25", "2026-07-28"}:
+    raise RuntimeError("MCP_PROTOCOL_VERSION must be a harness-selected client revision")
 ACCEPT = "application/json, text/event-stream"
 _REQUEST_TIMEOUT_ERROR = (
     "LOCUST_REQUEST_TIMEOUT_SECONDS must be a finite number greater than zero"
@@ -129,8 +133,9 @@ def validate_result(method: str, result) -> dict:
     if not isinstance(result, dict):
         raise ValueError(f"{method} result must be an object")
     if method == "initialize":
-        if not isinstance(result.get("protocolVersion"), str) or not result["protocolVersion"]:
-            raise ValueError("initialize result must include protocolVersion")
+        version = result.get("protocolVersion")
+        if not isinstance(version, str) or version not in LEGACY_PROTOCOL_VERSIONS:
+            raise ValueError("initialize must negotiate a supported legacy protocol revision")
         if not isinstance(result.get("capabilities"), dict):
             raise ValueError("initialize result must include capabilities")
         server_info = result.get("serverInfo")
@@ -208,13 +213,14 @@ def fail_empty_run(environment, **_kwargs) -> None:
 
 
 class MCPGatewayUser(HttpUser):
-    """Drives initialize -> tools/list -> tools/call through the public route."""
+    """Drives discovery or initialization, then tool requests on the public route."""
 
     wait_time = between(0.05, 0.2)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._session_id: str | None = None
+        self._protocol_version = PROTOCOL_VERSION
         self._ready = False
         self._tool_names: list[str] = list(TOOL_NAMES)
 
@@ -246,11 +252,12 @@ class MCPGatewayUser(HttpUser):
             )
         if result is None:
             return
-        self._ready = True
         if not STATELESS and not self._session_id:
             raise RuntimeError("initialize response did not include Mcp-Session-Id")
         if not STATELESS:
+            self._protocol_version = result["protocolVersion"]
             self._mcp_notification("notifications/initialized", None, name="MCP initialized")
+        self._ready = True
         if not self._tool_names and not SKIP_TOOL_LIST:
             listed = self._mcp_request("tools/list", {}, name="MCP tools/list")
             if listed:
@@ -293,7 +300,7 @@ class MCPGatewayUser(HttpUser):
             "Authorization": f"Bearer {BEARER_TOKEN}",
         }
         if include_protocol_version or STATELESS:
-            headers["Mcp-Protocol-Version"] = PROTOCOL_VERSION
+            headers["Mcp-Protocol-Version"] = self._protocol_version
         if STATELESS and method:
             headers["Mcp-Method"] = method
             if method in {"tools/call", "prompts/get"} and isinstance(params, dict):
@@ -351,7 +358,7 @@ class MCPGatewayUser(HttpUser):
             if not self._validate_backend(response):
                 return None
             session_id = response.headers.get("Mcp-Session-Id") if response.headers else None
-            if session_id:
+            if session_id and not STATELESS:
                 self._session_id = session_id
 
             if response.status_code != 200:
@@ -412,12 +419,14 @@ class MCPGatewayUser(HttpUser):
 
     @task(5)
     def tools_list(self):
-        if SKIP_TOOL_LIST:
+        if not self._ready or SKIP_TOOL_LIST:
             return
         self._mcp_request("tools/list", {}, name="MCP tools/list")
 
     @task(10)
     def tools_call(self):
+        if not self._ready:
+            return
         candidates = [(name, tool_call_args(name)) for name in self._tool_names]
         candidates = [(name, args) for name, args in candidates if args is not None]
         if not candidates:
@@ -427,6 +436,6 @@ class MCPGatewayUser(HttpUser):
 
     @task(2)
     def ping(self):
-        if STATELESS:
+        if not self._ready or STATELESS:
             return
         self._mcp_request("ping", None, name="MCP ping")

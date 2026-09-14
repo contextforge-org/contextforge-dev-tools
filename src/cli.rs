@@ -284,12 +284,31 @@ pub(crate) enum LaneSelection {
     All,
 }
 
-/// Load-test options.
+/// Load command selection.
 #[derive(Debug, Clone, PartialEq, Args)]
 pub(crate) struct LoadArgs {
-    /// Routed lane and protocol-version selection.
-    #[command(flatten)]
-    pub(crate) target: RoutedWorkflowTargetArgs,
+    /// Load operation to run.
+    #[command(subcommand)]
+    pub(crate) command: LoadCommand,
+}
+
+/// MCP load workflows.
+#[derive(Debug, Clone, PartialEq, Subcommand)]
+pub(crate) enum LoadCommand {
+    /// Run Locust through the selected public MCP route.
+    Run(LoadRunArgs),
+}
+
+/// Load-test options.
+#[derive(Debug, Clone, PartialEq, Args)]
+pub(crate) struct LoadRunArgs {
+    /// Execution lane; defaults to CF_MCP_LANE, then external.
+    #[arg(long, value_enum)]
+    pub(crate) lane: Option<CliRoutedLane>,
+
+    /// Protocol era used by the load client; standalone fixtures match this era.
+    #[arg(long, value_enum, default_value = "modern")]
+    pub(crate) client_era: ProtocolVersion,
 
     /// Enable the ClickStack observability UI during the load test.
     #[arg(long)]

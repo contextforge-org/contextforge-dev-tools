@@ -33,13 +33,14 @@ Routed commands accept `--lane builtin|external`; `external` is the default.
 Conformance and protocol-only live tests also accept `fixture-direct`.
 `stack down` accepts `all`. No command accepts the old `--topology` option.
 
-Commands that exercise MCP accept `--protocol-version modern|legacy`:
+Stack, probe, live, and debug inspect accept `--protocol-version modern|legacy`:
 
 - `modern`: current per-request, stateless MCP.
 - `legacy`: current initialization-based MCP.
 
-The CLI deliberately does not expose dated wire revisions. Defaults may be set
-with `CF_MCP_LANE` and `MCP_PROTOCOL_VERSION`.
+These operational selectors use era names. Defaults may be set with
+`CF_MCP_LANE` and `MCP_PROTOCOL_VERSION`. Load and conformance use `--client-era`
+as described below.
 
 Add the global `--standalone` flag to run the external lane without any control
 plane. Standalone mode starts Redis, the Rust dataplane, nginx, and the required
@@ -107,19 +108,22 @@ snapshot because the Rust dataplane intentionally does not implement fan-out
 
 ## Load
 
+`run` uses the same command and era naming as conformance. It runs one routed
+lane with one client era at a time.
+
 ```bash
 # Compare both lanes for two minutes
-cf-integration load --lane builtin --protocol-version legacy \
+cf-integration load run --lane builtin --client-era legacy \
   --users 10 --spawn-rate 2 --run-time 2m
-cf-integration load --lane external --protocol-version legacy \
+cf-integration load run --lane external --client-era legacy \
   --users 10 --spawn-rate 2 --run-time 2m
 
 # Isolate the external dataplane and mocked Redis
-cf-integration load --lane external --protocol-version legacy --standalone \
+cf-integration load run --lane external --client-era legacy --standalone \
   --users 10 --spawn-rate 2 --run-time 2m
 
 # Include telemetry when diagnostic value matters more than benchmark purity
-cf-integration load --lane external --protocol-version modern --standalone \
+cf-integration load run --lane external --client-era modern --standalone \
   --observability --users 10 --spawn-rate 2 --run-time 2m
 ```
 
@@ -127,6 +131,17 @@ cf-integration load --lane external --protocol-version modern --standalone \
 and `s` groups such as `2m30s`. Defaults are `100` users, `10` users/s, and
 `5m`, overridable with `LOCUST_USERS`, `LOCUST_SPAWN_RATE`, and
 `LOCUST_RUN_TIME`. Observability is opt-in for load tests to avoid skew.
+
+`--client-era` accepts `legacy` or `modern` (default). The harness owns the
+Locust client: legacy uses initialization and the server's negotiated revision;
+modern uses discovery and per-request metadata. Exact revision selectors and
+`MCP_PROTOCOL_VERSION` overrides are not part of the load interface.
+
+There is no server-era selector: full-stack runs use the configured backend's
+actual protocol support. `--standalone` runs only the external lane, with mocked
+Redis and the same pinned fixture used by conformance, configured to match the
+client era. This selects fixture behavior; it does not change dataplane protocol
+support. The server must support the selected client era.
 
 ## Live gateway checks
 
@@ -165,10 +180,11 @@ cf-integration conformance run --lane external --standalone \
 ```
 
 `--client-era` and `--server-era` accept `legacy`, `modern`, or `dual`.
-To choose exact revisions instead of a client era, use repeatable
-`--client-version` arguments, for example
-`--client-version 2025-11-25 --client-version 2026-07-28`. This excludes
-`2025-06-18` from the client matrix while leaving fixture-server selection unchanged.
+Client legacy runs select only `2025-11-25`; modern selects only `2026-07-28`;
+dual selects both. Older client revisions are not run. Exact `--client-version`
+selectors accept only those two revisions. Server era selects the fixture's
+legacy/modern behavior; its pinned SDK determines the exact supported revisions,
+which are listed in the run summary.
 `--bless` replaces only the selected baselines and only after every selected
 run succeeds. `--standalone` permits the external lane only.
 Ctrl-C finishes cleanup for the active run, skips the remaining matrix entries,
