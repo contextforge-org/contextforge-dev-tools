@@ -20,7 +20,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             &server_id,
             standalone,
             true,
-            protocol_version,
+            session::StandaloneBackend::Conformance(*protocol_version),
             |token, _| async move {
                 let endpoint = GatewayClient::new(
                     gateway_topology(mode),

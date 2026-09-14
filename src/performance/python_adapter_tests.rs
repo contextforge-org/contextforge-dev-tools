@@ -91,8 +91,9 @@ assert adapter.safe_diagnostic("reflected token and session-id") == "reflected <
 assert adapter.tool_call_args("echo") == {"message": "cf-integration"}
 assert adapter.tool_call_args("fast-time-echo") == {"message": "cf-integration"}
 assert adapter.tool_call_args("fast_time_echo") == {"message": "cf-integration"}
-assert adapter.tool_call_args("get_system_time") == {"timezone": "UTC"}
-assert adapter.tool_call_args("fast-time-get-system-time") == {"timezone": "UTC"}
+assert adapter.tool_call_args("get_system_time") is None
+assert adapter.tool_call_args("fast-time-get-system-time") is None
+assert adapter.tool_call_args("test_simple_text") is None
 for unsafe in ("delete_everything_echo", "prefix-get_system_time", "shell"):
     assert adapter.tool_call_args(unsafe) is None
 
@@ -239,9 +240,8 @@ assert headers["Mcp-Method"] == "tools/call"
 assert headers["Mcp-Name"] == "echo"
 assert "Mcp-Session-Id" not in headers
 assert user._session_id is None
-user.on_stop()
 before = len(user.client.requests)
-user.ping()
+user.on_stop()
 assert len(user.client.requests) == before
 
 adapter.validate_result("server/discover", {
@@ -596,6 +596,7 @@ class Response:
 class Client:
     def __init__(self, version):
         self.version = version
+        self.tools = ["echo"]
         self.requests = []
         self.responses = []
     def post(self, path, *, data, headers, **_kwargs):
@@ -606,7 +607,7 @@ class Client:
             assert "Mcp-Protocol-Version" not in headers
             result = {"protocolVersion": self.version, "capabilities": {}, "serverInfo": {"name": "fixture", "version": "1"}}
         elif payload["method"] == "tools/list":
-            result = {"tools": [{"name": "echo"}]}
+            result = {"tools": [{"name": name} for name in self.tools]}
         elif payload["method"] == "tools/call":
             result = {"content": []}
         else:
@@ -619,14 +620,12 @@ for version in ["2025-11-25", "2025-06-18", "2026-07-28", "invalid", None]:
     user = adapter.MCPGatewayUser()
     user.client = Client(version)
     user.on_start()
-    user.tools_list()
     user.tools_call()
-    user.ping()
     if version in {"2025-11-25", "2025-06-18"}:
         assert user._ready
         assert user._protocol_version == version
         methods = [payload["method"] for payload, _ in user.client.requests]
-        assert methods == ["initialize", "notifications/initialized", "tools/list", "tools/list", "tools/call", "ping"], methods
+        assert methods == ["initialize", "notifications/initialized", "tools/list", "tools/call"], methods
         for payload, headers in user.client.requests[1:]:
             assert headers["Mcp-Protocol-Version"] == version
             assert headers["Mcp-Session-Id"] == "session"
@@ -636,6 +635,26 @@ for version in ["2025-11-25", "2025-06-18", "2026-07-28", "invalid", None]:
         assert not user._ready
         assert len(user.client.requests) == 1
         assert user.client.responses[0].failures
+
+for alias in ("echo", "fast-time-echo", "fast_time_echo"):
+    user = adapter.MCPGatewayUser()
+    user.client = Client("2025-11-25")
+    user.client.tools = ["test_simple_text", "get_system_time", alias]
+    user.on_start()
+    for _ in range(10): user.tools_call()
+    calls = [body for body, _ in user.client.requests if body["method"] == "tools/call"]
+    assert len(calls) == 10
+    assert all(body["params"] == {"name": alias, "arguments": {"message": "cf-integration"}} for body in calls)
+
+user = adapter.MCPGatewayUser()
+user.client = Client("2025-11-25")
+user.client.tools = ["test_simple_text", "get_system_time"]
+try:
+    user.on_start()
+    raise AssertionError("missing echo must fail setup")
+except RuntimeError as error:
+    assert "Fast Time echo tool is required" in str(error)
+assert not user._ready
 
 user = adapter.MCPGatewayUser()
 user.client = Client("2025-11-25")
@@ -647,9 +666,7 @@ def fail_notification(*args, **kwargs):
     return response
 user.client.post = fail_notification
 user.on_start()
-user.tools_list()
 user.tools_call()
-user.ping()
 assert not user._ready
 assert [payload["method"] for payload, _ in user.client.requests] == ["initialize", "notifications/initialized"]
 "#;

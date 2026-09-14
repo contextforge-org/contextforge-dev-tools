@@ -1186,7 +1186,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) fn cleanup_standalone_dataplane(&self, kind: CleanupKind) -> AppResult<()> {
         let project = self
             .standalone_conformance_compose_project(true)
-            .with_profiles(["conformance"]);
+            .with_profiles(["conformance", "performance"]);
         let command = stack_cleanup_command(project, kind);
         let command = self.standalone_dataplane_environment(command, false)?;
         let primary = self

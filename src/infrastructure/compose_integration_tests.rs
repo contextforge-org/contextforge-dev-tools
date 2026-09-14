@@ -416,7 +416,25 @@ fn standalone_harness_owns_auth_without_dataplane_tools() {
         .as_mapping()
         .expect("standalone services must be a mapping");
 
-    assert_eq!(services.len(), 6);
+    assert_eq!(services.len(), 7);
+    let builtin: yaml_serde::Value = yaml_serde::from_str(
+        &fs::read_to_string(root.join("docker/docker-compose.cf-controlplane-build-labels.yaml"))
+            .expect("read builtin service overlay"),
+    )
+    .expect("parse builtin service overlay");
+    assert_eq!(
+        compose["services"]["fast_time_server"]["image"],
+        builtin["services"]["fast_time_server"]["image"]
+    );
+    assert_eq!(
+        compose["services"]["fast_time_server"]["command"],
+        builtin["services"]["fast_time_server"]["command"]
+    );
+    assert_eq!(
+        compose["services"]["fast_time_server"]["profiles"][0].as_str(),
+        Some("performance")
+    );
+    assert!(compose["services"]["mcp_conformance_server"].is_null());
     assert!(compose["services"]["gateway"].is_null());
     assert_eq!(
         compose["services"]["auth"]["network_mode"].as_str(),

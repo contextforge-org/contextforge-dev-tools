@@ -79,8 +79,9 @@ These operational selectors use era names. Defaults may be set with
 as described below.
 
 Add the global `--standalone` flag to run the external lane without any control
-plane. Standalone mode starts Redis, the Rust dataplane, nginx, and the required
-test fixture. A harness-owned auth service generates an ephemeral RSA key and
+plane. Standalone mode starts Redis, the Rust dataplane, nginx, and Fast Time
+for load or the conformance fixture for protocol checks. A harness-owned auth
+service generates an ephemeral RSA key and
 serves public JWKS on the dataplane network namespace's loopback interface. The
 config helper signs test tokens and writes named MessagePack routing snapshots
 directly to Redis. Production dataplane images work without `with_tools`; that
@@ -189,11 +190,18 @@ Locust client: legacy uses initialization and the server's negotiated revision;
 modern uses discovery and per-request metadata. Exact revision selectors and
 `MCP_PROTOCOL_VERSION` overrides are not part of the load interface.
 
-There is no server-era selector: full-stack runs use the configured backend's
-actual protocol support. `--standalone` runs only the external lane, with mocked
-Redis and the same pinned fixture used by conformance, configured to match the
-client era. This selects fixture behavior; it does not change dataplane protocol
-support. The server must support the selected client era.
+Every load lane uses the Fast Time server with the same `FAST_TIME_IMAGE`
+override and the same `echo` payload (`{"message":"cf-integration"}`). Pin that
+image to a digest when comparing lanes. The measured workload contains only
+`tools/call`; initialization/discovery and builtin tool-name discovery happen
+once per user. Compare the `MCP tools/call` statistics to exclude setup traffic.
+A missing echo tool fails the run instead of producing an empty benchmark.
+
+There is no server-era selector: the backend must support the selected client
+era. `--standalone` runs Fast Time with the external dataplane and a harness
+routing snapshot in Redis, without the control plane. It discovers Fast Time's
+catalog directly; it never starts the conformance fixture or its proxy.
+Conformance, probes, and Inspector retain their protocol fixtures.
 
 ## Live gateway checks
 

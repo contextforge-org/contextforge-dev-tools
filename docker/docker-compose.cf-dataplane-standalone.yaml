@@ -102,6 +102,25 @@ services:
       retries: 30
       start_period: 2s
 
+  fast_time_server:
+    profiles: ["performance"]
+    image: ${FAST_TIME_IMAGE:-ghcr.io/ibm/cfex-mcp-fast-time-server:latest}
+    labels:
+      name: cf-fast-time-server
+    restart: "no"
+    command: []
+    environment:
+      BIND_ADDRESS: 0.0.0.0:9080
+      RUST_LOG: info
+    networks:
+      - mcpnet
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9080/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
   locust:
     profiles: ["performance"]
     image: locustio/locust:2.46.2

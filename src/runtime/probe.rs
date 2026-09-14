@@ -15,7 +15,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             &server_id,
             standalone,
             true,
-            protocol_version,
+            session::StandaloneBackend::Conformance(*protocol_version),
             |token, tool_names| async {
                 let config = ProbeConfig {
                     mode: gateway_topology(topology),

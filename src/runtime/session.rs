@@ -34,6 +34,11 @@ return 0
 const STANDALONE_TENANT_ID: &str = "cf-integration";
 const STANDALONE_USER_ID: &str = "cf-integration@example.invalid";
 
+pub(super) enum StandaloneBackend {
+    Conformance(ProtocolVersion),
+    FastTime(ProtocolVersion),
+}
+
 struct ManagedSessionScope<'a, R> {
     runtime: &'a RuntimeContext<R>,
     topology: StackMode,
@@ -126,7 +131,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         server_id: &str,
         standalone: bool,
         observability: bool,
-        protocol_version: &ProtocolVersion,
+        backend: StandaloneBackend,
         operation: F,
     ) -> AppResult<()>
     where
@@ -143,8 +148,15 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             let token = if standalone {
                 self.stack_up_standalone_dataplane(false, observability)
                     .await?;
-                self.start_standalone_fixture(protocol_version, observability)
-                    .await?;
+                match backend {
+                    StandaloneBackend::Conformance(version) => {
+                        self.start_standalone_fixture(&version, observability)
+                            .await?;
+                    }
+                    StandaloneBackend::FastTime(_) => {
+                        self.start_standalone_fast_time(observability).await?;
+                    }
+                }
                 self.standalone_dataplane_token(observability)?
             } else {
                 let project = self.performance_compose_project(topology, observability);
@@ -156,12 +168,22 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             let value = token.value.clone();
             scope.token = Some(token);
             let tool_names = if standalone {
-                self.publish_standalone_conformance_config(
-                    server_id,
-                    protocol_version.wire_version(),
-                    &value,
-                    observability,
-                )?
+                match backend {
+                    StandaloneBackend::Conformance(version) => self
+                        .publish_standalone_conformance_config(
+                            server_id,
+                            version.wire_version(),
+                            &value,
+                            observability,
+                        )?,
+                    StandaloneBackend::FastTime(version) => self
+                        .publish_standalone_fast_time_config(
+                            server_id,
+                            version.wire_version(),
+                            &value,
+                            observability,
+                        )?,
+                }
             } else {
                 Vec::new()
             };

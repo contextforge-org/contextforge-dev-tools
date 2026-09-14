@@ -318,7 +318,7 @@ pub(crate) struct LoadRunArgs {
     #[arg(short = 'l', long, value_enum)]
     pub(crate) lane: Option<CliRoutedLane>,
 
-    /// Protocol era used by the load client; standalone fixtures match this era.
+    /// Protocol era used by the load client; every lane uses Fast Time.
     #[arg(short = 'c', long, value_enum, default_value = "modern")]
     pub(crate) client_era: ProtocolVersion,
 

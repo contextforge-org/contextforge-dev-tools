@@ -3,6 +3,59 @@
 use super::*;
 
 impl<R: ProcessRunner> RuntimeContext<R> {
+    pub(super) async fn start_standalone_fast_time(&self, observability: bool) -> AppResult<()> {
+        let command = self.standalone_dataplane_project(observability).command([
+            "up",
+            "-d",
+            "--wait",
+            "fast_time_server",
+        ]);
+        let command = self.standalone_dataplane_environment(command, true)?;
+        self.runner
+            .run_async(&command)
+            .await
+            .map_err(AppFailure::from)
+    }
+
+    pub(super) fn publish_standalone_fast_time_config(
+        &self,
+        server_id: &str,
+        protocol_version: &str,
+        token: &str,
+        observability: bool,
+    ) -> AppResult<Vec<String>> {
+        let progress = Activity::spinner("Publish Fast Time routing configuration");
+        let command = self.standalone_dataplane_project(observability).command([
+            "run",
+            "--quiet-build",
+            "--rm",
+            "--no-deps",
+            "-e",
+            CLIENT_TOKEN_ENV,
+            "config_writer",
+            "fixture",
+            server_id,
+            "http://fast_time_server:9080/mcp",
+            protocol_version,
+        ]);
+        let command = self
+            .standalone_dataplane_environment(command, true)?
+            .env(CLIENT_TOKEN_ENV, token);
+        let result = self.capture_text(&command).and_then(|output| {
+            let names: Vec<String> = serde_json::from_str(&output)
+                .context("Fast Time config helper returned invalid tool names")
+                .map_err(AppFailure::from)?;
+            if !names.iter().any(|name| name == "echo") {
+                return Err(AppFailure::from(anyhow!(
+                    "Fast Time backend does not advertise echo; load was not started"
+                )));
+            }
+            Ok(vec!["echo".to_owned()])
+        });
+        progress.finish(result.is_ok());
+        result
+    }
+
     pub(super) async fn run_load(&self, args: ResolvedLoadArgs) -> AppResult<()> {
         let settings =
             LoadSettings::resolve(&self.config, &args.request).map_err(AppFailure::from)?;
@@ -14,7 +67,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             &server_id,
             args.standalone,
             args.observability,
-            &args.client_era,
+            session::StandaloneBackend::FastTime(args.client_era),
             |token, standalone_tool_names| async move {
                 let project = if args.standalone {
                     self.standalone_dataplane_project(args.observability)

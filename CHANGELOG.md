@@ -32,10 +32,13 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Align load with conformance's command and flag style: use `load run` with
   `--client-era legacy|modern` (default modern), `--lane`, and `--standalone`.
   Remove the former flat load command and its `--protocol-version` flag and
-  `MCP_PROTOCOL_VERSION` override. Standalone fixtures match the selected client
-  era; full-stack backend protocol support remains server-owned.
+  `MCP_PROTOCOL_VERSION` override. Backend protocol support remains server-owned.
 
 ### Fixed
+
+- Use Fast Time for every load lane, including standalone external, with a shared
+  `FAST_TIME_IMAGE` override. Call only echo with the same payload in both lanes;
+  fail if it is missing. Reserve the conformance fixture for protocol workflows.
 
 - Bootstrap full-stack external authentication in the CLI: generate an RSA key,
   configure the control plane to issue RS256 tokens, serve matching public JWKS

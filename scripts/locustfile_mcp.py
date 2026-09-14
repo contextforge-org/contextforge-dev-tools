@@ -50,15 +50,9 @@ def _request_timeout_seconds() -> float:
 REQUEST_TIMEOUT_SECONDS = _request_timeout_seconds()
 
 _TOOL_ARGUMENTS = {
-    "test_simple_text": {},
     "echo": {"message": "cf-integration"},
     "fast_time_echo": {"message": "cf-integration"},
     "fast-time-echo": {"message": "cf-integration"},
-    "get_system_time": {"timezone": "UTC"},
-    "get-system-time": {"timezone": "UTC"},
-    "fast-time-get_system_time": {"timezone": "UTC"},
-    "fast_time_get_system_time": {"timezone": "UTC"},
-    "fast-time-get-system-time": {"timezone": "UTC"},
 }
 
 
@@ -124,7 +118,7 @@ def parse_mcp_body(text: str, content_type: str):
 
 
 def tool_call_args(tool_name: str) -> dict | None:
-    """Return arguments only for the finite set of safe fixture tools."""
+    """Use the same Fast Time echo payload for raw and control-plane aliases."""
     arguments = _TOOL_ARGUMENTS.get(tool_name)
     return dict(arguments) if arguments is not None else None
 
@@ -276,7 +270,6 @@ class MCPGatewayUser(HttpUser):
             self._protocol_version = result["protocolVersion"]
             if not self._mcp_notification("notifications/initialized", None, name="MCP initialized"):
                 return
-        self._ready = True
         if not self._tool_names and not SKIP_TOOL_LIST:
             listed = self._mcp_request("tools/list", {}, name="MCP tools/list")
             if listed:
@@ -287,6 +280,10 @@ class MCPGatewayUser(HttpUser):
                     and isinstance(tool.get("name"), str)
                     and tool["name"].strip()
                 ]
+        self._tool_names = [name for name in self._tool_names if tool_call_args(name) is not None]
+        if not self._tool_names:
+            raise RuntimeError("Fast Time echo tool is required; refusing an empty load workload")
+        self._ready = True
 
     def on_stop(self):
         if STATELESS or not self._session_id:
@@ -439,13 +436,7 @@ class MCPGatewayUser(HttpUser):
             response.success()
             return True
 
-    @task(5)
-    def tools_list(self):
-        if not self._ready or SKIP_TOOL_LIST:
-            return
-        self._mcp_request("tools/list", {}, name="MCP tools/list")
-
-    @task(10)
+    @task(1)
     def tools_call(self):
         if not self._ready:
             return
@@ -455,9 +446,3 @@ class MCPGatewayUser(HttpUser):
             return
         tool, args = random.choice(candidates)
         self._mcp_request("tools/call", {"name": tool, "arguments": args}, name="MCP tools/call")
-
-    @task(2)
-    def ping(self):
-        if not self._ready or STATELESS:
-            return
-        self._mcp_request("ping", None, name="MCP ping")
