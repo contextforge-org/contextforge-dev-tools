@@ -85,9 +85,9 @@ serves public JWKS on the dataplane network namespace's loopback interface. The
 config helper signs test tokens and writes named MessagePack routing snapshots
 directly to Redis. Production dataplane images work without `with_tools`; that
 feature is only for testing the dataplane's optional administrative helpers.
-The helper image builds this Rust CLI from its embedded sources on first use,
-with Docker caching subsequent builds. JWT/JWKS and Redis configuration run as
-private CLI commands. The tooling image also contains pinned upstream conformance
+The published helper image contains this Rust CLI. Explicit source builds use
+its embedded sources and Docker build cache. JWT/JWKS and Redis configuration
+run as private CLI commands. The tooling image also contains pinned upstream conformance
 and Inspector packages; Docker caches their installation without using the host npm
 cache. Authentication proxies and the Rust client driver run in that container,
 which joins the stack network without a Docker socket mount. Reports are written
