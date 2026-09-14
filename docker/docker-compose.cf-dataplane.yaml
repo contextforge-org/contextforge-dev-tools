@@ -101,6 +101,10 @@ services:
         condition: service_healthy
       dataplane:
         condition: service_started
+      # Gate the public entrypoint on registration. Making dataplane depend on
+      # registration would cycle through gateway -> auth -> dataplane.
+      register_fast_time:
+        condition: service_completed_successfully
 
 volumes:
   integration_auth:

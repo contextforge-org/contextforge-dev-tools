@@ -65,15 +65,17 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         self.with_managed_authenticated_target(
             args.topology,
             &server_id,
-            args.standalone,
-            args.observability,
-            session::StandaloneBackend::FastTime(args.client_era),
+            session::ManagedTargetOptions::load(
+                args.standalone,
+                args.observability,
+                args.client_era,
+            ),
             |token, standalone_tool_names| async move {
                 let project = if args.standalone {
                     self.standalone_dataplane_project(args.observability)
                         .with_profiles(["performance"])
                 } else {
-                    self.performance_compose_project(args.topology, args.observability)
+                    self.performance_compose_project(args.topology, args.observability, true)
                 };
                 let command = LocustCommand::new(
                     &self.config,

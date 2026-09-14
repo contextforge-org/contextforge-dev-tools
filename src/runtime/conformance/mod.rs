@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use crate::conformance::DEFAULT_MCP_SPEC_VERSION;
 use crate::conformance::profile::{
-    LEGACY_CLIENT_PROTOCOL_VERSIONS, MODERN_CLIENT_PROTOCOL_VERSIONS,
+    LEGACY_CLIENT_PROTOCOL_VERSIONS, LEGACY_MCP_SPEC_VERSION, MODERN_CLIENT_PROTOCOL_VERSIONS,
 };
 use crate::conformance::results::{DEFAULT_CONFORMANCE_SUITE, ScenarioOutcome};
 
@@ -1582,7 +1582,9 @@ fn render_conformance_results(
 }
 
 fn client_era_for_version(client_version: &str) -> &'static str {
-    if LEGACY_CLIENT_PROTOCOL_VERSIONS.contains(&client_version) {
+    if client_version == LEGACY_MCP_SPEC_VERSION
+        || LEGACY_CLIENT_PROTOCOL_VERSIONS.contains(&client_version)
+    {
         "legacy"
     } else if MODERN_CLIENT_PROTOCOL_VERSIONS.contains(&client_version) {
         "modern"
@@ -1950,6 +1952,11 @@ mod tests {
             ]),
             [StackMode::Controlplane, StackMode::Dataplane]
         );
+    }
+
+    #[test]
+    fn historical_client_revision_keeps_the_legacy_label() {
+        assert_eq!(client_era_for_version(LEGACY_MCP_SPEC_VERSION), "legacy");
     }
 
     #[test]

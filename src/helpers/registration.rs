@@ -28,7 +28,7 @@ async fn register_with_credentials(
     let http = Client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(60))
+        .timeout(Duration::from_secs(30))
         .build()?;
     let mut healthy = false;
     for _ in 0..30 {

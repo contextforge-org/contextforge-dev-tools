@@ -440,9 +440,6 @@ class MCPGatewayUser(HttpUser):
     def tools_call(self):
         if not self._ready:
             return
-        candidates = [(name, tool_call_args(name)) for name in self._tool_names]
-        candidates = [(name, args) for name, args in candidates if args is not None]
-        if not candidates:
-            return
-        tool, args = random.choice(candidates)
+        tool = random.choice(self._tool_names)
+        args = tool_call_args(tool)
         self._mcp_request("tools/call", {"name": tool, "arguments": args}, name="MCP tools/call")

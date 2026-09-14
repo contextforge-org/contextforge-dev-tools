@@ -58,6 +58,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 - Stop load immediately after the first request or user error and retain failure
   reports. Do not start workload tasks after a failed initialized notification.
+- Apply the builtin load proxy only to load runs, require successful Fast Time
+  registration before exposing the external public route, and keep shared
+  publisher-schema errors workflow-neutral.
 - Legacy load clients now use the revision negotiated during initialization,
   reject unsupported revisions, and skip workload requests after failed
   initialization or discovery.

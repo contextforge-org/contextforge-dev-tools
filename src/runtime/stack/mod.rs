@@ -360,9 +360,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         &self,
         mode: StackMode,
         observability: bool,
+        load: bool,
     ) -> ComposeProject {
         let project = self.routed_compose_project(mode);
-        let project = if mode == StackMode::Controlplane {
+        let project = if mode == StackMode::Controlplane && load {
             project.with_builtin_load_overlay(self.config.asset_root())
         } else {
             project
@@ -1542,6 +1543,16 @@ mod tests {
         .expect("standalone config");
         assert!(!config.controlplane_dir().exists());
         let runtime = RuntimeContext::new(config, NoProcesses);
+        assert_eq!(
+            runtime.performance_compose_project(StackMode::Controlplane, false, false),
+            runtime.routed_compose_project(StackMode::Controlplane)
+        );
+        assert_eq!(
+            runtime.performance_compose_project(StackMode::Controlplane, false, true),
+            runtime
+                .routed_compose_project(StackMode::Controlplane)
+                .with_builtin_load_overlay(runtime.config.asset_root())
+        );
         let working_directory = directory.path().join("caller");
         let command = runtime
             .target_environment(

@@ -39,6 +39,41 @@ pub(super) enum StandaloneBackend {
     FastTime(ProtocolVersion),
 }
 
+pub(super) struct ManagedTargetOptions {
+    standalone: bool,
+    observability: bool,
+    load: bool,
+    backend: StandaloneBackend,
+}
+
+impl ManagedTargetOptions {
+    pub(super) fn conformance(
+        standalone: bool,
+        observability: bool,
+        protocol_version: ProtocolVersion,
+    ) -> Self {
+        Self {
+            standalone,
+            observability,
+            load: false,
+            backend: StandaloneBackend::Conformance(protocol_version),
+        }
+    }
+
+    pub(super) fn load(
+        standalone: bool,
+        observability: bool,
+        protocol_version: ProtocolVersion,
+    ) -> Self {
+        Self {
+            standalone,
+            observability,
+            load: true,
+            backend: StandaloneBackend::FastTime(protocol_version),
+        }
+    }
+}
+
 struct ManagedSessionScope<'a, R> {
     runtime: &'a RuntimeContext<R>,
     topology: StackMode,
@@ -129,59 +164,59 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         &self,
         topology: StackMode,
         server_id: &str,
-        standalone: bool,
-        observability: bool,
-        backend: StandaloneBackend,
+        options: ManagedTargetOptions,
         operation: F,
     ) -> AppResult<()>
     where
         F: FnOnce(String, Vec<String>) -> Fut,
         Fut: Future<Output = AppResult<()>>,
     {
-        if standalone && topology != StackMode::Dataplane {
+        if options.standalone && topology != StackMode::Dataplane {
             return Err(AppFailure::from(anyhow!(
                 "standalone mode requires the external lane"
             )));
         }
-        let mut scope = ManagedSessionScope::new(self, topology, standalone);
+        let mut scope = ManagedSessionScope::new(self, topology, options.standalone);
         let primary = async {
-            let token = if standalone {
-                self.stack_up_standalone_dataplane(false, observability)
+            let token = if options.standalone {
+                self.stack_up_standalone_dataplane(false, options.observability)
                     .await?;
-                match backend {
+                match options.backend {
                     StandaloneBackend::Conformance(version) => {
-                        self.start_standalone_fixture(&version, observability)
+                        self.start_standalone_fixture(&version, options.observability)
                             .await?;
                     }
                     StandaloneBackend::FastTime(_) => {
-                        self.start_standalone_fast_time(observability).await?;
+                        self.start_standalone_fast_time(options.observability)
+                            .await?;
                     }
                 }
-                self.standalone_dataplane_token(observability)?
+                self.standalone_dataplane_token(options.observability)?
             } else {
-                let project = self.performance_compose_project(topology, observability);
-                self.stack_up_with_project(topology, false, project, false, observability)
+                let project =
+                    self.performance_compose_project(topology, options.observability, options.load);
+                self.stack_up_with_project(topology, false, project, false, options.observability)
                     .await?;
                 self.prepare_test_target(topology, server_id).await?;
                 self.managed_bearer_token(topology, server_id).await?
             };
             let value = token.value.clone();
             scope.token = Some(token);
-            let tool_names = if standalone {
-                match backend {
+            let tool_names = if options.standalone {
+                match options.backend {
                     StandaloneBackend::Conformance(version) => self
                         .publish_standalone_conformance_config(
                             server_id,
                             version.wire_version(),
                             &value,
-                            observability,
+                            options.observability,
                         )?,
                     StandaloneBackend::FastTime(version) => self
                         .publish_standalone_fast_time_config(
                             server_id,
                             version.wire_version(),
                             &value,
-                            observability,
+                            options.observability,
                         )?,
                 }
             } else {
@@ -235,7 +270,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             let snapshot = self.capture_text(&command)?;
             if let Some(reason) = snapshot.strip_prefix("incompatible: ") {
                 return Err(AppFailure::from(anyhow!(
-                    "control-plane publisher schema is incompatible with the external dataplane: {reason}; use a compatible control-plane publisher or --standalone for isolated dataplane tests. Load was not started"
+                    "control-plane publisher schema is incompatible with the external dataplane: {reason}; use a compatible control-plane publisher or --standalone for isolated dataplane tests"
                 )));
             }
             if snapshot == "1" {

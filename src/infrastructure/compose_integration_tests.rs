@@ -256,6 +256,15 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
         compose["services"]["gateway"]["volumes"][0].as_str(),
         Some("integration_auth:/keys:ro")
     );
+    assert!(
+        compose["services"]["dataplane"]["depends_on"]["register_fast_time"].is_null(),
+        "dataplane must not depend on registration because registration reaches it through gateway"
+    );
+    assert_eq!(
+        compose["services"]["nginx"]["depends_on"]["register_fast_time"]["condition"].as_str(),
+        Some("service_completed_successfully"),
+        "the public entrypoint must wait for successful Fast Time registration"
+    );
 
     for key in [
         "CONTEXTFORGE_DATA_PLANE_ADDRESS",
@@ -312,6 +321,10 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
         build["services"]["dataplane"]["build"]["dockerfile"].as_str(),
         Some("docker/Dockerfile")
     );
+
+    let load_proxy = fs::read_to_string(root.join("docker/nginx.cf-load-builtin.conf"))
+        .expect("read builtin load proxy configuration");
+    assert!(load_proxy.contains("worker_rlimit_nofile 65535;"));
 }
 
 #[test]
