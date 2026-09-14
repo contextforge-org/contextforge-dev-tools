@@ -37,6 +37,19 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- Bootstrap full-stack external authentication in the CLI: generate an RSA key,
+  configure the control plane to issue RS256 tokens, serve matching public JWKS
+  on dataplane loopback, and map control-plane subjects to the local test tenant.
+- Generate and persist a strong local admin password; supply the required
+  `DEFAULT_USER_PASSWORD` while preserving explicit credential overrides.
+- Register Fast Time through control-plane login instead of upstream's hard-coded
+  HS256 token minting. Do not print credentials during registration.
+- Reject incompatible control-plane publisher snapshots before launching load.
+- Pin every load lane to Locust 2.46.2 for comparable client measurements.
+- Skip control-plane credential construction when cleaning up standalone tokens.
+
+- Stop load immediately after the first request or user error and retain failure
+  reports. Do not start workload tasks after a failed initialized notification.
 - Legacy load clients now use the revision negotiated during initialization,
   reject unsupported revisions, and skip workload requests after failed
   initialization or discovery.

@@ -34,6 +34,7 @@ class Hook:
 
 class Events:
     quitting = Hook()
+    init = Hook()
 
 events = Events()
 
@@ -45,6 +46,11 @@ def task(_weight):
 "#,
     )
     .expect("Locust stub should be written");
+    fs::write(
+        directory.path().join("gevent.py"),
+        "def spawn_later(_delay, callback):\n    callback()\n",
+    )
+    .expect("gevent stub");
     directory
 }
 
@@ -114,6 +120,26 @@ class Environment:
 empty_environment = Environment()
 adapter.fail_empty_run(empty_environment)
 assert empty_environment.process_exit_code == 1
+
+class Hook:
+    def add_listener(self, callback): self.callback = callback
+class Events:
+    request = Hook()
+    user_error = Hook()
+class Runner:
+    stopped = 0
+    def quit(self): self.stopped += 1
+running = Environment()
+running.events = Events()
+running.runner = Runner()
+adapter.install_fail_fast(running)
+running.events.request.callback(exception=None)
+assert running.runner.stopped == 0
+running.events.request.callback(exception=RuntimeError("request failed"))
+assert running.process_exit_code == 1
+assert running.runner.stopped == 1
+running.events.user_error.callback(exception=RuntimeError("user failed"))
+assert running.runner.stopped == 1
 "#;
 
     let output = Command::new(python())
@@ -610,6 +636,22 @@ for version in ["2025-11-25", "2025-06-18", "2026-07-28", "invalid", None]:
         assert not user._ready
         assert len(user.client.requests) == 1
         assert user.client.responses[0].failures
+
+user = adapter.MCPGatewayUser()
+user.client = Client("2025-11-25")
+original_post = user.client.post
+def fail_notification(*args, **kwargs):
+    response = original_post(*args, **kwargs)
+    if response.status_code == 202:
+        response.status_code = 500
+    return response
+user.client.post = fail_notification
+user.on_start()
+user.tools_list()
+user.tools_call()
+user.ping()
+assert not user._ready
+assert [payload["method"] for payload, _ in user.client.requests] == ["initialize", "notifications/initialized"]
 "#;
     let output = Command::new(python())
         .env("PYTHONDONTWRITEBYTECODE", "1")

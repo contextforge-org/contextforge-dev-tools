@@ -8,6 +8,7 @@ use url::Url;
 
 mod auth;
 mod config;
+mod registration;
 #[cfg(test)]
 mod tests;
 pub(crate) mod tools;
@@ -23,9 +24,20 @@ struct HelperArgs {
 
 #[derive(Subcommand)]
 enum HelperCommand {
-    Auth,
+    Auth {
+        #[arg(long)]
+        share_controlplane_key: bool,
+    },
+    RegisterFastTime {
+        health_url: Url,
+        backend_url: Url,
+        server_id: String,
+    },
     Health,
-    Token { tenant_id: String, user_id: String },
+    Token {
+        tenant_id: String,
+        user_id: String,
+    },
     Fixture(ConfigArgs),
 }
 
@@ -38,12 +50,25 @@ struct ConfigArgs {
 
 pub(crate) async fn run(arguments: &[OsString]) -> Result<()> {
     let args = match HelperArgs::try_parse_from(arguments)?.command {
-        HelperCommand::Auth => {
+        HelperCommand::Auth {
+            share_controlplane_key,
+        } => {
             let router = auth::router(std::path::Path::new(KEY_PATH))?;
+            if share_controlplane_key {
+                auth::share_controlplane_key(std::path::Path::new(KEY_PATH))?;
+            }
             let listener = tokio::net::TcpListener::bind(JWKS_ADDRESS).await?;
             axum::serve(listener, router)
                 .with_graceful_shutdown(shutdown_signal())
                 .await?;
+            return Ok(());
+        }
+        HelperCommand::RegisterFastTime {
+            health_url,
+            backend_url,
+            server_id,
+        } => {
+            registration::register(health_url, backend_url, &server_id).await?;
             return Ok(());
         }
         HelperCommand::Health => {

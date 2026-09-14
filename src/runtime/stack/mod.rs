@@ -534,6 +534,16 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 self.config.key_file_password().value.clone(),
             );
 
+        if self
+            .environment_text("DEFAULT_USER_PASSWORD")
+            .is_none_or(str::is_empty)
+        {
+            command = command.env(
+                "DEFAULT_USER_PASSWORD",
+                self.config.platform_admin_password().value.clone(),
+            );
+        }
+
         for (key, default) in [
             ("PASSWORD_CHANGE_ENFORCEMENT_ENABLED", "false"),
             ("ADMIN_REQUIRE_PASSWORD_CHANGE_ON_BOOTSTRAP", "false"),
@@ -973,6 +983,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let mut services = std::collections::BTreeMap::new();
         for service in [
             "gateway",
+            "auth",
             "dataplane",
             "nginx",
             "postgres",
@@ -1552,11 +1563,53 @@ mod tests {
             "GUNICORN_WORKERS",
             "GATEWAY_CPU_LIMIT",
             "PLATFORM_ADMIN_PASSWORD",
+            "DEFAULT_USER_PASSWORD",
             "FAST_TIME_IMAGE",
         ] {
             assert!(
                 !values.contains_key(OsStr::new(key)),
                 "standalone inherited control-plane setup: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn routed_environment_supplies_required_default_user_password() {
+        use crate::infrastructure::config::{ConfigBootstrap, ConfigRequirements, Environment};
+        for explicit in [None, Some(""), Some("custom-user-password")] {
+            let directory = tempfile::tempdir().expect("temporary root");
+            let mut environment = Environment::from([
+                ("CF_CONTROLPLANE_IMAGE".into(), "test/controlplane".into()),
+                (
+                    "PLATFORM_ADMIN_PASSWORD".into(),
+                    "local-admin-password".into(),
+                ),
+                ("GATEWAY_CPU_LIMIT".into(), "1".into()),
+                ("GUNICORN_WORKERS".into(), "1".into()),
+                ("HOST_UID".into(), "123".into()),
+                ("HOST_GID".into(), "456".into()),
+            ]);
+            if let Some(value) = explicit {
+                environment.insert("DEFAULT_USER_PASSWORD".into(), value.into());
+            }
+            let config = AppConfig::load(
+                ConfigBootstrap::load(&environment, directory.path()).expect("bootstrap"),
+                ConfigRequirements::Runtime,
+            )
+            .expect("runtime config");
+            let runtime = RuntimeContext::new(config, NoProcesses);
+            let command = runtime
+                .compose_environment(CommandSpec::new("docker"), StackMode::Controlplane, false)
+                .expect("compose environment");
+            assert_eq!(
+                command
+                    .environment()
+                    .get(OsStr::new("DEFAULT_USER_PASSWORD")),
+                Some(&OsString::from(
+                    explicit
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or("local-admin-password")
+                ))
             );
         }
     }

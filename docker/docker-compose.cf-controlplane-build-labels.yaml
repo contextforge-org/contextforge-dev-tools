@@ -10,7 +10,7 @@ services:
       # flow. These values are local integration credentials, not production
       # defaults.
       PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-admin@example.com}
-      PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:-changeme}
+      PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:?CLI supplies a generated local password}
       PASSWORD_CHANGE_ENFORCEMENT_ENABLED: ${PASSWORD_CHANGE_ENFORCEMENT_ENABLED:-false}
       ADMIN_REQUIRE_PASSWORD_CHANGE_ON_BOOTSTRAP: ${ADMIN_REQUIRE_PASSWORD_CHANGE_ON_BOOTSTRAP:-false}
       REQUIRE_PASSWORD_CHANGE_FOR_DEFAULT_PASSWORD: ${REQUIRE_PASSWORD_CHANGE_FOR_DEFAULT_PASSWORD:-false}
@@ -29,9 +29,18 @@ services:
         org.opencontainers.image.ref.name: ${CF_CONTROLPLANE_CHECKOUT_REF:-unknown}
 
   register_fast_time:
-    pull_policy: ${CF_CONTROLPLANE_PULL_POLICY:-always}
+    image: cf-integration-helpers:0.3.2-rust
+    pull_policy: build
+    build:
+      context: ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}
+      dockerfile: docker/helpers.Dockerfile
     labels:
       name: cf-register-fast-time
+    entrypoint: ["cf-integration"]
+    environment:
+      PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-admin@example.com}
+      PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:?CLI supplies a generated local password}
+    command: ["__helper", "register-fast-time", "http://fast_time_server:9080/health", "http://fast_time_server:9080/mcp", "${CF_FAST_TIME_SERVER_ID:-9779b6698cbd4b4995ee04a4fab38737}"]
 
   fast_time_server:
     image: ${FAST_TIME_IMAGE:-ghcr.io/ibm/cfex-mcp-fast-time-server:latest}
@@ -59,10 +68,12 @@ services:
       name: cf-redis
 
   locust:
+    image: locustio/locust:2.46.2
     labels:
       name: cf-locust
 
   locust_worker:
+    image: locustio/locust:2.46.2
     labels:
       name: cf-locust-worker
 

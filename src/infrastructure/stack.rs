@@ -244,6 +244,7 @@ impl FreshnessSnapshot {
     pub(crate) fn evaluate(&self) -> StackFreshness {
         for service in [
             "gateway",
+            "auth",
             "dataplane",
             "nginx",
             "postgres",

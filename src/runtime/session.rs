@@ -11,6 +11,20 @@ for _, key in ipairs(redis.call('KEYS', '*UserConfig*')) do
             and type(config) == 'table'
             and type(config.virtual_hosts) == 'table'
             and config.virtual_hosts[ARGV[1]] ~= nil then
+            local host = config.virtual_hosts[ARGV[1]]
+            if type(host.backends) ~= 'table' then
+                return 'incompatible: virtual host has no backends map'
+            end
+            for _, backend in pairs(host.backends) do
+                if type(backend.mcp_protocol_version) ~= 'string' then
+                    return 'incompatible: backend is missing mcp_protocol_version'
+                end
+            end
+            for _, catalog in ipairs({'tools', 'resources', 'resource_templates', 'prompts'}) do
+                if type(host[catalog]) ~= 'table' then
+                    return 'incompatible: virtual host is missing the ' .. catalog .. ' route map'
+                end
+            end
             return 1
         end
     end
@@ -196,7 +210,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 "0",
                 server_id,
             ]);
-            if self.capture_text(&command)?.as_str() == "1" {
+            let snapshot = self.capture_text(&command)?;
+            if let Some(reason) = snapshot.strip_prefix("incompatible: ") {
+                return Err(AppFailure::from(anyhow!(
+                    "control-plane publisher schema is incompatible with the external dataplane: {reason}; use a compatible control-plane publisher or --standalone for isolated dataplane tests. Load was not started"
+                )));
+            }
+            if snapshot == "1" {
                 return Ok(());
             }
             let now = tokio::time::Instant::now();

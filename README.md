@@ -96,9 +96,23 @@ checkouts or generated control-plane secrets.
 Routes and tool schemas are discovered from every catalog page of the running
 fixture, including the selected protocol era's diagnostic tools and prompts.
 
-Control-plane-backed external runs require `CONTEXTFORGE_DATA_PLANE_JWKS_URL`
-to point to the HTTPS JWKS provider for the control plane's signing keys.
-Standalone runs supply their own loopback JWKS provider.
+Control-plane-backed external runs configure RS256 signing automatically and
+serve its matching public JWKS on loopback. The private key is shared only with
+the control plane through a Compose volume; the dataplane never mounts it.
+A local principal mapping uses the control-plane user UUID and a single harness
+tenant. The control plane still issues and revokes managed tokens and publishes
+user routing configurations. Standalone runs use the harness token issuer.
+The CLI rejects incompatible publisher schemas before starting the workload;
+client era selection cannot repair a control-plane/dataplane schema mismatch.
+
+The CLI generates a strong local admin password in `CF_INTEGRATION_DIR/admin-password`
+(mode `0600`) and reuses it across runs. `PLATFORM_ADMIN_PASSWORD` overrides it;
+`DEFAULT_USER_PASSWORD` defaults to that effective password. Existing databases
+need their original admin password. Fast Time registration logs in through the
+control-plane API and never prints tokens. All load lanes use Locust 2.46.2.
+Load stops on the first request or user error, saves failure reports, and exits
+nonzero. `locust.json` contains the final statistics even when an early failure
+stops the CSV sampling loop. Run a smoke before starting a measured load.
 
 Use `cf-integration <command> --help` for the complete interface.
 

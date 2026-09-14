@@ -252,7 +252,10 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
     let environment = compose["services"]["dataplane"]["environment"]
         .as_mapping()
         .expect("dataplane environment must be a mapping");
-    assert!(compose["services"]["gateway"]["volumes"].is_null());
+    assert_eq!(
+        compose["services"]["gateway"]["volumes"][0].as_str(),
+        Some("integration_auth:/keys:ro")
+    );
 
     for key in [
         "CONTEXTFORGE_DATA_PLANE_ADDRESS",
@@ -320,7 +323,7 @@ fn controlplane_image_consumers_share_the_explicit_pull_policy() {
     let compose: yaml_serde::Value =
         yaml_serde::from_str(&compose).expect("parse controlplane metadata overlay");
 
-    for service in ["gateway", "migration", "register_fast_time"] {
+    for service in ["gateway", "migration"] {
         assert_eq!(
             compose["services"][service]["pull_policy"].as_str(),
             Some("${CF_CONTROLPLANE_PULL_POLICY:-always}"),

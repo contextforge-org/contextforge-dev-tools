@@ -11,22 +11,49 @@
 #     up
 
 services:
-  # cf-controlplane's upstream compose service key is gateway; expose it as
-  # cf-controlplane on mcpnet. DATAPLANE_PUBLISHER is the only behavioral
-  # change to the upstream gateway: it publishes virtual server configs to
-  # Redis for cf-dataplane.
+  # The control plane issues RS256 credentials; the harness serves only the
+  # matching public JWKS on the dataplane's loopback network namespace.
   gateway:
     networks:
       mcpnet:
         aliases:
           - cf-controlplane
+    group_add: ["0"]
+    volumes:
+      - integration_auth:/keys:ro
+    depends_on:
+      auth:
+        condition: service_healthy
     environment:
+      JWT_ALGORITHM: RS256
+      JWT_PRIVATE_KEY_PATH: /keys/jwt.key
+      JWT_PUBLIC_KEY_PATH: /keys/jwt.pub
       DATAPLANE_PUBLISHER: "true"
       # Short snapshot interval so runtime-created users/servers reach the
       # dataplane quickly in functional runs; raise for load benchmarks.
       # Requires a control-plane image with configurable publisher interval;
       # older images ignore the variable (60s behavior).
       DATAPLANE_PUBLISHER_INTERVAL_SECONDS: ${CF_DATAPLANE_PUBLISHER_INTERVAL_SECONDS:-2}
+  auth:
+    image: cf-integration-helpers:0.3.2-rust
+    pull_policy: build
+    build:
+      context: ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}
+      dockerfile: docker/helpers.Dockerfile
+    labels:
+      name: cf-dataplane-auth
+    restart: "no"
+    network_mode: service:dataplane
+    volumes:
+      - integration_auth:/keys
+    command: ["__helper", "auth", "--share-controlplane-key"]
+    healthcheck:
+      test: ["CMD", "cf-integration", "__helper", "health"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
   dataplane:
     image: ${CF_DATAPLANE_IMAGE:?Set CF_DATAPLANE_IMAGE to the cf-dataplane image tag}
     pull_policy: ${CF_DATAPLANE_PULL_POLICY:-always}
@@ -38,6 +65,9 @@ services:
       mcpnet:
         aliases:
           - cf-dataplane
+    command: ["--cel-principal-extractor-path", "/config/controlplane-principal.cel"]
+    volumes:
+      - ${CF_INTEGRATION_ROOT}/docker/controlplane-principal.cel:/config/controlplane-principal.cel:ro
     expose:
       - "4445"
     environment:
@@ -45,7 +75,7 @@ services:
       CONTEXTFORGE_DATA_PLANE_REDIS_HOSTNAME: redis
       CONTEXTFORGE_DATA_PLANE_REDIS_PORT: "6379"
       CONTEXTFORGE_DATA_PLANE_REDIS_CONNECTION_MODE: plain-text
-      CONTEXTFORGE_DATA_PLANE_JWKS_URL: ${CONTEXTFORGE_DATA_PLANE_JWKS_URL:-}
+      CONTEXTFORGE_DATA_PLANE_JWKS_URL: http://127.0.0.1:4446/.well-known/jwks.json
       CONTEXTFORGE_DATA_PLANE_UPSTREAM_CONNECTION_MODE: plain-text-or-tls
       # These two MCP transport settings intentionally retain the historical
       # prefix in the current dataplane configuration contract.
@@ -71,3 +101,6 @@ services:
         condition: service_healthy
       dataplane:
         condition: service_started
+
+volumes:
+  integration_auth:

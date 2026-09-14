@@ -286,6 +286,7 @@ fn current_snapshot() -> FreshnessSnapshot {
         ("postgres", "postgres", None),
         ("pgbouncer", "pgbouncer", None),
         ("redis", "redis", None),
+        ("auth", "auth", None),
         ("fast_time_server", "fast-image", None),
     ]
     .into_iter()
