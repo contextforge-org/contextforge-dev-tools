@@ -115,6 +115,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         }
         command
             .env("CF_INTEGRATION_ROOT", self.config.asset_root().as_os_str())
+            .env("CF_HARNESS_VERSION", env!("CARGO_PKG_VERSION"))
             .env(CONFORMANCE_SERVER_ERA_ENV, server_era.label())
     }
 

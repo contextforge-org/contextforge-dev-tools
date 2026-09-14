@@ -12,14 +12,16 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 .context("CF_COMPOSE_BUILD must be UTF-8")?,
         )
         .map_err(|error| AppFailure::from(anyhow!(error)))?;
-        Ok(command.env(
-            "CF_HARNESS_PULL_POLICY",
-            if mode == BuildMode::Always {
-                "build"
-            } else {
-                "missing"
-            },
-        ))
+        Ok(command
+            .env("CF_HARNESS_VERSION", env!("CARGO_PKG_VERSION"))
+            .env(
+                "CF_HARNESS_PULL_POLICY",
+                if mode == BuildMode::Always {
+                    "build"
+                } else {
+                    "missing"
+                },
+            ))
     }
 
     pub(super) fn prepare_harness_image_command(
@@ -184,6 +186,13 @@ mod tests {
                         service,
                     )
                     .expect("image preparation");
+                assert_eq!(
+                    command
+                        .environment()
+                        .get(OsStr::new("CF_HARNESS_VERSION"))
+                        .expect("CLI image version"),
+                    env!("CARGO_PKG_VERSION")
+                );
                 let args = command.arguments();
                 assert_eq!(args[1], expected);
                 if setting != "true" {

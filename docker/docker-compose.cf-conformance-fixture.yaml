@@ -1,7 +1,7 @@
 services:
   mcp_conformance_server:
     profiles: ["conformance"]
-    image: ${CF_CONFORMANCE_IMAGE:-ghcr.io/contextforge-org/cf-integration-fixture:0.4.0}
+    image: ${CF_CONFORMANCE_IMAGE:-ghcr.io/contextforge-org/cf-integration-fixture:${CF_HARNESS_VERSION:?Set CF_HARNESS_VERSION to the cf-integration version}}
     labels:
       name: cf-conformance-server
     pull_policy: ${CF_HARNESS_PULL_POLICY:-missing}

@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import time
+from pathlib import Path
 
 
 def docker(*arguments):
@@ -15,6 +16,19 @@ def main():
     """Smoke test images before their release tags are published."""
     version = os.environ["IMAGE_VERSION"]
     prefix = "ghcr.io/contextforge-org/cf-integration-"
+    os.environ.update({
+        "CF_INTEGRATION_ROOT": str(Path.cwd()),
+        "CF_HARNESS_VERSION": version,
+        "CF_CONFORMANCE_SERVER_ERA": "legacy",
+    })
+    compose = ["compose", "--profile", "conformance", "-f", "docker/docker-compose.cf-conformance-fixture.yaml", "config", "--format", "json"]
+    fixture = json.loads(docker(*compose))["services"]["mcp_conformance_server"]
+    assert fixture["image"] == f"{prefix}fixture:{version}", fixture
+    assert fixture["pull_policy"] == "missing", fixture
+    os.environ["CF_CONFORMANCE_IMAGE"] = f"{prefix}fixture:preloaded"
+    overridden = json.loads(docker(*compose))["services"]["mcp_conformance_server"]
+    assert overridden["image"] == os.environ.pop("CF_CONFORMANCE_IMAGE"), overridden
+
     for image in ("helpers", "tools"):
         output = docker("run", "--rm", "--entrypoint", "cf-integration", f"{prefix}{image}:{version}", "--version")
         assert output == f"cf-integration {version.rsplit('-', 1)[0]}", output

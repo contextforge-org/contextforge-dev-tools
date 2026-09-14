@@ -754,7 +754,7 @@ fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
 services:
   mcp_conformance_server:
     profiles: ["conformance"]
-    image: ${CF_CONFORMANCE_IMAGE:-ghcr.io/contextforge-org/cf-integration-fixture:0.4.0}
+    image: ${CF_CONFORMANCE_IMAGE:-ghcr.io/contextforge-org/cf-integration-fixture:${CF_HARNESS_VERSION:?Set CF_HARNESS_VERSION to the cf-integration version}}
     pull_policy: ${CF_HARNESS_PULL_POLICY:-missing}
     labels:
       name: cf-conformance-server
@@ -1067,8 +1067,7 @@ fn harness_images_match_the_cli_release_and_allow_prebuilt_overrides() {
         .expect("valid compose YAML");
         let entry = &value["services"][service];
         let expected = format!(
-            "${{{variable}:-ghcr.io/contextforge-org/cf-integration-{image}:{}}}",
-            env!("CARGO_PKG_VERSION")
+            "${{{variable}:-ghcr.io/contextforge-org/cf-integration-{image}:${{CF_HARNESS_VERSION:?Set CF_HARNESS_VERSION to the cf-integration version}}}}"
         );
         assert_eq!(entry["image"].as_str(), Some(expected.as_str()));
         assert_eq!(
