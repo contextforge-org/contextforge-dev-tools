@@ -751,7 +751,8 @@ fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
 services:
   mcp_conformance_server:
     profiles: ["conformance"]
-    image: cf-integration/mcp-conformance-server:0.2.0-alpha.11
+    image: ${CF_CONFORMANCE_IMAGE:-ghcr.io/contextforge-org/cf-integration-fixture:0.4.0}
+    pull_policy: ${CF_HARNESS_PULL_POLICY:-missing}
     labels:
       name: cf-conformance-server
     build:
@@ -1013,4 +1014,49 @@ fn multiple_violations_have_stable_contract_order() {
             "register_fast_time does not register the streamable HTTP endpoint at /mcp",
         ]
     );
+}
+
+#[test]
+fn harness_images_match_the_cli_release_and_allow_prebuilt_overrides() {
+    for (file, service, variable, image) in [
+        (
+            "docker-compose.cf-tools.yaml",
+            "mcp_tools",
+            "CF_MCP_TOOLS_IMAGE",
+            "tools",
+        ),
+        (
+            "docker-compose.cf-conformance-fixture.yaml",
+            "mcp_conformance_server",
+            "CF_CONFORMANCE_IMAGE",
+            "fixture",
+        ),
+        (
+            "docker-compose.cf-dataplane-config.yaml",
+            "config_writer",
+            "CF_HELPERS_IMAGE",
+            "helpers",
+        ),
+        (
+            "docker-compose.cf-dataplane-standalone.yaml",
+            "auth",
+            "CF_HELPERS_IMAGE",
+            "helpers",
+        ),
+    ] {
+        let value: yaml_serde::Value = yaml_serde::from_str(
+            &fs::read_to_string(workspace_root().join("docker").join(file)).expect("compose file"),
+        )
+        .expect("valid compose YAML");
+        let entry = &value["services"][service];
+        let expected = format!(
+            "${{{variable}:-ghcr.io/contextforge-org/cf-integration-{image}:{}}}",
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(entry["image"].as_str(), Some(expected.as_str()));
+        assert_eq!(
+            entry["pull_policy"].as_str(),
+            Some("${CF_HARNESS_PULL_POLICY:-missing}")
+        );
+    }
 }

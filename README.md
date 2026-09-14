@@ -21,8 +21,18 @@ cargo install cf-integration --locked
 
 Use `cargo run --` before a command when running this checkout. Runtime use
 requires Docker Compose v2 and Git. Node/npm are installed and run only inside
-Docker images, including conformance and Inspector. Rust 1.97 is
-needed only to compile the CLI or a local dataplane image.
+Docker images, including conformance and Inspector. The release workflow publishes
+versioned fixture, tooling, and helper images; normal runs pull missing images
+and reuse existing copies without compiling Rust or installing npm packages.
+Use `CF_COMPOSE_BUILD=true` to rebuild images while developing the harness.
+`CF_CONFORMANCE_IMAGE`, `CF_MCP_TOOLS_IMAGE`, and `CF_HELPERS_IMAGE` select
+prebuilt alternatives, including images loaded by another CI workflow. Rust 1.97
+is needed only for explicit source builds.
+
+The release publishes amd64 and arm64 images after container smoke tests. The
+`cf-integration-fixture`, `cf-integration-tools`, and `cf-integration-helpers`
+GHCR packages must be public so normal runs can pull them without credentials.
+The CLI release stays a draft until image publication succeeds.
 
 Published images are the default. Set `CF_DATAPLANE_REF` to build and test a
 local dataplane ref.

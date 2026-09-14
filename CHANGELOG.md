@@ -7,6 +7,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-14
+
 ### Added
 
 - Visible one-letter aliases for every public command and short flags for all
@@ -14,6 +16,11 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   client era. `--help` lists the complete mappings.
 
 ### Changed
+
+- Pull versioned conformance fixture, tooling, and helper images published by the
+  release workflow instead of compiling them during normal runs. Reuse images
+  already present on the Docker daemon; `CF_COMPOSE_BUILD=true` explicitly
+  rebuilds them for local harness development.
 
 - Load result labels and report folders now use `builtin` and `external`.
   Reports are separated by client era so a legacy fallback preserves modern-run

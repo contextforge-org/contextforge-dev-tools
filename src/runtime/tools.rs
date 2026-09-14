@@ -3,6 +3,42 @@
 use super::*;
 
 impl<R: ProcessRunner> RuntimeContext<R> {
+    pub(super) fn harness_image_environment(&self, command: CommandSpec) -> AppResult<CommandSpec> {
+        let mode = BuildMode::from_str(
+            self.config
+                .compose_build()
+                .value
+                .to_str()
+                .context("CF_COMPOSE_BUILD must be UTF-8")?,
+        )
+        .map_err(|error| AppFailure::from(anyhow!(error)))?;
+        Ok(command.env(
+            "CF_HARNESS_PULL_POLICY",
+            if mode == BuildMode::Always {
+                "build"
+            } else {
+                "missing"
+            },
+        ))
+    }
+
+    pub(super) fn prepare_harness_image_command(
+        &self,
+        compose: CommandSpec,
+        service: &str,
+    ) -> AppResult<CommandSpec> {
+        let compose = self.harness_image_environment(compose)?;
+        if compose
+            .environment()
+            .get(OsStr::new("CF_HARNESS_PULL_POLICY"))
+            == Some(&OsString::from("build"))
+        {
+            Ok(compose.args(["build", service]))
+        } else {
+            Ok(compose.args(["pull", "--policy", "missing", service]))
+        }
+    }
+
     pub(super) async fn run_tool(
         &self,
         compose: CommandSpec,
@@ -11,8 +47,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         log: Option<&Path>,
         cancellation: tokio::sync::watch::Receiver<bool>,
     ) -> AppResult<()> {
-        let compose = self.host_identity_environment(compose)?;
-        let build = compose.clone().args(["build", "mcp_tools"]);
+        let compose = self.harness_image_environment(self.host_identity_environment(compose)?)?;
+        let build = self.prepare_harness_image_command(compose.clone(), "mcp_tools")?;
         self.run_tool_process(&build, log, cancellation.clone())
             .await?;
         if *cancellation.borrow() {
@@ -119,6 +155,53 @@ mod tests {
         }
         fn run_to_log(&self, spec: &CommandSpec, _: &Path) -> Result<(), InfrastructureError> {
             self.run(spec)
+        }
+    }
+
+    #[test]
+    fn harness_images_are_pulled_unless_source_builds_are_explicit() {
+        for (setting, expected) in [("auto", "pull"), ("false", "pull"), ("true", "build")] {
+            let directory = tempfile::tempdir().expect("workspace");
+            let config = crate::runtime::tests::app_config(
+                directory.path(),
+                "http://127.0.0.1:8080",
+                &[("CF_COMPOSE_BUILD", setting)],
+            );
+            let (sender, _) = tokio::sync::watch::channel(false);
+            let runtime = RuntimeContext::new(
+                config,
+                FailingRunner {
+                    commands: RefCell::default(),
+                    fail_at: "unused",
+                    interrupt: false,
+                    cancellation: sender,
+                },
+            );
+            for service in ["mcp_tools", "mcp_conformance_server"] {
+                let command = runtime
+                    .prepare_harness_image_command(
+                        CommandSpec::new("docker").arg("compose"),
+                        service,
+                    )
+                    .expect("image preparation");
+                let args = command.arguments();
+                assert_eq!(args[1], expected);
+                if setting != "true" {
+                    assert_eq!(&args[2..], ["--policy", "missing", service]);
+                    assert!(!args.iter().any(|arg| arg == "build" || arg == "--build"));
+                }
+                assert_eq!(
+                    command
+                        .environment()
+                        .get(OsStr::new("CF_HARNESS_PULL_POLICY"))
+                        .expect("pull policy"),
+                    if setting == "true" {
+                        "build"
+                    } else {
+                        "missing"
+                    }
+                );
+            }
         }
     }
 

@@ -18,6 +18,12 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  images:
+    uses: ./.github/workflows/images.yml
+    permissions:
+      contents: read
+      packages: write
+
   quality:
     uses: ./.github/workflows/quality.yml
 

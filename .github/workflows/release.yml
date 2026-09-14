@@ -160,9 +160,21 @@ jobs:
           RELEASES: ${{ steps.release-plz.outputs.releases }}
         run: .integration/release-cli/cf-integration ci select-release
 
+  publish-images:
+    name: Publish harness images
+    needs: publish
+    if: needs.publish.outputs.tag != ''
+    uses: ./.github/workflows/images.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      publish: true
+      tag: ${{ needs.publish.outputs.tag }}
+
   publish-binaries:
     name: Publish release binaries
-    needs: [build-binaries, publish]
+    needs: [build-binaries, publish, publish-images]
     if: needs.publish.outputs.tag != ''
     runs-on: ubuntu-24.04
     permissions:

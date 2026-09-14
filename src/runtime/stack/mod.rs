@@ -28,7 +28,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 prepare_conformance_build_log(&build_log)?;
                 let quiet_runner = LoggingProcessRunner::new(&self.runner, &build_log);
                 let quiet_runtime = RuntimeContext::new(self.config.clone(), quiet_runner);
-                let build_progress = Activity::spinner("Building conformance image");
+                let build_progress = Activity::spinner("Prepare conformance image");
                 let server_era = match protocol_version {
                     ProtocolVersion::Modern => ConformanceServerEra::Modern,
                     ProtocolVersion::Legacy => ConformanceServerEra::Legacy,
@@ -614,6 +614,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         )? {
             command = command.env(COMPOSE_PROTOCOL_VERSION_ENV, protocol_version);
         }
+        let command = self.harness_image_environment(command)?;
         Ok(with_default_conformance_server_era(
             command
                 .env("CF_INTEGRATION_ROOT", self.config.asset_root().as_os_str())

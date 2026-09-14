@@ -125,13 +125,24 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         self.start_observability()?;
         let project = self.standalone_conformance_project();
         let build = self.standalone_conformance_environment(
-            project.command(["build", OFFICIAL_CONFORMANCE_SERVICE]),
+            self.prepare_harness_image_command(
+                project.command([] as [&str; 0]),
+                OFFICIAL_CONFORMANCE_SERVICE,
+            )?,
             server_era,
         );
         self.runner.run_async(&build).await?;
 
         let up = self.standalone_conformance_environment(
-            project.command(["up", "-d", "--wait", OFFICIAL_CONFORMANCE_SERVICE]),
+            project.command([
+                "up",
+                "-d",
+                "--wait",
+                "--no-build",
+                "--pull",
+                "never",
+                OFFICIAL_CONFORMANCE_SERVICE,
+            ]),
             server_era,
         );
         self.runner.run_async(&up).await.map_err(AppFailure::from)
@@ -192,7 +203,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         observability: bool,
     ) -> AppResult<()> {
         let project = self.routed_conformance_project(topology, standalone, observability);
-        let build = project.command(["build", OFFICIAL_CONFORMANCE_SERVICE]);
+        let build = self.prepare_harness_image_command(
+            project.command([] as [&str; 0]),
+            OFFICIAL_CONFORMANCE_SERVICE,
+        )?;
         let build = self
             .target_environment(build, topology, standalone)?
             .env(CONFORMANCE_SERVER_ERA_ENV, server_era.label());
@@ -211,12 +225,14 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             "up",
             "-d",
             "--wait",
+            "--no-build",
             OFFICIAL_CONFORMANCE_SERVICE,
             OFFICIAL_CONFORMANCE_PROXY_SERVICE,
         ]);
         let up = self
             .target_environment(up, topology, standalone)?
-            .env(CONFORMANCE_SERVER_ERA_ENV, server_era.label());
+            .env(CONFORMANCE_SERVER_ERA_ENV, server_era.label())
+            .env("CF_HARNESS_PULL_POLICY", "missing");
         Ok(self.runner.run_async(&up).await?)
     }
 
@@ -1827,7 +1843,7 @@ mod tests {
         let commands = runtime.runner.0.borrow();
         let build = commands
             .iter()
-            .position(|command| command.arguments().contains(&OsString::from("build")))
+            .position(|command| command.arguments().contains(&OsString::from("pull")))
             .expect("fixture setup started");
         assert!(
             commands[build + 1..]
