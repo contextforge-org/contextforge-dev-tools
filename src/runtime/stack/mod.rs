@@ -483,6 +483,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let command = self.dataplane_environment(command)?;
         let command = self
             .host_identity_environment(command)?
+            .env(
+                "FAST_TIME_IMAGE",
+                self.config.fast_time_expected_image().value.clone(),
+            )
             .env("MCP_SERVER_ID", self.default_server_id());
         if checkout_labels && !self.config.dataplane_ref().value.is_empty() {
             self.add_dataplane_checkout_labels(command)
@@ -1520,6 +1524,11 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary root");
         let environment = Environment::from([
             ("CF_DATAPLANE_PLATFORM".into(), "linux/amd64".into()),
+            (
+                "CF_FAST_TIME_EXPECTED_IMAGE".into(),
+                "test/fast-time:pinned".into(),
+            ),
+            ("FAST_TIME_IMAGE".into(), "ignored/legacy:image".into()),
             ("CF_DATAPLANE_IMAGE".into(), "test/dataplane".into()),
             ("CF_DATAPLANE_PULL_POLICY".into(), "never".into()),
             ("HOST_UID".into(), "123".into()),
@@ -1551,6 +1560,7 @@ mod tests {
         );
         for (key, expected) in [
             ("CF_DATAPLANE_IMAGE", "test/dataplane"),
+            ("FAST_TIME_IMAGE", "test/fast-time:pinned"),
             ("CF_DATAPLANE_PULL_POLICY", "never"),
             ("HOST_UID", "123"),
             ("HOST_GID", "456"),
@@ -1569,7 +1579,6 @@ mod tests {
             "GATEWAY_CPU_LIMIT",
             "PLATFORM_ADMIN_PASSWORD",
             "DEFAULT_USER_PASSWORD",
-            "FAST_TIME_IMAGE",
         ] {
             assert!(
                 !values.contains_key(OsStr::new(key)),

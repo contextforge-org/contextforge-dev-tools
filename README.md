@@ -113,8 +113,9 @@ The CLI generates a strong local admin password in `CF_INTEGRATION_DIR/admin-pas
 `DEFAULT_USER_PASSWORD` defaults to that effective password. Existing databases
 need their original admin password. Fast Time registration logs in through the
 control-plane API and never prints tokens. All load lanes use Locust 2.46.2.
-Builtin load uses the control plane's performance nginx configuration; external
-proxies pool upstream connections and refresh Docker DNS after backend restarts.
+Load proxies pool upstream connections and refresh Docker DNS after backend
+restarts. Builtin load routes directly to the active gateway listener on 4444,
+with a shorter idle pool timeout than the backend.
 Load stops on the first request or user error, saves failure reports, and exits
 nonzero. `locust.json` contains the final statistics even when an early failure
 stops the CSV sampling loop. Run a smoke before starting a measured load.
@@ -190,7 +191,7 @@ Locust client: legacy uses initialization and the server's negotiated revision;
 modern uses discovery and per-request metadata. Exact revision selectors and
 `MCP_PROTOCOL_VERSION` overrides are not part of the load interface.
 
-Every load lane uses the Fast Time server with the same `FAST_TIME_IMAGE`
+Every load lane uses the Fast Time server with the same `CF_FAST_TIME_EXPECTED_IMAGE`
 override and the same `echo` payload (`{"message":"cf-integration"}`). Pin that
 image to a digest when comparing lanes. The measured workload contains only
 `tools/call`; initialization/discovery and builtin tool-name discovery happen

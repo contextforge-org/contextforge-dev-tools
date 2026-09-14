@@ -37,7 +37,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 ### Fixed
 
 - Use Fast Time for every load lane, including standalone external, with a shared
-  `FAST_TIME_IMAGE` override. Call only echo with the same payload in both lanes;
+  `CF_FAST_TIME_EXPECTED_IMAGE` override. Call only echo with the same payload in both lanes;
   fail if it is missing. Reserve the conformance fixture for protocol workflows.
 
 - Bootstrap full-stack external authentication in the CLI: generate an RSA key,
@@ -50,8 +50,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Reject incompatible control-plane publisher snapshots before launching load.
 - Pool public and fixture proxy upstream connections with DNS refresh to prevent
   ephemeral-port exhaustion during sustained load. Pin nginx 1.30.4 and preserve
-  final JSON statistics for early-stopped runs. Builtin load uses the upstream
-  performance nginx configuration with pooled backend connections.
+  final JSON statistics for early-stopped runs. Builtin load uses pooled
+  connections directly to port 4444, avoiding the inactive 8787 listener and
+  expiring idle pooled connections before the backend closes them.
 - Pin every load lane to Locust 2.46.2 for comparable client measurements.
 - Skip control-plane credential construction when cleaning up standalone tokens.
 

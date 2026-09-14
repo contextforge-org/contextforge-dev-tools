@@ -1,5 +1,5 @@
-# Use the control plane's existing pooled upstreams for builtin load tests.
+# Route builtin load directly to the active gateway listener with pooled connections.
 services:
   nginx:
     volumes:
-      - ${CF_CONTROLPLANE_DIR:?Set CF_CONTROLPLANE_DIR}/infra/nginx/nginx-performance.conf:/etc/nginx/nginx.conf:ro
+      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT}/docker/nginx.cf-load-builtin.conf:/etc/nginx/nginx.conf:ro

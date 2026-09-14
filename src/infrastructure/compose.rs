@@ -226,7 +226,7 @@ impl ComposeProject {
         self
     }
 
-    /// Uses upstream's connection-pooled nginx configuration for builtin load.
+    /// Routes builtin load directly to the gateway using pooled connections.
     #[must_use]
     pub(crate) fn with_builtin_load_overlay(mut self, repository_root: &Path) -> Self {
         self.files

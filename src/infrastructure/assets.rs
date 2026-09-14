@@ -49,6 +49,7 @@ static ASSETS: LazyLock<Vec<EmbeddedAsset>> = LazyLock::new(|| {
         asset!("docker/docker-compose.cf-tools.yaml"),
         asset!("docker/mcp-conformance-server.Dockerfile"),
         asset!("docker/nginx.cf-conformance-proxy.conf"),
+        asset!("docker/nginx.cf-load-builtin.conf"),
         asset!("docker/nginx.cf-dataplane.conf"),
         asset!("docker/nginx.cf-dataplane-standalone.conf.template"),
         asset!("docker/mcp-conformance.patch"),
