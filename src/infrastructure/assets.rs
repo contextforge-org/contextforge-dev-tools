@@ -44,6 +44,7 @@ static ASSETS: LazyLock<Vec<EmbeddedAsset>> = LazyLock::new(|| {
         asset!("docker/docker-compose.cf-dataplane-standalone.yaml"),
         asset!("docker/docker-compose.cf-dataplane.yaml"),
         asset!("docker/docker-compose.cf-integration.yaml"),
+        asset!("docker/docker-compose.cf-load-builtin.yaml"),
         asset!("docker/docker-compose.cf-telemetry.yaml"),
         asset!("docker/docker-compose.cf-tools.yaml"),
         asset!("docker/mcp-conformance-server.Dockerfile"),

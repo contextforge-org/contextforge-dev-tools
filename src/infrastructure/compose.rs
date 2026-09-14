@@ -226,6 +226,14 @@ impl ComposeProject {
         self
     }
 
+    /// Uses upstream's connection-pooled nginx configuration for builtin load.
+    #[must_use]
+    pub(crate) fn with_builtin_load_overlay(mut self, repository_root: &Path) -> Self {
+        self.files
+            .push(repository_root.join("docker/docker-compose.cf-load-builtin.yaml"));
+        self
+    }
+
     /// Applies the control-plane runtime settings used by conformance runs.
     #[must_use]
     pub(crate) fn with_conformance_runtime(mut self, repository_root: &Path) -> Self {

@@ -45,8 +45,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Register Fast Time through control-plane login instead of upstream's hard-coded
   HS256 token minting. Do not print credentials during registration.
 - Reject incompatible control-plane publisher snapshots before launching load.
-- Reuse fixture proxy upstream connections to prevent ephemeral-port exhaustion
-  during sustained load; preserve final JSON statistics for early-stopped runs.
+- Pool public and fixture proxy upstream connections with DNS refresh to prevent
+  ephemeral-port exhaustion during sustained load. Pin nginx 1.30.4 and preserve
+  final JSON statistics for early-stopped runs. Builtin load uses the upstream
+  performance nginx configuration with pooled backend connections.
 - Pin every load lane to Locust 2.46.2 for comparable client measurements.
 - Skip control-plane credential construction when cleaning up standalone tokens.
 

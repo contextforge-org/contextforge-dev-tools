@@ -1,0 +1,5 @@
+# Use the control plane's existing pooled upstreams for builtin load tests.
+services:
+  nginx:
+    volumes:
+      - ${CF_CONTROLPLANE_DIR:?Set CF_CONTROLPLANE_DIR}/infra/nginx/nginx-performance.conf:/etc/nginx/nginx.conf:ro

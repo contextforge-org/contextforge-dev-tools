@@ -112,6 +112,8 @@ The CLI generates a strong local admin password in `CF_INTEGRATION_DIR/admin-pas
 `DEFAULT_USER_PASSWORD` defaults to that effective password. Existing databases
 need their original admin password. Fast Time registration logs in through the
 control-plane API and never prints tokens. All load lanes use Locust 2.46.2.
+Builtin load uses the control plane's performance nginx configuration; external
+proxies pool upstream connections and refresh Docker DNS after backend restarts.
 Load stops on the first request or user error, saves failure reports, and exits
 nonzero. `locust.json` contains the final statistics even when an early failure
 stops the CSV sampling loop. Run a smoke before starting a measured load.

@@ -362,6 +362,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         observability: bool,
     ) -> ComposeProject {
         let project = self.routed_compose_project(mode);
+        let project = if mode == StackMode::Controlplane {
+            project.with_builtin_load_overlay(self.config.asset_root())
+        } else {
+            project
+        };
         if observability {
             project.with_observability(self.config.asset_root(), mode == StackMode::Dataplane)
         } else {

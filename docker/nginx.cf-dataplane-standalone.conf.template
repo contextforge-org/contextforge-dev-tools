@@ -1,7 +1,15 @@
+resolver 127.0.0.11 valid=10s ipv6=off;
+upstream dataplane_backend {
+    zone dataplane_backend 64k;
+    server dataplane:4445 resolve;
+    keepalive 128;
+    keepalive_requests 10000;
+    keepalive_timeout 60s;
+}
+
 server {
     listen 80;
     server_name localhost;
-    resolver 127.0.0.11 valid=10s ipv6=off;
 
     proxy_http_version 1.1;
     proxy_set_header Host $http_host;
@@ -24,7 +32,7 @@ server {
     }
 
     location ~ ^/mcp/?$ {
-        proxy_pass http://dataplane:4445/contextforge-rs/servers/${MCP_SERVER_ID}/mcp$is_args$args;
+        proxy_pass http://dataplane_backend/contextforge-rs/servers/${MCP_SERVER_ID}/mcp$is_args$args;
         proxy_request_buffering on;
         proxy_buffering off;
         proxy_cache off;
@@ -36,7 +44,7 @@ server {
     }
 
     location ~ ^/servers/([^/]+)/mcp/?$ {
-        proxy_pass http://dataplane:4445/contextforge-rs/servers/$1/mcp$is_args$args;
+        proxy_pass http://dataplane_backend/contextforge-rs/servers/$1/mcp$is_args$args;
         proxy_request_buffering on;
         proxy_buffering off;
         proxy_cache off;
