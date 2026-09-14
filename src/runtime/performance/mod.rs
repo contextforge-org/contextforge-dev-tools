@@ -73,7 +73,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     "{}",
                     OutputStyle::stdout().test_result(
                         status,
-                        &format!("performance::{}", args.topology.lane_label()),
+                        &format!("load::{}::{}", args.topology.lane_label(), args.client_era,),
                         Some(elapsed),
                         None,
                     )

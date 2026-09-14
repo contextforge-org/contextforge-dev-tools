@@ -27,6 +27,30 @@ needed only to compile the CLI or a local dataplane image.
 Published images are the default. Set `CF_DATAPLANE_REF` to build and test a
 local dataplane ref.
 
+## Short forms
+
+Every public command and option has a short form, shown in `--help`.
+
+| Command | Alias | Subcommands |
+| --- | --- | --- |
+| `stack` | `s` | `up` → `u`, `down` → `d`, `status` → `s`, `logs` → `l`, `config` → `c` |
+| `probe` | `p` | — |
+| `load` | `l` | `run` → `r` |
+| `live` | `v` | — |
+| `conformance` | `c` | `run` → `r`, `report` → `p` |
+| `debug` | `d` | `inspect` → `i`, `token` → `t` |
+
+Common flags are `-l` for lane, `-s` for standalone, `-c` for client era,
+`-e` for server era, and `-p` for operational protocol mode. Load uses `-u`
+for users, `-r` for spawn rate, `-t` for duration, `-S` for smoke, and `-o`
+for observability. For example:
+
+```bash
+cf-integration l r -l builtin -c legacy -u 20 -r 5 -t 2m
+cf-integration l r -l external -c modern -s -u 20 -r 5 -t 2m
+cf-integration c r -l external -s -c modern -e modern
+```
+
 ## Selection
 
 Routed commands accept `--lane builtin|external`; `external` is the default.
@@ -228,7 +252,9 @@ metric such as `http.server.request.duration`, then run the query. Allow at
 least 60 seconds of traffic for multiple 30-second cumulative exports.
 Telemetry storage is ephemeral inside ClickStack.
 
-Load reports are written below `CF_INTEGRATION_DIR/reports/load`, conformance
+Load reports are written below
+`CF_INTEGRATION_DIR/reports/load/<client-era>/<lane>/locust`, using lane names
+`builtin` and `external`. Conformance
 results below `CF_INTEGRATION_DIR/conformance`, and comparison Markdown below
 `reports/conformance`. Copy [`.env.example`](.env.example) for the complete
 configuration list. Process environment values override `.env`.

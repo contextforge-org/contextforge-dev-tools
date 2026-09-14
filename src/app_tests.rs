@@ -902,3 +902,14 @@ fn conformance_legacy_and_dual_run_only_the_current_era_revisions() {
         assert_eq!(server_eras[0].label(), era);
     }
 }
+
+#[test]
+fn standalone_load_rejects_builtin_from_environment_before_runtime_setup() {
+    let cli =
+        Cli::try_parse_from(["cf-integration", "load", "run", "--standalone"]).expect("CLI syntax");
+    let environment = [(OsString::from("CF_MCP_LANE"), OsString::from("builtin"))]
+        .into_iter()
+        .collect();
+    let error = resolve_action(cli, &environment).expect_err("standalone requires external");
+    assert_eq!(error.to_string(), "--standalone requires --lane external");
+}

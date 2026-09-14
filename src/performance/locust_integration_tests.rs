@@ -189,7 +189,8 @@ fn dataplane_locust_command_has_exact_compose_shape_and_environment() {
     let report_dir = integration_dir
         .join("reports")
         .join("load")
-        .join("dataplane")
+        .join("legacy")
+        .join("external")
         .join("locust");
     assert_eq!(run.report_dir(), report_dir);
     assert!(run.report_dir().is_dir());
@@ -267,7 +268,7 @@ fn controlplane_uses_the_same_harness_mcp_adapter_and_does_not_require_server_id
     assert_eq!(
         run.report_dir(),
         root.path()
-            .join(".integration/reports/load/controlplane/locust")
+            .join(".integration/reports/load/legacy/builtin/locust")
     );
     assert_eq!(
         run.command()
@@ -435,6 +436,47 @@ fn locust_era_overrides_ambient_wire_version() {
                 .environment()
                 .get(OsStr::new("MCP_PROTOCOL_VERSION")),
             Some(&OsString::from(version))
+        );
+    }
+}
+
+#[test]
+fn load_reports_keep_each_lane_and_client_era_separate() {
+    let root = repository_root(None);
+    let config = config(root.path(), &Environment::new());
+    let settings = LoadSettings::resolve(&config, &args(true)).expect("settings");
+    let mut paths = Vec::new();
+    for (mode, slug) in [
+        (StackMode::Controlplane, "builtin"),
+        (StackMode::Dataplane, "external"),
+    ] {
+        for era in [ProtocolVersion::Modern, ProtocolVersion::Legacy] {
+            let run = LocustCommand::new(
+                &config,
+                project(&config, mode),
+                mode,
+                &settings,
+                "token",
+                Some("server-id"),
+                era,
+            )
+            .expect("Locust command");
+            let expected = config
+                .integration_dir()
+                .join("reports/load")
+                .join(era.to_string())
+                .join(slug)
+                .join("locust");
+            assert_eq!(run.report_dir(), expected);
+            assert!(!paths.contains(&expected));
+            fs::write(expected.join("locust_stats.csv"), format!("{slug},{era}")).expect("report");
+            paths.push(expected);
+        }
+    }
+    for path in paths {
+        assert!(
+            path.join("locust_stats.csv").is_file(),
+            "another lane or era removed the earlier report"
         );
     }
 }

@@ -60,7 +60,8 @@ impl LocustCommand {
             .integration_dir()
             .join("reports")
             .join("load")
-            .join(mode_name)
+            .join(client_era.to_string())
+            .join(mode.lane_label())
             .join("locust");
         fs::create_dir_all(&report_dir).with_context(|| {
             format!("failed to create Locust report directory {:?}", report_dir)

@@ -7,7 +7,17 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- Visible one-letter aliases for every public command and short flags for all
+  public options, including `-s` for standalone, `-l` for lane, and `-c` for
+  client era. `--help` lists the complete mappings.
+
 ### Changed
+
+- Load result labels and report folders now use `builtin` and `external`.
+  Reports are separated by client era so a legacy fallback preserves modern-run
+  evidence.
 
 - Conformance legacy client runs now select only
   `2025-11-25`. Dual combines it with `2026-07-28`; older exact client revision

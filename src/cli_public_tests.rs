@@ -715,3 +715,214 @@ fn load_uses_client_eras_and_rejects_version_or_server_selectors() {
         assert!(parse(&arguments).standalone);
     }
 }
+
+#[test]
+fn every_public_command_and_option_has_an_unambiguous_short_form() {
+    fn check(command: &clap::Command) {
+        for option in command
+            .get_arguments()
+            .filter(|arg| arg.get_long().is_some() && !arg.is_hide_set())
+        {
+            assert!(
+                option.get_short().is_some(),
+                "missing short flag on {}: {}",
+                command.get_name(),
+                option.get_id()
+            );
+        }
+        for child in command
+            .get_subcommands()
+            .filter(|child| !child.is_hide_set() && child.get_name() != "help")
+        {
+            assert!(
+                child.get_visible_aliases().any(|alias| alias.len() == 1),
+                "missing short command: {}",
+                child.get_name()
+            );
+            check(child);
+        }
+    }
+    Cli::command().debug_assert();
+    check(&Cli::command());
+}
+
+#[test]
+fn short_commands_and_options_resolve_identically_to_long_forms() {
+    let cases: &[(&[&str], &[&str])] = &[
+        (
+            &["s", "u", "-l", "external", "-p", "modern", "-f", "-s"],
+            &[
+                "stack",
+                "up",
+                "--lane",
+                "external",
+                "--protocol-version",
+                "modern",
+                "--fresh",
+                "--standalone",
+            ],
+        ),
+        (
+            &["s", "d", "-l", "all", "-v"],
+            &["stack", "down", "--lane", "all", "--volumes"],
+        ),
+        (
+            &["s", "s", "-l", "builtin"],
+            &["stack", "status", "--lane", "builtin"],
+        ),
+        (
+            &["s", "l", "-l", "external", "nginx"],
+            &["stack", "logs", "--lane", "external", "nginx"],
+        ),
+        (
+            &["s", "c", "-l", "external"],
+            &["stack", "config", "--lane", "external"],
+        ),
+        (
+            &["p", "-l", "builtin", "-p", "legacy"],
+            &["probe", "--lane", "builtin", "--protocol-version", "legacy"],
+        ),
+        (
+            &[
+                "l", "r", "-s", "-l", "external", "-c", "modern", "-o", "-S", "-u", "20", "-r",
+                "5", "-t", "2m",
+            ],
+            &[
+                "load",
+                "run",
+                "--standalone",
+                "--lane",
+                "external",
+                "--client-era",
+                "modern",
+                "--observability",
+                "--smoke",
+                "--users",
+                "20",
+                "--spawn-rate",
+                "5",
+                "--run-time",
+                "2m",
+            ],
+        ),
+        (
+            &["v", "-l", "builtin", "-p", "legacy", "-g", "protocol"],
+            &[
+                "live",
+                "--lane",
+                "builtin",
+                "--protocol-version",
+                "legacy",
+                "--group",
+                "protocol",
+            ],
+        ),
+        (
+            &[
+                "c",
+                "r",
+                "-l",
+                "external",
+                "-c",
+                "legacy",
+                "-c",
+                "modern",
+                "-e",
+                "dual",
+                "-r",
+                "results",
+                "-b",
+                "baselines",
+                "-B",
+                "-o",
+                "reports",
+            ],
+            &[
+                "conformance",
+                "run",
+                "--lane",
+                "external",
+                "--client-era",
+                "legacy",
+                "--client-era",
+                "modern",
+                "--server-era",
+                "dual",
+                "--results-dir",
+                "results",
+                "--baseline-dir",
+                "baselines",
+                "--bless",
+                "--output-dir",
+                "reports",
+            ],
+        ),
+        (
+            &["c", "r", "-C", "2025-11-25"],
+            &["conformance", "run", "--client-version", "2025-11-25"],
+        ),
+        (
+            &["c", "p", "-r", "results", "-o", "reports"],
+            &[
+                "conformance",
+                "report",
+                "--results-dir",
+                "results",
+                "--output-dir",
+                "reports",
+            ],
+        ),
+        (
+            &[
+                "d",
+                "i",
+                "-l",
+                "builtin",
+                "-p",
+                "legacy",
+                "-m",
+                "tools/list",
+                "-i",
+                "server",
+            ],
+            &[
+                "debug",
+                "inspect",
+                "--lane",
+                "builtin",
+                "--protocol-version",
+                "legacy",
+                "--method",
+                "tools/list",
+                "--server-id",
+                "server",
+            ],
+        ),
+        (
+            &["d", "t", "-k", "scoped", "-i", "server"],
+            &[
+                "debug",
+                "token",
+                "--kind",
+                "scoped",
+                "--server-id",
+                "server",
+            ],
+        ),
+    ];
+    for (short, long) in cases {
+        let short = ["cf-integration"]
+            .into_iter()
+            .chain(short.iter().copied())
+            .collect::<Vec<_>>();
+        let long = ["cf-integration"]
+            .into_iter()
+            .chain(long.iter().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            parse(&short),
+            parse(&long),
+            "short form mismatch for {short:?}"
+        );
+    }
+}
