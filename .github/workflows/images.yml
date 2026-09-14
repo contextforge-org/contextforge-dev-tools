@@ -135,3 +135,17 @@ jobs:
             ref="ghcr.io/contextforge-org/cf-integration-$image"
             docker buildx imagetools create --tag "$ref:$version" "$ref:$version-amd64" "$ref:$version-arm64"
           done
+
+      - name: Verify anonymous image access
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          docker logout ghcr.io
+          version=${RELEASE_TAG#v}
+          for image in fixture tools helpers; do
+            ref="ghcr.io/contextforge-org/cf-integration-$image:$version"
+            if ! docker manifest inspect "$ref" >/dev/null; then
+              echo "Make the cf-integration-$image GHCR package public, then rerun this release job." >&2
+              exit 1
+            fi
+          done

@@ -32,7 +32,9 @@ is needed only for explicit source builds.
 The release publishes amd64 and arm64 images after container smoke tests. The
 `cf-integration-fixture`, `cf-integration-tools`, and `cf-integration-helpers`
 GHCR packages must be public so normal runs can pull them without credentials.
-The CLI release stays a draft until image publication succeeds.
+The release checks anonymous image access and keeps the CLI release a draft
+until image publication succeeds. On the first release, make these GHCR
+packages public and rerun the release job if the access check fails.
 
 Published images are the default. Set `CF_DATAPLANE_REF` to build and test a
 local dataplane ref.
