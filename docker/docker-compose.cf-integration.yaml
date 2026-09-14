@@ -3,15 +3,6 @@
 # Combine with cf-controlplane docker-compose.yml and docker-compose.cf-dataplane.yaml.
 
 services:
-  # Fast Time registration is stock upstream; the dataplane waits for it so
-  # the publisher has the fixed virtual server to publish.
-  dataplane:
-    depends_on:
-      redis:
-        condition: service_started
-      register_fast_time:
-        condition: service_completed_successfully
-
   locust:
     volumes:
       # Harness locustfile with streamable-HTTP content negotiation; the

@@ -384,11 +384,14 @@ impl AppConfig {
             "PLATFORM_ADMIN_EMAIL",
             OsString::from("admin@example.com"),
         );
-        let platform_admin_password = shell_value(
-            &environment,
-            "PLATFORM_ADMIN_PASSWORD",
-            OsString::from("changeme"),
-        );
+        let platform_admin_password = match first_nonempty(&environment, "PLATFORM_ADMIN_PASSWORD")
+        {
+            Some(value) => value.clone(),
+            None if requirements != ConfigRequirements::Runtime => default_value(""),
+            None => default_value(&load_or_create_admin_password(Path::new(
+                &integration_dir.value,
+            ))?),
+        };
         let key_file_password = shell_value(&environment, "KEY_FILE_PASSWORD", OsString::new());
         let locust_users = present_value(&environment, "LOCUST_USERS", "100");
         let locust_spawn_rate = present_value(&environment, "LOCUST_SPAWN_RATE", "10");
@@ -751,6 +754,27 @@ fn load_or_create_local_secrets(integration_dir: &Path) -> Result<LocalSecrets> 
     }
 }
 
+fn load_or_create_admin_password(integration_dir: &Path) -> Result<String> {
+    fs::create_dir_all(integration_dir)?;
+    let path = integration_dir.join("admin-password");
+    match fs::read_to_string(&path) {
+        Ok(password) => return Ok(password),
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("failed to read local admin password"),
+    }
+    let password = format!("{}Aa1!", random_secret());
+    match create_private_file(&path) {
+        Ok(mut file) => {
+            file.write_all(password.as_bytes())?;
+            Ok(password)
+        }
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            fs::read_to_string(&path).context("failed to read local admin password")
+        }
+        Err(error) => Err(error).context("failed to save local admin password"),
+    }
+}
+
 fn random_secret() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
@@ -1063,11 +1087,8 @@ mod tests {
             OsStr::new("admin@example.com"),
             ValueOrigin::Default,
         );
-        assert_sourced(
-            &config.platform_admin_password,
-            OsStr::new("changeme"),
-            ValueOrigin::Default,
-        );
+        assert!(config.platform_admin_password.value.len() >= 12);
+        assert_eq!(config.platform_admin_password.origin, ValueOrigin::Default);
         assert_sourced(
             &config.key_file_password,
             OsStr::new(""),
@@ -1172,6 +1193,23 @@ mod tests {
 
         assert_eq!(first.jwt_secret_key, second.jwt_secret_key);
         assert_eq!(first.auth_encryption_secret, second.auth_encryption_secret);
+        assert_eq!(
+            first.platform_admin_password,
+            second.platform_admin_password
+        );
+        assert!(first.platform_admin_password.value.len() >= 12);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(root.path().join(".integration/admin-password"))
+                    .expect("password file")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
         assert_eq!(first.jwt_secret_key.value.len(), 64);
         assert_eq!(first.auth_encryption_secret.value.len(), 64);
         assert!(

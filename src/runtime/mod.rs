@@ -209,6 +209,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     }
 
     async fn revoke_managed_token(&self, token: &ManagedBearerToken) -> AppResult<()> {
+        if token.catalog_id.is_none() {
+            return Ok(());
+        }
         ControlPlaneClient::new(&self.config)?.revoke(token).await
     }
 }
@@ -589,5 +592,23 @@ mod tests {
 
         assert!(message.contains("first cleanup failure"));
         assert!(message.contains("second cleanup failure"));
+    }
+    #[tokio::test]
+    async fn standalone_token_cleanup_does_not_require_controlplane_credentials() {
+        let root = tempfile::tempdir().expect("standalone root");
+        let config = AppConfig::load(
+            ConfigBootstrap::load(&Environment::new(), root.path()).expect("bootstrap"),
+            ConfigRequirements::StandaloneRuntime,
+        )
+        .expect("standalone config");
+        assert!(config.platform_admin_password().value.is_empty());
+        let runtime = RuntimeContext::new(config, SystemProcessRunner);
+        runtime
+            .revoke_managed_token(&ManagedBearerToken::unmanaged(
+                "standalone-token".to_owned(),
+            ))
+            .await
+            .expect("local token needs no control-plane cleanup");
+        assert!(!root.path().join(".integration/admin-password").exists());
     }
 }

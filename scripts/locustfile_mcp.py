@@ -6,6 +6,7 @@ endpoint. This file negotiates ``application/json, text/event-stream`` and
 parses either response form.
 
 Env:
+  MCP_PROTOCOL_VERSION                   harness-selected wire revision (internal)
   MCP_STACK_MODE                         controlplane or dataplane
   MCP_SERVER_ID                         virtual server id (dataplane only)
   MCPGATEWAY_BEARER_TOKEN                bearer token (required)
@@ -22,10 +23,14 @@ import random
 import uuid
 from urllib.parse import quote
 
+import gevent
 from locust import HttpUser, between, events, task
 
 PROTOCOL_VERSION = os.environ.get("MCP_PROTOCOL_VERSION", "2026-07-28")
-STATELESS = PROTOCOL_VERSION >= "2026-07-28"
+STATELESS = PROTOCOL_VERSION == "2026-07-28"
+LEGACY_PROTOCOL_VERSIONS = {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"}
+if PROTOCOL_VERSION not in {"2025-11-25", "2026-07-28"}:
+    raise RuntimeError("MCP_PROTOCOL_VERSION must be a harness-selected client revision")
 ACCEPT = "application/json, text/event-stream"
 _REQUEST_TIMEOUT_ERROR = (
     "LOCUST_REQUEST_TIMEOUT_SECONDS must be a finite number greater than zero"
@@ -45,15 +50,9 @@ def _request_timeout_seconds() -> float:
 REQUEST_TIMEOUT_SECONDS = _request_timeout_seconds()
 
 _TOOL_ARGUMENTS = {
-    "test_simple_text": {},
     "echo": {"message": "cf-integration"},
     "fast_time_echo": {"message": "cf-integration"},
     "fast-time-echo": {"message": "cf-integration"},
-    "get_system_time": {"timezone": "UTC"},
-    "get-system-time": {"timezone": "UTC"},
-    "fast-time-get_system_time": {"timezone": "UTC"},
-    "fast_time_get_system_time": {"timezone": "UTC"},
-    "fast-time-get-system-time": {"timezone": "UTC"},
 }
 
 
@@ -119,7 +118,7 @@ def parse_mcp_body(text: str, content_type: str):
 
 
 def tool_call_args(tool_name: str) -> dict | None:
-    """Return arguments only for the finite set of safe fixture tools."""
+    """Use the same Fast Time echo payload for raw and control-plane aliases."""
     arguments = _TOOL_ARGUMENTS.get(tool_name)
     return dict(arguments) if arguments is not None else None
 
@@ -129,8 +128,9 @@ def validate_result(method: str, result) -> dict:
     if not isinstance(result, dict):
         raise ValueError(f"{method} result must be an object")
     if method == "initialize":
-        if not isinstance(result.get("protocolVersion"), str) or not result["protocolVersion"]:
-            raise ValueError("initialize result must include protocolVersion")
+        version = result.get("protocolVersion")
+        if not isinstance(version, str) or version not in LEGACY_PROTOCOL_VERSIONS:
+            raise ValueError("initialize must negotiate a supported legacy protocol revision")
         if not isinstance(result.get("capabilities"), dict):
             raise ValueError("initialize result must include capabilities")
         server_info = result.get("serverInfo")
@@ -200,6 +200,23 @@ def mcp_path() -> str:
     return f"/servers/{quote(MCP_SERVER_ID, safe='')}/mcp"
 
 
+@events.init.add_listener
+def install_fail_fast(environment, **_kwargs) -> None:
+    """Stop after the first request or user error, retaining failed-run reports."""
+    stopping = False
+
+    def stop_on_error(exception=None, **_kwargs):
+        nonlocal stopping
+        if exception is not None and not stopping:
+            stopping = True
+            environment.process_exit_code = 1
+            # Let the request event finish recording statistics before stopping users.
+            gevent.spawn_later(0, environment.runner.quit)
+
+    environment.events.request.add_listener(stop_on_error)
+    environment.events.user_error.add_listener(stop_on_error)
+
+
 @events.quitting.add_listener
 def fail_empty_run(environment, **_kwargs) -> None:
     """Fail closed when user setup prevented every request."""
@@ -208,13 +225,14 @@ def fail_empty_run(environment, **_kwargs) -> None:
 
 
 class MCPGatewayUser(HttpUser):
-    """Drives initialize -> tools/list -> tools/call through the public route."""
+    """Drives discovery or initialization, then tool requests on the public route."""
 
     wait_time = between(0.05, 0.2)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._session_id: str | None = None
+        self._protocol_version = PROTOCOL_VERSION
         self._ready = False
         self._tool_names: list[str] = list(TOOL_NAMES)
 
@@ -246,11 +264,12 @@ class MCPGatewayUser(HttpUser):
             )
         if result is None:
             return
-        self._ready = True
         if not STATELESS and not self._session_id:
             raise RuntimeError("initialize response did not include Mcp-Session-Id")
         if not STATELESS:
-            self._mcp_notification("notifications/initialized", None, name="MCP initialized")
+            self._protocol_version = result["protocolVersion"]
+            if not self._mcp_notification("notifications/initialized", None, name="MCP initialized"):
+                return
         if not self._tool_names and not SKIP_TOOL_LIST:
             listed = self._mcp_request("tools/list", {}, name="MCP tools/list")
             if listed:
@@ -261,6 +280,10 @@ class MCPGatewayUser(HttpUser):
                     and isinstance(tool.get("name"), str)
                     and tool["name"].strip()
                 ]
+        self._tool_names = [name for name in self._tool_names if tool_call_args(name) is not None]
+        if not self._tool_names:
+            raise RuntimeError("Fast Time echo tool is required; refusing an empty load workload")
+        self._ready = True
 
     def on_stop(self):
         if STATELESS or not self._session_id:
@@ -293,7 +316,7 @@ class MCPGatewayUser(HttpUser):
             "Authorization": f"Bearer {BEARER_TOKEN}",
         }
         if include_protocol_version or STATELESS:
-            headers["Mcp-Protocol-Version"] = PROTOCOL_VERSION
+            headers["Mcp-Protocol-Version"] = self._protocol_version
         if STATELESS and method:
             headers["Mcp-Method"] = method
             if method in {"tools/call", "prompts/get"} and isinstance(params, dict):
@@ -351,11 +374,12 @@ class MCPGatewayUser(HttpUser):
             if not self._validate_backend(response):
                 return None
             session_id = response.headers.get("Mcp-Session-Id") if response.headers else None
-            if session_id:
+            if session_id and not STATELESS:
                 self._session_id = session_id
 
             if response.status_code != 200:
-                response.failure(f"HTTP {response.status_code}")
+                detail = getattr(response, "error", None)
+                response.failure(safe_diagnostic(f"HTTP {response.status_code}" + (f": {detail}" if detail else "")))
                 return None
             try:
                 message = parse_mcp_body(response.text, response.headers.get("Content-Type", ""))
@@ -387,7 +411,7 @@ class MCPGatewayUser(HttpUser):
             response.success()
             return result
 
-    def _mcp_notification(self, method: str, params: dict | None, name: str) -> None:
+    def _mcp_notification(self, method: str, params: dict | None, name: str) -> bool:
         payload = {"jsonrpc": "2.0", "method": method}
         if params is not None:
             payload["params"] = params
@@ -401,32 +425,21 @@ class MCPGatewayUser(HttpUser):
             timeout=REQUEST_TIMEOUT_SECONDS,
         ) as response:
             if not self._validate_backend(response):
-                return
+                return False
             if response.status_code != 202:
-                response.failure(f"HTTP {response.status_code}; expected 202")
-                return
+                detail = getattr(response, "error", None)
+                response.failure(safe_diagnostic(f"HTTP {response.status_code}; expected 202" + (f": {detail}" if detail else "")))
+                return False
             if response.content:
                 response.failure("HTTP 202 notification response body must be empty")
-                return
+                return False
             response.success()
+            return True
 
-    @task(5)
-    def tools_list(self):
-        if SKIP_TOOL_LIST:
-            return
-        self._mcp_request("tools/list", {}, name="MCP tools/list")
-
-    @task(10)
+    @task(1)
     def tools_call(self):
-        candidates = [(name, tool_call_args(name)) for name in self._tool_names]
-        candidates = [(name, args) for name, args in candidates if args is not None]
-        if not candidates:
+        if not self._ready:
             return
-        tool, args = random.choice(candidates)
+        tool = random.choice(self._tool_names)
+        args = tool_call_args(tool)
         self._mcp_request("tools/call", {"name": tool, "arguments": args}, name="MCP tools/call")
-
-    @task(2)
-    def ping(self):
-        if STATELESS:
-            return
-        self._mcp_request("ping", None, name="MCP ping")

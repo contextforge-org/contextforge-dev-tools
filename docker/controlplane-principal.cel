@@ -1,0 +1,3 @@
+// The test stack is a single local tenant. Control-plane subjects are the
+// user UUIDs used by its publisher; API tokens do not carry tenant_id.
+{"user_id": claims.sub, "tenant_id": "cf-integration", "scopes": []}

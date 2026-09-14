@@ -28,7 +28,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 prepare_conformance_build_log(&build_log)?;
                 let quiet_runner = LoggingProcessRunner::new(&self.runner, &build_log);
                 let quiet_runtime = RuntimeContext::new(self.config.clone(), quiet_runner);
-                let build_progress = Activity::spinner("Building conformance image");
+                let build_progress = Activity::spinner("Prepare conformance image");
                 let server_era = match protocol_version {
                     ProtocolVersion::Modern => ConformanceServerEra::Modern,
                     ProtocolVersion::Legacy => ConformanceServerEra::Legacy,
@@ -360,8 +360,14 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         &self,
         mode: StackMode,
         observability: bool,
+        load: bool,
     ) -> ComposeProject {
         let project = self.routed_compose_project(mode);
+        let project = if mode == StackMode::Controlplane && load {
+            project.with_builtin_load_overlay(self.config.asset_root())
+        } else {
+            project
+        };
         if observability {
             project.with_observability(self.config.asset_root(), mode == StackMode::Dataplane)
         } else {
@@ -478,6 +484,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let command = self.dataplane_environment(command)?;
         let command = self
             .host_identity_environment(command)?
+            .env(
+                "FAST_TIME_IMAGE",
+                self.config.fast_time_expected_image().value.clone(),
+            )
             .env("MCP_SERVER_ID", self.default_server_id());
         if checkout_labels && !self.config.dataplane_ref().value.is_empty() {
             self.add_dataplane_checkout_labels(command)
@@ -533,6 +543,16 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 "KEY_FILE_PASSWORD",
                 self.config.key_file_password().value.clone(),
             );
+
+        if self
+            .environment_text("DEFAULT_USER_PASSWORD")
+            .is_none_or(str::is_empty)
+        {
+            command = command.env(
+                "DEFAULT_USER_PASSWORD",
+                self.config.platform_admin_password().value.clone(),
+            );
+        }
 
         for (key, default) in [
             ("PASSWORD_CHANGE_ENFORCEMENT_ENABLED", "false"),
@@ -614,6 +634,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         )? {
             command = command.env(COMPOSE_PROTOCOL_VERSION_ENV, protocol_version);
         }
+        let command = self.harness_image_environment(command)?;
         Ok(with_default_conformance_server_era(
             command
                 .env("CF_INTEGRATION_ROOT", self.config.asset_root().as_os_str())
@@ -972,6 +993,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let mut services = std::collections::BTreeMap::new();
         for service in [
             "gateway",
+            "auth",
             "dataplane",
             "nginx",
             "postgres",
@@ -1169,7 +1191,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) fn cleanup_standalone_dataplane(&self, kind: CleanupKind) -> AppResult<()> {
         let project = self
             .standalone_conformance_compose_project(true)
-            .with_profiles(["conformance"]);
+            .with_profiles(["conformance", "performance"]);
         let command = stack_cleanup_command(project, kind);
         let command = self.standalone_dataplane_environment(command, false)?;
         let primary = self
@@ -1503,6 +1525,11 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary root");
         let environment = Environment::from([
             ("CF_DATAPLANE_PLATFORM".into(), "linux/amd64".into()),
+            (
+                "CF_FAST_TIME_EXPECTED_IMAGE".into(),
+                "test/fast-time:pinned".into(),
+            ),
+            ("FAST_TIME_IMAGE".into(), "ignored/legacy:image".into()),
             ("CF_DATAPLANE_IMAGE".into(), "test/dataplane".into()),
             ("CF_DATAPLANE_PULL_POLICY".into(), "never".into()),
             ("HOST_UID".into(), "123".into()),
@@ -1516,6 +1543,16 @@ mod tests {
         .expect("standalone config");
         assert!(!config.controlplane_dir().exists());
         let runtime = RuntimeContext::new(config, NoProcesses);
+        assert_eq!(
+            runtime.performance_compose_project(StackMode::Controlplane, false, false),
+            runtime.routed_compose_project(StackMode::Controlplane)
+        );
+        assert_eq!(
+            runtime.performance_compose_project(StackMode::Controlplane, false, true),
+            runtime
+                .routed_compose_project(StackMode::Controlplane)
+                .with_builtin_load_overlay(runtime.config.asset_root())
+        );
         let working_directory = directory.path().join("caller");
         let command = runtime
             .target_environment(
@@ -1534,6 +1571,7 @@ mod tests {
         );
         for (key, expected) in [
             ("CF_DATAPLANE_IMAGE", "test/dataplane"),
+            ("FAST_TIME_IMAGE", "test/fast-time:pinned"),
             ("CF_DATAPLANE_PULL_POLICY", "never"),
             ("HOST_UID", "123"),
             ("HOST_GID", "456"),
@@ -1551,11 +1589,52 @@ mod tests {
             "GUNICORN_WORKERS",
             "GATEWAY_CPU_LIMIT",
             "PLATFORM_ADMIN_PASSWORD",
-            "FAST_TIME_IMAGE",
+            "DEFAULT_USER_PASSWORD",
         ] {
             assert!(
                 !values.contains_key(OsStr::new(key)),
                 "standalone inherited control-plane setup: {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn routed_environment_supplies_required_default_user_password() {
+        use crate::infrastructure::config::{ConfigBootstrap, ConfigRequirements, Environment};
+        for explicit in [None, Some(""), Some("custom-user-password")] {
+            let directory = tempfile::tempdir().expect("temporary root");
+            let mut environment = Environment::from([
+                ("CF_CONTROLPLANE_IMAGE".into(), "test/controlplane".into()),
+                (
+                    "PLATFORM_ADMIN_PASSWORD".into(),
+                    "local-admin-password".into(),
+                ),
+                ("GATEWAY_CPU_LIMIT".into(), "1".into()),
+                ("GUNICORN_WORKERS".into(), "1".into()),
+                ("HOST_UID".into(), "123".into()),
+                ("HOST_GID".into(), "456".into()),
+            ]);
+            if let Some(value) = explicit {
+                environment.insert("DEFAULT_USER_PASSWORD".into(), value.into());
+            }
+            let config = AppConfig::load(
+                ConfigBootstrap::load(&environment, directory.path()).expect("bootstrap"),
+                ConfigRequirements::Runtime,
+            )
+            .expect("runtime config");
+            let runtime = RuntimeContext::new(config, NoProcesses);
+            let command = runtime
+                .compose_environment(CommandSpec::new("docker"), StackMode::Controlplane, false)
+                .expect("compose environment");
+            assert_eq!(
+                command
+                    .environment()
+                    .get(OsStr::new("DEFAULT_USER_PASSWORD")),
+                Some(&OsString::from(
+                    explicit
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or("local-admin-password")
+                ))
             );
         }
     }

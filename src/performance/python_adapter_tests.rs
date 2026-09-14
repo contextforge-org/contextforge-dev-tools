@@ -34,6 +34,7 @@ class Hook:
 
 class Events:
     quitting = Hook()
+    init = Hook()
 
 events = Events()
 
@@ -45,6 +46,11 @@ def task(_weight):
 "#,
     )
     .expect("Locust stub should be written");
+    fs::write(
+        directory.path().join("gevent.py"),
+        "def spawn_later(_delay, callback):\n    callback()\n",
+    )
+    .expect("gevent stub");
     directory
 }
 
@@ -85,15 +91,18 @@ assert adapter.safe_diagnostic("reflected token and session-id") == "reflected <
 assert adapter.tool_call_args("echo") == {"message": "cf-integration"}
 assert adapter.tool_call_args("fast-time-echo") == {"message": "cf-integration"}
 assert adapter.tool_call_args("fast_time_echo") == {"message": "cf-integration"}
-assert adapter.tool_call_args("get_system_time") == {"timezone": "UTC"}
-assert adapter.tool_call_args("fast-time-get-system-time") == {"timezone": "UTC"}
+assert adapter.tool_call_args("get_system_time") is None
+assert adapter.tool_call_args("fast-time-get-system-time") is None
+assert adapter.tool_call_args("test_simple_text") is None
 for unsafe in ("delete_everything_echo", "prefix-get_system_time", "shell"):
     assert adapter.tool_call_args(unsafe) is None
 
 user = adapter.MCPGatewayUser.__new__(adapter.MCPGatewayUser)
+user._protocol_version = adapter.PROTOCOL_VERSION
 user._session_id = None
 initialize_headers = user._headers(include_protocol_version=False)
 assert initialize_headers["Mcp-Protocol-Version"] == "2026-07-28"
+user._protocol_version = adapter.PROTOCOL_VERSION
 user._session_id = "session-id"
 request_headers = user._headers()
 assert request_headers["Mcp-Protocol-Version"] == "2026-07-28"
@@ -112,6 +121,26 @@ class Environment:
 empty_environment = Environment()
 adapter.fail_empty_run(empty_environment)
 assert empty_environment.process_exit_code == 1
+
+class Hook:
+    def add_listener(self, callback): self.callback = callback
+class Events:
+    request = Hook()
+    user_error = Hook()
+class Runner:
+    stopped = 0
+    def quit(self): self.stopped += 1
+running = Environment()
+running.events = Events()
+running.runner = Runner()
+adapter.install_fail_fast(running)
+running.events.request.callback(exception=None)
+assert running.runner.stopped == 0
+running.events.request.callback(exception=RuntimeError("request failed"))
+assert running.process_exit_code == 1
+assert running.runner.stopped == 1
+running.events.user_error.callback(exception=RuntimeError("user failed"))
+assert running.runner.stopped == 1
 "#;
 
     let output = Command::new(python())
@@ -151,6 +180,7 @@ class FakeResponse:
         self.headers = {
             "Content-Type": "application/json",
             "X-CF-Integration-Backend": "dataplane",
+            "Mcp-Session-Id": "unexpected-legacy-session",
         }
         self.text = json.dumps({
             "jsonrpc": "2.0",
@@ -186,6 +216,7 @@ class FakeClient:
         raise AssertionError("stateless lifecycle must not delete a session")
 
 user = adapter.MCPGatewayUser.__new__(adapter.MCPGatewayUser)
+user._protocol_version = adapter.PROTOCOL_VERSION
 user._session_id = None
 user._ready = True
 user.client = FakeClient()
@@ -208,9 +239,9 @@ assert headers["Mcp-Protocol-Version"] == "2026-07-28"
 assert headers["Mcp-Method"] == "tools/call"
 assert headers["Mcp-Name"] == "echo"
 assert "Mcp-Session-Id" not in headers
-user.on_stop()
+assert user._session_id is None
 before = len(user.client.requests)
-user.ping()
+user.on_stop()
 assert len(user.client.requests) == before
 
 adapter.validate_result("server/discover", {
@@ -292,6 +323,7 @@ class FakeClient:
         return FakeResponse(status=204)
 
 user = adapter.MCPGatewayUser.__new__(adapter.MCPGatewayUser)
+user._protocol_version = adapter.PROTOCOL_VERSION
 user._session_id = "session"
 user.client = FakeClient()
 user.on_start()
@@ -401,6 +433,7 @@ class FakeClient:
 
 def request(method, result):
     user = adapter.MCPGatewayUser.__new__(adapter.MCPGatewayUser)
+    user._protocol_version = adapter.PROTOCOL_VERSION
     user._session_id = "session"
     user.client = FakeClient(result)
     returned = user._mcp_request(method, {}, name=method)
@@ -426,6 +459,7 @@ assert returned == {"content": [{"type": "text", "text": "ok"}]}
 assert response.successes == 1 and not response.failures
 
 user = adapter.MCPGatewayUser.__new__(adapter.MCPGatewayUser)
+user._protocol_version = adapter.PROTOCOL_VERSION
 user._session_id = "session"
 user.client = FakeClient(notification_content=b"unexpected")
 user._mcp_notification("notifications/initialized", None, name="initialized")
@@ -498,6 +532,7 @@ class FakeClient:
 def make_request(mode, marker):
     adapter.MCP_STACK_MODE = mode
     user = adapter.MCPGatewayUser.__new__(adapter.MCPGatewayUser)
+    user._protocol_version = adapter.PROTOCOL_VERSION
     user._session_id = None
     user.client = FakeClient(marker)
     returned = user._mcp_request("ping", None, name="ping")
@@ -533,6 +568,122 @@ assert response.successes == 1 and not response.failures
         output.status.success(),
         "Python adapter backend identity check failed:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn locust_legacy_negotiation_drives_requests_and_failed_setup_stops_workload() {
+    let stub = locust_stub();
+    let python_path = std::env::join_paths([stub.path(), scripts_dir().as_path()])
+        .expect("Python path should join");
+    let code = r#"
+import json
+import locustfile_mcp as adapter
+
+class Response:
+    def __init__(self, payload, result):
+        self.status_code = 200 if "id" in payload else 202
+        self.headers = {"Content-Type": "application/json", "Mcp-Session-Id": "session"}
+        self.text = json.dumps({"jsonrpc": "2.0", "id": payload.get("id"), "result": result})
+        self.content = b"" if self.status_code == 202 else self.text.encode()
+        self.failures = []
+    def __enter__(self): return self
+    def __exit__(self, *_args): return False
+    def success(self): pass
+    def failure(self, message): self.failures.append(message)
+
+class Client:
+    def __init__(self, version):
+        self.version = version
+        self.tools = ["echo"]
+        self.requests = []
+        self.responses = []
+    def post(self, path, *, data, headers, **_kwargs):
+        payload = json.loads(data)
+        self.requests.append((payload, headers))
+        if payload["method"] == "initialize":
+            assert payload["params"]["protocolVersion"] == "2025-11-25"
+            assert "Mcp-Protocol-Version" not in headers
+            result = {"protocolVersion": self.version, "capabilities": {}, "serverInfo": {"name": "fixture", "version": "1"}}
+        elif payload["method"] == "tools/list":
+            result = {"tools": [{"name": name} for name in self.tools]}
+        elif payload["method"] == "tools/call":
+            result = {"content": []}
+        else:
+            result = {}
+        response = Response(payload, result)
+        self.responses.append(response)
+        return response
+
+for version in ["2025-11-25", "2025-06-18", "2026-07-28", "invalid", None]:
+    user = adapter.MCPGatewayUser()
+    user.client = Client(version)
+    user.on_start()
+    user.tools_call()
+    if version in {"2025-11-25", "2025-06-18"}:
+        assert user._ready
+        assert user._protocol_version == version
+        methods = [payload["method"] for payload, _ in user.client.requests]
+        assert methods == ["initialize", "notifications/initialized", "tools/list", "tools/call"], methods
+        for payload, headers in user.client.requests[1:]:
+            assert headers["Mcp-Protocol-Version"] == version
+            assert headers["Mcp-Session-Id"] == "session"
+            assert "_meta" not in payload.get("params", {})
+        assert all(not response.failures for response in user.client.responses)
+    else:
+        assert not user._ready
+        assert len(user.client.requests) == 1
+        assert user.client.responses[0].failures
+
+for alias in ("echo", "fast-time-echo", "fast_time_echo"):
+    user = adapter.MCPGatewayUser()
+    user.client = Client("2025-11-25")
+    user.client.tools = ["test_simple_text", "get_system_time", alias]
+    user.on_start()
+    for _ in range(10): user.tools_call()
+    calls = [body for body, _ in user.client.requests if body["method"] == "tools/call"]
+    assert len(calls) == 10
+    assert all(body["params"] == {"name": alias, "arguments": {"message": "cf-integration"}} for body in calls)
+
+user = adapter.MCPGatewayUser()
+user.client = Client("2025-11-25")
+user.client.tools = ["test_simple_text", "get_system_time"]
+try:
+    user.on_start()
+    raise AssertionError("missing echo must fail setup")
+except RuntimeError as error:
+    assert "Fast Time echo tool is required" in str(error)
+assert not user._ready
+
+user = adapter.MCPGatewayUser()
+user.client = Client("2025-11-25")
+original_post = user.client.post
+def fail_notification(*args, **kwargs):
+    response = original_post(*args, **kwargs)
+    if response.status_code == 202:
+        response.status_code = 500
+    return response
+user.client.post = fail_notification
+user.on_start()
+user.tools_call()
+assert not user._ready
+assert [payload["method"] for payload, _ in user.client.requests] == ["initialize", "notifications/initialized"]
+"#;
+    let output = Command::new(python())
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .args(["-c", code])
+        .env("PYTHONPATH", python_path)
+        .env("MCP_STACK_MODE", "controlplane")
+        .env("MCP_PROTOCOL_VERSION", "2025-11-25")
+        .env("MCPGATEWAY_BEARER_TOKEN", "token")
+        .env_remove("MCP_TOOL_NAMES")
+        .env_remove("MCP_SKIP_TOOL_LIST")
+        .output()
+        .expect("Python legacy lifecycle check should run");
+    assert!(
+        output.status.success(),
+        "legacy lifecycle failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 }

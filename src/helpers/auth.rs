@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::{Context, Result, ensure};
-use aws_lc_rs::encoding::{AsDer, Pkcs8V1Der};
+use aws_lc_rs::encoding::{AsDer, Pkcs8V1Der, PublicKeyX509Der};
 use aws_lc_rs::rsa::{KeyPair, KeySize};
 use aws_lc_rs::signature::KeyPair as _;
 use axum::{Json, Router, routing::get};
@@ -49,6 +49,24 @@ pub(super) fn router(key_path: &Path) -> Result<Router> {
             async move { Json(jwks) }
         }),
     ))
+}
+
+// Only the full-stack control plane shares the private signing key. Its
+// supplemental group can read this volume; the dataplane never mounts it.
+pub(super) fn share_controlplane_key(key_path: &Path) -> Result<()> {
+    let key = pem::parse(fs::read(key_path)?)?;
+    let key = KeyPair::from_pkcs8(key.contents())?;
+    let der: PublicKeyX509Der<'_> = key.public_key().as_der()?;
+    fs::write(
+        key_path.with_extension("pub"),
+        pem::encode(&pem::Pem::new("PUBLIC KEY", der.as_ref())),
+    )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(key_path, fs::Permissions::from_mode(0o640))?;
+    }
+    Ok(())
 }
 
 pub(super) fn issue_token(key_path: &Path, tenant_id: &str, user_id: &str) -> Result<String> {

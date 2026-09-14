@@ -7,6 +7,65 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-14
+
+### Added
+
+- Visible one-letter aliases for every public command and short flags for all
+  public options, including `-s` for standalone, `-l` for lane, and `-c` for
+  client era. `--help` lists the complete mappings.
+
+### Changed
+
+- Pull versioned conformance fixture, tooling, and helper images published by the
+  release workflow instead of compiling them during normal runs. Reuse images
+  already present on the Docker daemon; `CF_COMPOSE_BUILD=true` explicitly
+  rebuilds them for local harness development.
+
+- Load result labels and report folders now use `builtin` and `external`.
+  Reports are separated by client era so a legacy fallback preserves modern-run
+  evidence.
+
+- Conformance legacy client runs now select only
+  `2025-11-25`. Dual combines it with `2026-07-28`; older exact client revision
+  selectors are rejected.
+- Align load with conformance's command and flag style: use `load run` with
+  `--client-era legacy|modern` (default modern), `--lane`, and `--standalone`.
+  Remove the former flat load command and its `--protocol-version` flag and
+  `MCP_PROTOCOL_VERSION` override. Backend protocol support remains server-owned.
+
+### Fixed
+
+- Use Fast Time for every load lane, including standalone external, with a shared
+  `CF_FAST_TIME_EXPECTED_IMAGE` override. Call only echo with the same payload in both lanes;
+  fail if it is missing. Reserve the conformance fixture for protocol workflows.
+
+- Bootstrap full-stack external authentication in the CLI: generate an RSA key,
+  configure the control plane to issue RS256 tokens, serve matching public JWKS
+  on dataplane loopback, and map control-plane subjects to the local test tenant.
+- Generate and persist a strong local admin password; supply the required
+  `DEFAULT_USER_PASSWORD` while preserving explicit credential overrides.
+- Register Fast Time through control-plane login instead of upstream's hard-coded
+  HS256 token minting. Do not print credentials during registration.
+- Reject incompatible control-plane publisher snapshots before launching load.
+- Pool public and fixture proxy upstream connections with DNS refresh to prevent
+  ephemeral-port exhaustion during sustained load. Pin nginx 1.30.4 and preserve
+  final JSON statistics for early-stopped runs. Builtin load uses pooled
+  connections directly to port 4444, avoiding the inactive 8787 listener and
+  expiring idle pooled connections before the backend closes them.
+- Pin every load lane to Locust 2.46.2 for comparable client measurements.
+- Skip control-plane credential construction when cleaning up standalone tokens.
+
+- Stop load immediately after the first request or user error and retain failure
+  reports. Do not start workload tasks after a failed initialized notification.
+- Apply the builtin load proxy only to load runs, require successful Fast Time
+  registration before exposing the external public route, and keep shared
+  publisher-schema errors workflow-neutral.
+- Legacy load clients now use the revision negotiated during initialization,
+  reject unsupported revisions, and skip workload requests after failed
+  initialization or discovery.
+  Modern clients do not adopt legacy session IDs.
+
 ## [0.3.3] - 2026-09-09
 
 ### Added

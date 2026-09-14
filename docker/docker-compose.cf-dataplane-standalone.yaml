@@ -4,8 +4,8 @@
 
 services:
   auth:
-    image: cf-integration-helpers:0.3.2-rust
-    pull_policy: build
+    image: ${CF_HELPERS_IMAGE:-ghcr.io/contextforge-org/cf-integration-helpers:${CF_HARNESS_VERSION:?Set CF_HARNESS_VERSION to the cf-integration version}}
+    pull_policy: ${CF_HARNESS_PULL_POLICY:-missing}
     build:
       context: ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}
       dockerfile: docker/helpers.Dockerfile
@@ -97,6 +97,25 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1/health >/dev/null"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  fast_time_server:
+    profiles: ["performance"]
+    image: ${FAST_TIME_IMAGE:-ghcr.io/ibm/cfex-mcp-fast-time-server:latest}
+    labels:
+      name: cf-fast-time-server
+    restart: "no"
+    command: []
+    environment:
+      BIND_ADDRESS: 0.0.0.0:9080
+      RUST_LOG: info
+    networks:
+      - mcpnet
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9080/health"]
       interval: 2s
       timeout: 2s
       retries: 30

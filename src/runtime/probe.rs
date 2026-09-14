@@ -13,9 +13,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         self.with_managed_authenticated_target(
             topology,
             &server_id,
-            standalone,
-            true,
-            protocol_version,
+            session::ManagedTargetOptions::conformance(standalone, true, *protocol_version),
             |token, tool_names| async {
                 let config = ProbeConfig {
                     mode: gateway_topology(topology),

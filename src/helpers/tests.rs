@@ -337,3 +337,36 @@ fn token_subject_rejects_missing_or_invalid_claims() {
     }
     assert!(auth::token_subject("not-a-token").is_err());
 }
+
+#[test]
+fn shared_controlplane_key_verifies_tokens_without_a_key_id() {
+    let directory = tempfile::tempdir().expect("keys");
+    let key = directory.path().join("jwt.key");
+    let _router = auth::router(&key).expect("generate key");
+    auth::share_controlplane_key(&key).expect("export public key");
+    let claims = json!({"sub":"controlplane-user", "exp":jsonwebtoken::get_current_timestamp()+60});
+    let token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(Algorithm::RS256),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_rsa_pem(&std::fs::read(&key).expect("private key"))
+            .expect("encoding key"),
+    )
+    .expect("sign like control plane");
+    let decoded = jsonwebtoken::decode::<Value>(
+        &token,
+        &DecodingKey::from_rsa_pem(&std::fs::read(key.with_extension("pub")).expect("public key"))
+            .expect("decoding key"),
+        &Validation::new(Algorithm::RS256),
+    )
+    .expect("matching exported key");
+    assert_eq!(decoded.claims, claims);
+    assert!(decoded.header.kid.is_none());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&key).expect("key").permissions().mode() & 0o777,
+            0o640
+        );
+    }
+}

@@ -3,6 +3,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::Path;
 
+use crate::cli::ProtocolVersion;
 use cf_integration::infrastructure::StackMode;
 use cf_integration::infrastructure::compose::ComposeProject;
 use cf_integration::infrastructure::config::{
@@ -172,14 +173,14 @@ fn dataplane_locust_command_has_exact_compose_shape_and_environment() {
     let config = config(root.path(), &Environment::new());
     let settings = LoadSettings::resolve(&config, &args(false)).expect("settings should resolve");
 
-    let run = LocustCommand::new_with_protocol_version(
+    let run = LocustCommand::new(
         &config,
         project(&config, StackMode::Dataplane),
         StackMode::Dataplane,
         &settings,
         "scoped.jwt.value",
         Some("server-id"),
-        "2025-11-25",
+        ProtocolVersion::Legacy,
     )
     .expect("dataplane Locust command should build");
 
@@ -188,7 +189,8 @@ fn dataplane_locust_command_has_exact_compose_shape_and_environment() {
     let report_dir = integration_dir
         .join("reports")
         .join("load")
-        .join("dataplane")
+        .join("legacy")
+        .join("external")
         .join("locust");
     assert_eq!(run.report_dir(), report_dir);
     assert!(run.report_dir().is_dir());
@@ -252,21 +254,21 @@ fn controlplane_uses_the_same_harness_mcp_adapter_and_does_not_require_server_id
     let config = config(root.path(), &process);
     let settings = LoadSettings::resolve(&config, &args(true)).expect("settings should resolve");
 
-    let run = LocustCommand::new_with_protocol_version(
+    let run = LocustCommand::new(
         &config,
         project(&config, StackMode::Controlplane),
         StackMode::Controlplane,
         &settings,
         "admin.jwt.value",
         None,
-        "2025-06-18",
+        ProtocolVersion::Legacy,
     )
     .expect("control-plane Locust command should build");
 
     assert_eq!(
         run.report_dir(),
         root.path()
-            .join(".integration/reports/load/controlplane/locust")
+            .join(".integration/reports/load/legacy/builtin/locust")
     );
     assert_eq!(
         run.command()
@@ -290,7 +292,7 @@ fn controlplane_uses_the_same_harness_mcp_adapter_and_does_not_require_server_id
         run.command()
             .environment()
             .get(OsStr::new("MCP_PROTOCOL_VERSION")),
-        Some(&OsString::from("2025-06-18"))
+        Some(&OsString::from("2025-11-25"))
     );
     assert_eq!(
         run.command()
@@ -352,14 +354,14 @@ fn locust_request_timeout_rejects_empty_non_finite_and_non_positive_values() {
         let settings =
             LoadSettings::resolve(&config, &args(false)).expect("load settings should resolve");
 
-        let error = LocustCommand::new_with_protocol_version(
+        let error = LocustCommand::new(
             &config,
             project(&config, StackMode::Controlplane),
             StackMode::Controlplane,
             &settings,
             "token",
             None,
-            "2025-11-25",
+            ProtocolVersion::Legacy,
         )
         .expect_err("invalid request timeout should fail before launch");
 
@@ -378,26 +380,26 @@ fn dataplane_requires_nonempty_server_id_and_all_modes_require_a_token() {
     let config = config(root.path(), &Environment::new());
     let settings = LoadSettings::resolve(&config, &args(false)).expect("settings should resolve");
 
-    let missing_server = LocustCommand::new_with_protocol_version(
+    let missing_server = LocustCommand::new(
         &config,
         project(&config, StackMode::Dataplane),
         StackMode::Dataplane,
         &settings,
         "token",
         None,
-        "2025-11-25",
+        ProtocolVersion::Legacy,
     )
     .expect_err("dataplane server ID should be required");
     assert!(missing_server.to_string().contains("server ID"));
 
-    let missing_token = LocustCommand::new_with_protocol_version(
+    let missing_token = LocustCommand::new(
         &config,
         project(&config, StackMode::Controlplane),
         StackMode::Controlplane,
         &settings,
         "",
         None,
-        "2025-11-25",
+        ProtocolVersion::Legacy,
     )
     .expect_err("bearer token should be required");
     assert!(missing_token.to_string().contains("bearer token"));
@@ -407,4 +409,74 @@ fn volume_argument(report_dir: &Path) -> OsString {
     let mut argument = report_dir.as_os_str().to_owned();
     argument.push(":/mnt/reports");
     argument
+}
+
+#[test]
+fn locust_era_overrides_ambient_wire_version() {
+    let root = repository_root(None);
+    let process = environment(&[("MCP_PROTOCOL_VERSION", "invalid")]);
+    let config = config(root.path(), &process);
+    let settings = LoadSettings::resolve(&config, &args(true)).expect("settings");
+    for (era, version) in [
+        (ProtocolVersion::Legacy, "2025-11-25"),
+        (ProtocolVersion::Modern, "2026-07-28"),
+    ] {
+        let run = LocustCommand::new(
+            &config,
+            project(&config, StackMode::Controlplane),
+            StackMode::Controlplane,
+            &settings,
+            "token",
+            None,
+            era,
+        )
+        .expect("Locust command");
+        assert_eq!(
+            run.command()
+                .environment()
+                .get(OsStr::new("MCP_PROTOCOL_VERSION")),
+            Some(&OsString::from(version))
+        );
+    }
+}
+
+#[test]
+fn load_reports_keep_each_lane_and_client_era_separate() {
+    let root = repository_root(None);
+    let config = config(root.path(), &Environment::new());
+    let settings = LoadSettings::resolve(&config, &args(true)).expect("settings");
+    let mut paths = Vec::new();
+    for (mode, slug) in [
+        (StackMode::Controlplane, "builtin"),
+        (StackMode::Dataplane, "external"),
+    ] {
+        for era in [ProtocolVersion::Modern, ProtocolVersion::Legacy] {
+            let run = LocustCommand::new(
+                &config,
+                project(&config, mode),
+                mode,
+                &settings,
+                "token",
+                Some("server-id"),
+                era,
+            )
+            .expect("Locust command");
+            let expected = config
+                .integration_dir()
+                .join("reports/load")
+                .join(era.to_string())
+                .join(slug)
+                .join("locust");
+            assert_eq!(run.report_dir(), expected);
+            assert!(!paths.contains(&expected));
+            fs::write(expected.join("locust_stats.csv"), format!("{slug},{era}")).expect("report");
+            paths.push(expected);
+        }
+    }
+    for path in paths {
+        assert!(
+            path.join("locust_stats.csv").is_file(),
+            "another lane or era removed the earlier report"
+        );
+    }
 }

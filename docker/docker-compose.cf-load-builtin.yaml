@@ -1,0 +1,5 @@
+# Route builtin load directly to the active gateway listener with pooled connections.
+services:
+  nginx:
+    volumes:
+      - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT}/docker/nginx.cf-load-builtin.conf:/etc/nginx/nginx.conf:ro

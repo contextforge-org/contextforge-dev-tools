@@ -2,8 +2,9 @@ use std::ffi::OsString;
 
 use cf_integration::cli::{
     Cli, CliConformanceEra, CliLane, CliRoutedLane, Command, ConformanceArgs, ConformanceCommand,
-    DebugArgs, DebugCommand, LaneSelection, LiveGroup, LoadArgs, ProtocolVersion,
-    RoutedWorkflowTargetArgs, StackArgs, StackCommand, TokenKind, WorkflowTargetArgs,
+    DebugArgs, DebugCommand, LaneSelection, LiveGroup, LoadArgs, LoadCommand, LoadRunArgs,
+    ProtocolVersion, RoutedWorkflowTargetArgs, StackArgs, StackCommand, TokenKind,
+    WorkflowTargetArgs,
 };
 use clap::{CommandFactory, Parser, error::ErrorKind};
 
@@ -69,6 +70,7 @@ fn command_tree_contains_only_distinct_public_workflows() {
         subcommands(&["stack"]),
         ["up", "down", "status", "logs", "config"]
     );
+    assert_eq!(subcommands(&["load"]), ["run"]);
     assert_eq!(subcommands(&["conformance"]), ["run", "report"]);
     assert_eq!(subcommands(&["debug"]), ["inspect", "token"]);
 }
@@ -85,6 +87,7 @@ fn every_public_command_renders_help() {
         &["stack", "config"],
         &["probe"],
         &["load"],
+        &["load", "run"],
         &["live"],
         &["conformance"],
         &["conformance", "run"],
@@ -109,7 +112,7 @@ fn every_public_stack_or_workflow_selector_uses_lane_only() {
         &["stack", "logs"],
         &["stack", "config"],
         &["probe"],
-        &["load"],
+        &["load", "run"],
         &["live"],
         &["conformance", "run"],
         &["debug", "inspect"],
@@ -207,15 +210,20 @@ fn stack_logs_preserve_service_arguments() {
 #[test]
 fn load_keeps_validated_locust_settings() {
     let Command::Load(LoadArgs {
-        target,
-        observability,
-        users,
-        spawn_rate,
-        run_time,
-        ..
+        command:
+            LoadCommand::Run(LoadRunArgs {
+                lane,
+                client_era,
+                observability,
+                users,
+                spawn_rate,
+                run_time,
+                ..
+            }),
     }) = parse(&[
         "cf-integration",
         "load",
+        "run",
         "--users",
         "2",
         "--spawn-rate",
@@ -227,17 +235,17 @@ fn load_keeps_validated_locust_settings() {
     else {
         panic!("expected load")
     };
-    assert_eq!(target.lane, None);
-    assert_eq!(target.protocol_version, None);
+    assert_eq!(lane, None);
+    assert_eq!(client_era, ProtocolVersion::Modern);
     assert!(!observability);
     assert_eq!(users, Some(2));
     assert_eq!(spawn_rate, Some(0.5));
     assert_eq!(run_time.as_deref(), Some("1m30s"));
 
-    rejected(&["cf-integration", "load", "--users", "0"]);
-    rejected(&["cf-integration", "load", "--run-time", "1ms"]);
-    rejected(&["cf-integration", "load", "--run-time", "zero"]);
-    rejected(&["cf-integration", "load", "--engine", "locust"]);
+    rejected(&["cf-integration", "load", "run", "--users", "0"]);
+    rejected(&["cf-integration", "load", "run", "--run-time", "1ms"]);
+    rejected(&["cf-integration", "load", "run", "--run-time", "zero"]);
+    rejected(&["cf-integration", "load", "run", "--engine", "locust"]);
 }
 
 #[test]
@@ -245,6 +253,7 @@ fn load_accepts_standalone_external_dataplane_mode() {
     let cli = parse(&[
         "cf-integration",
         "load",
+        "run",
         "--lane",
         "external",
         "--standalone",
@@ -254,15 +263,18 @@ fn load_accepts_standalone_external_dataplane_mode() {
         panic!("expected load")
     };
 
-    assert_eq!(args.target.lane, Some(CliRoutedLane::External));
+    let LoadCommand::Run(args) = args.command;
+    assert_eq!(args.lane, Some(CliRoutedLane::External));
 }
 
 #[test]
 fn load_accepts_explicit_observability() {
-    let Command::Load(args) = parse(&["cf-integration", "load", "--observability"]).command else {
+    let Command::Load(args) = parse(&["cf-integration", "load", "run", "--observability"]).command
+    else {
         panic!("expected load")
     };
 
+    let LoadCommand::Run(args) = args.command;
     assert!(args.observability);
 }
 
@@ -332,7 +344,7 @@ fn every_public_selector_rejects_the_removed_topology_flag() {
     for arguments in [
         vec!["cf-integration", "stack", "up", "--topology", "dataplane"],
         vec!["cf-integration", "probe", "--topology", "dataplane"],
-        vec!["cf-integration", "load", "--topology", "dataplane"],
+        vec!["cf-integration", "load", "run", "--topology", "dataplane"],
         vec!["cf-integration", "live", "--topology", "dataplane"],
         vec![
             "cf-integration",
@@ -351,8 +363,8 @@ fn public_lane_values_reject_physical_and_obsolete_spellings() {
     for arguments in [
         vec!["cf-integration", "stack", "up", "--lane", "controlplane"],
         vec!["cf-integration", "stack", "up", "--lane", "dataplane"],
-        vec!["cf-integration", "load", "--lane", "controlplane"],
-        vec!["cf-integration", "load", "--lane", "dataplane"],
+        vec!["cf-integration", "load", "run", "--lane", "controlplane"],
+        vec!["cf-integration", "load", "run", "--lane", "dataplane"],
         vec!["cf-integration", "live", "--lane", "built-in-data-plane"],
         vec!["cf-integration", "live", "--lane", "external-data-plane"],
         vec![
@@ -406,18 +418,6 @@ fn operational_workflows_share_canonical_lane_and_protocol_version_flags() {
     };
     assert_routed_target(&probe);
 
-    let Command::Load(load) = parse(
-        &["cf-integration", "load"]
-            .into_iter()
-            .chain(common)
-            .collect::<Vec<_>>(),
-    )
-    .command
-    else {
-        panic!("expected load workflow")
-    };
-    assert_routed_target(&load.target);
-
     let Command::Live(live) = parse(&[
         "cf-integration",
         "live",
@@ -453,7 +453,7 @@ fn standalone_is_global_across_operational_commands() {
         vec!["cf-integration", "stack", "up", "--standalone"],
         vec!["cf-integration", "stack", "status", "--standalone"],
         vec!["cf-integration", "probe", "--standalone"],
-        vec!["cf-integration", "load", "--standalone"],
+        vec!["cf-integration", "load", "run", "--standalone"],
         vec!["cf-integration", "conformance", "run", "--standalone"],
         vec![
             "cf-integration",
@@ -475,7 +475,7 @@ fn standalone_is_global_across_operational_commands() {
 fn routed_workflows_reject_the_fixture_lane_during_parsing() {
     for arguments in [
         vec!["cf-integration", "probe", "--lane", "fixture-direct"],
-        vec!["cf-integration", "load", "--lane", "fixture-direct"],
+        vec!["cf-integration", "load", "run", "--lane", "fixture-direct"],
         vec![
             "cf-integration",
             "debug",
@@ -663,4 +663,266 @@ fn help_and_version_style_flags_reject_unexpected_positionals() {
         error.kind(),
         ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
     );
+}
+
+#[test]
+fn load_uses_client_eras_and_rejects_version_or_server_selectors() {
+    for (era, expected) in [
+        ("legacy", ProtocolVersion::Legacy),
+        ("modern", ProtocolVersion::Modern),
+    ] {
+        let Command::Load(args) =
+            parse(&["cf-integration", "load", "run", "--client-era", era]).command
+        else {
+            panic!("expected load")
+        };
+        let LoadCommand::Run(args) = args.command;
+        assert_eq!(args.client_era, expected);
+    }
+    for arguments in [
+        vec!["cf-integration", "load", "--lane", "external"],
+        vec![
+            "cf-integration",
+            "load",
+            "run",
+            "--protocol-version",
+            "legacy",
+        ],
+        vec![
+            "cf-integration",
+            "load",
+            "run",
+            "--client-version",
+            "2025-11-25",
+        ],
+        vec!["cf-integration", "load", "run", "--server-era", "legacy"],
+        vec![
+            "cf-integration",
+            "load",
+            "run",
+            "--client-era",
+            "2026-07-28",
+        ],
+        vec!["cf-integration", "load", "run", "--client-era", "dual"],
+    ] {
+        rejected(&arguments);
+    }
+    for arguments in [
+        vec!["cf-integration", "--standalone", "load", "run"],
+        vec!["cf-integration", "load", "--standalone", "run"],
+        vec!["cf-integration", "load", "run", "--standalone"],
+    ] {
+        assert!(parse(&arguments).standalone);
+    }
+}
+
+#[test]
+fn every_public_command_and_option_has_an_unambiguous_short_form() {
+    fn check(command: &clap::Command) {
+        for option in command
+            .get_arguments()
+            .filter(|arg| arg.get_long().is_some() && !arg.is_hide_set())
+        {
+            assert!(
+                option.get_short().is_some(),
+                "missing short flag on {}: {}",
+                command.get_name(),
+                option.get_id()
+            );
+        }
+        for child in command
+            .get_subcommands()
+            .filter(|child| !child.is_hide_set() && child.get_name() != "help")
+        {
+            assert!(
+                child.get_visible_aliases().any(|alias| alias.len() == 1),
+                "missing short command: {}",
+                child.get_name()
+            );
+            check(child);
+        }
+    }
+    Cli::command().debug_assert();
+    check(&Cli::command());
+}
+
+#[test]
+fn short_commands_and_options_resolve_identically_to_long_forms() {
+    let cases: &[(&[&str], &[&str])] = &[
+        (
+            &["s", "u", "-l", "external", "-p", "modern", "-f", "-s"],
+            &[
+                "stack",
+                "up",
+                "--lane",
+                "external",
+                "--protocol-version",
+                "modern",
+                "--fresh",
+                "--standalone",
+            ],
+        ),
+        (
+            &["s", "d", "-l", "all", "-v"],
+            &["stack", "down", "--lane", "all", "--volumes"],
+        ),
+        (
+            &["s", "s", "-l", "builtin"],
+            &["stack", "status", "--lane", "builtin"],
+        ),
+        (
+            &["s", "l", "-l", "external", "nginx"],
+            &["stack", "logs", "--lane", "external", "nginx"],
+        ),
+        (
+            &["s", "c", "-l", "external"],
+            &["stack", "config", "--lane", "external"],
+        ),
+        (
+            &["p", "-l", "builtin", "-p", "legacy"],
+            &["probe", "--lane", "builtin", "--protocol-version", "legacy"],
+        ),
+        (
+            &[
+                "l", "r", "-s", "-l", "external", "-c", "modern", "-o", "-S", "-u", "20", "-r",
+                "5", "-t", "2m",
+            ],
+            &[
+                "load",
+                "run",
+                "--standalone",
+                "--lane",
+                "external",
+                "--client-era",
+                "modern",
+                "--observability",
+                "--smoke",
+                "--users",
+                "20",
+                "--spawn-rate",
+                "5",
+                "--run-time",
+                "2m",
+            ],
+        ),
+        (
+            &["v", "-l", "builtin", "-p", "legacy", "-g", "protocol"],
+            &[
+                "live",
+                "--lane",
+                "builtin",
+                "--protocol-version",
+                "legacy",
+                "--group",
+                "protocol",
+            ],
+        ),
+        (
+            &[
+                "c",
+                "r",
+                "-l",
+                "external",
+                "-c",
+                "legacy",
+                "-c",
+                "modern",
+                "-e",
+                "dual",
+                "-r",
+                "results",
+                "-b",
+                "baselines",
+                "-B",
+                "-o",
+                "reports",
+            ],
+            &[
+                "conformance",
+                "run",
+                "--lane",
+                "external",
+                "--client-era",
+                "legacy",
+                "--client-era",
+                "modern",
+                "--server-era",
+                "dual",
+                "--results-dir",
+                "results",
+                "--baseline-dir",
+                "baselines",
+                "--bless",
+                "--output-dir",
+                "reports",
+            ],
+        ),
+        (
+            &["c", "r", "-C", "2025-11-25"],
+            &["conformance", "run", "--client-version", "2025-11-25"],
+        ),
+        (
+            &["c", "p", "-r", "results", "-o", "reports"],
+            &[
+                "conformance",
+                "report",
+                "--results-dir",
+                "results",
+                "--output-dir",
+                "reports",
+            ],
+        ),
+        (
+            &[
+                "d",
+                "i",
+                "-l",
+                "builtin",
+                "-p",
+                "legacy",
+                "-m",
+                "tools/list",
+                "-i",
+                "server",
+            ],
+            &[
+                "debug",
+                "inspect",
+                "--lane",
+                "builtin",
+                "--protocol-version",
+                "legacy",
+                "--method",
+                "tools/list",
+                "--server-id",
+                "server",
+            ],
+        ),
+        (
+            &["d", "t", "-k", "scoped", "-i", "server"],
+            &[
+                "debug",
+                "token",
+                "--kind",
+                "scoped",
+                "--server-id",
+                "server",
+            ],
+        ),
+    ];
+    for (short, long) in cases {
+        let short = ["cf-integration"]
+            .into_iter()
+            .chain(short.iter().copied())
+            .collect::<Vec<_>>();
+        let long = ["cf-integration"]
+            .into_iter()
+            .chain(long.iter().copied())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            parse(&short),
+            parse(&long),
+            "short form mismatch for {short:?}"
+        );
+    }
 }

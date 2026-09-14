@@ -1,7 +1,8 @@
 services:
   mcp_tools:
     profiles: ["tools"]
-    image: cf-integration-tools:0.3.2
+    image: ${CF_MCP_TOOLS_IMAGE:-ghcr.io/contextforge-org/cf-integration-tools:${CF_HARNESS_VERSION:?Set CF_HARNESS_VERSION to the cf-integration version}}
+    pull_policy: ${CF_HARNESS_PULL_POLICY:-missing}
     build:
       context: ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}
       dockerfile: docker/helpers.Dockerfile

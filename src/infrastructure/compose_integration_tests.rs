@@ -252,7 +252,19 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
     let environment = compose["services"]["dataplane"]["environment"]
         .as_mapping()
         .expect("dataplane environment must be a mapping");
-    assert!(compose["services"]["gateway"]["volumes"].is_null());
+    assert_eq!(
+        compose["services"]["gateway"]["volumes"][0].as_str(),
+        Some("integration_auth:/keys:ro")
+    );
+    assert!(
+        compose["services"]["dataplane"]["depends_on"]["register_fast_time"].is_null(),
+        "dataplane must not depend on registration because registration reaches it through gateway"
+    );
+    assert_eq!(
+        compose["services"]["nginx"]["depends_on"]["register_fast_time"]["condition"].as_str(),
+        Some("service_completed_successfully"),
+        "the public entrypoint must wait for successful Fast Time registration"
+    );
 
     for key in [
         "CONTEXTFORGE_DATA_PLANE_ADDRESS",
@@ -309,6 +321,10 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
         build["services"]["dataplane"]["build"]["dockerfile"].as_str(),
         Some("docker/Dockerfile")
     );
+
+    let load_proxy = fs::read_to_string(root.join("docker/nginx.cf-load-builtin.conf"))
+        .expect("read builtin load proxy configuration");
+    assert!(load_proxy.contains("worker_rlimit_nofile 65535;"));
 }
 
 #[test]
@@ -320,7 +336,7 @@ fn controlplane_image_consumers_share_the_explicit_pull_policy() {
     let compose: yaml_serde::Value =
         yaml_serde::from_str(&compose).expect("parse controlplane metadata overlay");
 
-    for service in ["gateway", "migration", "register_fast_time"] {
+    for service in ["gateway", "migration"] {
         assert_eq!(
             compose["services"][service]["pull_policy"].as_str(),
             Some("${CF_CONTROLPLANE_PULL_POLICY:-always}"),
@@ -413,7 +429,25 @@ fn standalone_harness_owns_auth_without_dataplane_tools() {
         .as_mapping()
         .expect("standalone services must be a mapping");
 
-    assert_eq!(services.len(), 6);
+    assert_eq!(services.len(), 7);
+    let builtin: yaml_serde::Value = yaml_serde::from_str(
+        &fs::read_to_string(root.join("docker/docker-compose.cf-controlplane-build-labels.yaml"))
+            .expect("read builtin service overlay"),
+    )
+    .expect("parse builtin service overlay");
+    assert_eq!(
+        compose["services"]["fast_time_server"]["image"],
+        builtin["services"]["fast_time_server"]["image"]
+    );
+    assert_eq!(
+        compose["services"]["fast_time_server"]["command"],
+        builtin["services"]["fast_time_server"]["command"]
+    );
+    assert_eq!(
+        compose["services"]["fast_time_server"]["profiles"][0].as_str(),
+        Some("performance")
+    );
+    assert!(compose["services"]["mcp_conformance_server"].is_null());
     assert!(compose["services"]["gateway"].is_null());
     assert_eq!(
         compose["services"]["auth"]["network_mode"].as_str(),
@@ -751,7 +785,8 @@ fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
 services:
   mcp_conformance_server:
     profiles: ["conformance"]
-    image: cf-integration/mcp-conformance-server:0.2.0-alpha.11
+    image: ${CF_CONFORMANCE_IMAGE:-ghcr.io/contextforge-org/cf-integration-fixture:${CF_HARNESS_VERSION:?Set CF_HARNESS_VERSION to the cf-integration version}}
+    pull_policy: ${CF_HARNESS_PULL_POLICY:-missing}
     labels:
       name: cf-conformance-server
     build:
@@ -818,7 +853,9 @@ services:
 
     let proxy = fs::read_to_string(root.join("docker/nginx.cf-conformance-proxy.conf"))
         .expect("read conformance proxy config");
-    assert!(proxy.contains("proxy_pass http://mcp_conformance_server:3000;"));
+    assert!(proxy.contains("proxy_pass http://conformance_fixture;"));
+    assert!(proxy.contains("server mcp_conformance_server:3000 resolve;"));
+    assert!(proxy.contains("keepalive 128;"));
     assert!(proxy.contains("proxy_set_header Host localhost:3000;"));
 }
 
@@ -1013,4 +1050,60 @@ fn multiple_violations_have_stable_contract_order() {
             "register_fast_time does not register the streamable HTTP endpoint at /mcp",
         ]
     );
+}
+
+#[test]
+fn harness_images_match_the_cli_release_and_allow_prebuilt_overrides() {
+    for (file, service, variable, image) in [
+        (
+            "docker-compose.cf-tools.yaml",
+            "mcp_tools",
+            "CF_MCP_TOOLS_IMAGE",
+            "tools",
+        ),
+        (
+            "docker-compose.cf-conformance-fixture.yaml",
+            "mcp_conformance_server",
+            "CF_CONFORMANCE_IMAGE",
+            "fixture",
+        ),
+        (
+            "docker-compose.cf-dataplane-config.yaml",
+            "config_writer",
+            "CF_HELPERS_IMAGE",
+            "helpers",
+        ),
+        (
+            "docker-compose.cf-dataplane-standalone.yaml",
+            "auth",
+            "CF_HELPERS_IMAGE",
+            "helpers",
+        ),
+        (
+            "docker-compose.cf-dataplane.yaml",
+            "auth",
+            "CF_HELPERS_IMAGE",
+            "helpers",
+        ),
+        (
+            "docker-compose.cf-controlplane-build-labels.yaml",
+            "register_fast_time",
+            "CF_HELPERS_IMAGE",
+            "helpers",
+        ),
+    ] {
+        let value: yaml_serde::Value = yaml_serde::from_str(
+            &fs::read_to_string(workspace_root().join("docker").join(file)).expect("compose file"),
+        )
+        .expect("valid compose YAML");
+        let entry = &value["services"][service];
+        let expected = format!(
+            "${{{variable}:-ghcr.io/contextforge-org/cf-integration-{image}:${{CF_HARNESS_VERSION:?Set CF_HARNESS_VERSION to the cf-integration version}}}}"
+        );
+        assert_eq!(entry["image"].as_str(), Some(expected.as_str()));
+        assert_eq!(
+            entry["pull_policy"].as_str(),
+            Some("${CF_HARNESS_PULL_POLICY:-missing}")
+        );
+    }
 }

@@ -11,6 +11,20 @@ for _, key in ipairs(redis.call('KEYS', '*UserConfig*')) do
             and type(config) == 'table'
             and type(config.virtual_hosts) == 'table'
             and config.virtual_hosts[ARGV[1]] ~= nil then
+            local host = config.virtual_hosts[ARGV[1]]
+            if type(host.backends) ~= 'table' then
+                return 'incompatible: virtual host has no backends map'
+            end
+            for _, backend in pairs(host.backends) do
+                if type(backend.mcp_protocol_version) ~= 'string' then
+                    return 'incompatible: backend is missing mcp_protocol_version'
+                end
+            end
+            for _, catalog in ipairs({'tools', 'resources', 'resource_templates', 'prompts'}) do
+                if type(host[catalog]) ~= 'table' then
+                    return 'incompatible: virtual host is missing the ' .. catalog .. ' route map'
+                end
+            end
             return 1
         end
     end
@@ -19,6 +33,46 @@ return 0
 "#;
 const STANDALONE_TENANT_ID: &str = "cf-integration";
 const STANDALONE_USER_ID: &str = "cf-integration@example.invalid";
+
+pub(super) enum StandaloneBackend {
+    Conformance(ProtocolVersion),
+    FastTime(ProtocolVersion),
+}
+
+pub(super) struct ManagedTargetOptions {
+    standalone: bool,
+    observability: bool,
+    load: bool,
+    backend: StandaloneBackend,
+}
+
+impl ManagedTargetOptions {
+    pub(super) fn conformance(
+        standalone: bool,
+        observability: bool,
+        protocol_version: ProtocolVersion,
+    ) -> Self {
+        Self {
+            standalone,
+            observability,
+            load: false,
+            backend: StandaloneBackend::Conformance(protocol_version),
+        }
+    }
+
+    pub(super) fn load(
+        standalone: bool,
+        observability: bool,
+        protocol_version: ProtocolVersion,
+    ) -> Self {
+        Self {
+            standalone,
+            observability,
+            load: true,
+            backend: StandaloneBackend::FastTime(protocol_version),
+        }
+    }
+}
 
 struct ManagedSessionScope<'a, R> {
     runtime: &'a RuntimeContext<R>,
@@ -110,44 +164,61 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         &self,
         topology: StackMode,
         server_id: &str,
-        standalone: bool,
-        observability: bool,
-        protocol_version: &ProtocolVersion,
+        options: ManagedTargetOptions,
         operation: F,
     ) -> AppResult<()>
     where
         F: FnOnce(String, Vec<String>) -> Fut,
         Fut: Future<Output = AppResult<()>>,
     {
-        if standalone && topology != StackMode::Dataplane {
+        if options.standalone && topology != StackMode::Dataplane {
             return Err(AppFailure::from(anyhow!(
                 "standalone mode requires the external lane"
             )));
         }
-        let mut scope = ManagedSessionScope::new(self, topology, standalone);
+        let mut scope = ManagedSessionScope::new(self, topology, options.standalone);
         let primary = async {
-            let token = if standalone {
-                self.stack_up_standalone_dataplane(false, observability)
+            let token = if options.standalone {
+                self.stack_up_standalone_dataplane(false, options.observability)
                     .await?;
-                self.start_standalone_fixture(protocol_version, observability)
-                    .await?;
-                self.standalone_dataplane_token(observability)?
+                match options.backend {
+                    StandaloneBackend::Conformance(version) => {
+                        self.start_standalone_fixture(&version, options.observability)
+                            .await?;
+                    }
+                    StandaloneBackend::FastTime(_) => {
+                        self.start_standalone_fast_time(options.observability)
+                            .await?;
+                    }
+                }
+                self.standalone_dataplane_token(options.observability)?
             } else {
-                let project = self.performance_compose_project(topology, observability);
-                self.stack_up_with_project(topology, false, project, false, observability)
+                let project =
+                    self.performance_compose_project(topology, options.observability, options.load);
+                self.stack_up_with_project(topology, false, project, false, options.observability)
                     .await?;
                 self.prepare_test_target(topology, server_id).await?;
                 self.managed_bearer_token(topology, server_id).await?
             };
             let value = token.value.clone();
             scope.token = Some(token);
-            let tool_names = if standalone {
-                self.publish_standalone_conformance_config(
-                    server_id,
-                    protocol_version.wire_version(),
-                    &value,
-                    observability,
-                )?
+            let tool_names = if options.standalone {
+                match options.backend {
+                    StandaloneBackend::Conformance(version) => self
+                        .publish_standalone_conformance_config(
+                            server_id,
+                            version.wire_version(),
+                            &value,
+                            options.observability,
+                        )?,
+                    StandaloneBackend::FastTime(version) => self
+                        .publish_standalone_fast_time_config(
+                            server_id,
+                            version.wire_version(),
+                            &value,
+                            options.observability,
+                        )?,
+                }
             } else {
                 Vec::new()
             };
@@ -196,7 +267,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 "0",
                 server_id,
             ]);
-            if self.capture_text(&command)?.as_str() == "1" {
+            let snapshot = self.capture_text(&command)?;
+            if let Some(reason) = snapshot.strip_prefix("incompatible: ") {
+                return Err(AppFailure::from(anyhow!(
+                    "control-plane publisher schema is incompatible with the external dataplane: {reason}; use a compatible control-plane publisher or --standalone for isolated dataplane tests"
+                )));
+            }
+            if snapshot == "1" {
                 return Ok(());
             }
             let now = tokio::time::Instant::now();

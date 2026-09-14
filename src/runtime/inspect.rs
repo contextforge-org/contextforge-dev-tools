@@ -18,9 +18,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         self.with_managed_authenticated_target(
             mode,
             &server_id,
-            standalone,
-            true,
-            protocol_version,
+            session::ManagedTargetOptions::conformance(standalone, true, *protocol_version),
             |token, _| async move {
                 let endpoint = GatewayClient::new(
                     gateway_topology(mode),

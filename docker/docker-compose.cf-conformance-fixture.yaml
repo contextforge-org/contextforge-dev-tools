@@ -1,9 +1,10 @@
 services:
   mcp_conformance_server:
     profiles: ["conformance"]
-    image: cf-integration/mcp-conformance-server:0.2.0-alpha.11
+    image: ${CF_CONFORMANCE_IMAGE:-ghcr.io/contextforge-org/cf-integration-fixture:${CF_HARNESS_VERSION:?Set CF_HARNESS_VERSION to the cf-integration version}}
     labels:
       name: cf-conformance-server
+    pull_policy: ${CF_HARNESS_PULL_POLICY:-missing}
     build:
       context: ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT to the integration harness root}
       dockerfile: docker/mcp-conformance-server.Dockerfile
