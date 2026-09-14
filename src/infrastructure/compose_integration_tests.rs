@@ -822,7 +822,9 @@ services:
 
     let proxy = fs::read_to_string(root.join("docker/nginx.cf-conformance-proxy.conf"))
         .expect("read conformance proxy config");
-    assert!(proxy.contains("proxy_pass http://mcp_conformance_server:3000;"));
+    assert!(proxy.contains("proxy_pass http://conformance_fixture;"));
+    assert!(proxy.contains("server mcp_conformance_server:3000;"));
+    assert!(proxy.contains("keepalive 128;"));
     assert!(proxy.contains("proxy_set_header Host localhost:3000;"));
 }
 
@@ -1043,6 +1045,18 @@ fn harness_images_match_the_cli_release_and_allow_prebuilt_overrides() {
         (
             "docker-compose.cf-dataplane-standalone.yaml",
             "auth",
+            "CF_HELPERS_IMAGE",
+            "helpers",
+        ),
+        (
+            "docker-compose.cf-dataplane.yaml",
+            "auth",
+            "CF_HELPERS_IMAGE",
+            "helpers",
+        ),
+        (
+            "docker-compose.cf-controlplane-build-labels.yaml",
+            "register_fast_time",
             "CF_HELPERS_IMAGE",
             "helpers",
         ),

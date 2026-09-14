@@ -103,7 +103,7 @@ impl LocustCommand {
             OsString::from("--headless"),
             OsString::from("--html=/mnt/reports/locust_report.html"),
             OsString::from("--csv=/mnt/reports/locust"),
-            OsString::from("--json-file=/mnt/reports/locust.json"),
+            OsString::from("--json-file=/mnt/reports/locust"),
             OsString::from("--only-summary"),
         ];
         let command = project.command(arguments);
