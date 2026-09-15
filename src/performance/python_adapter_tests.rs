@@ -22,8 +22,10 @@ fn workspace_root() -> PathBuf {
 
 fn locust_stub() -> TempDir {
     let directory = tempfile::tempdir().expect("temporary Python stub should be created");
+    let locust = directory.path().join("locust");
+    fs::create_dir(&locust).expect("Locust stub package should be created");
     fs::write(
-        directory.path().join("locust.py"),
+        locust.join("__init__.py"),
         r#"
 class HttpUser:
     pass
@@ -38,7 +40,7 @@ class Events:
 
 events = Events()
 
-def between(*_args):
+def constant(*_args):
     return lambda: None
 
 def task(_weight):
@@ -47,8 +49,13 @@ def task(_weight):
     )
     .expect("Locust stub should be written");
     fs::write(
+        locust.join("runners.py"),
+        "class MasterRunner:\n    pass\n\nclass WorkerRunner:\n    pass\n",
+    )
+    .expect("Locust runner stubs should be written");
+    fs::write(
         directory.path().join("gevent.py"),
-        "def spawn_later(_delay, callback):\n    callback()\n",
+        "def spawn_later(_delay, callback, *args):\n    callback(*args)\n",
     )
     .expect("gevent stub");
     directory
@@ -119,6 +126,7 @@ class Environment:
     process_exit_code = 0
 
 empty_environment = Environment()
+empty_environment.runner = object()
 adapter.fail_empty_run(empty_environment)
 assert empty_environment.process_exit_code == 1
 
@@ -141,6 +149,42 @@ assert running.process_exit_code == 1
 assert running.runner.stopped == 1
 running.events.user_error.callback(exception=RuntimeError("user failed"))
 assert running.runner.stopped == 1
+
+from locust.runners import MasterRunner, WorkerRunner
+
+class DistributedWorker(WorkerRunner):
+    def __init__(self):
+        self.messages = []
+        self.stopped = 0
+    def send_message(self, kind, payload): self.messages.append((kind, payload))
+    def quit(self): self.stopped += 1
+
+worker = Environment()
+worker.events = Events()
+worker.runner = DistributedWorker()
+adapter.install_fail_fast(worker)
+worker.events.request.callback(exception=RuntimeError("worker request failed"))
+assert worker.process_exit_code == 1
+assert worker.runner.messages == [(
+    adapter._FAIL_FAST_MESSAGE,
+    {"error": "worker request failed"},
+)]
+assert worker.runner.stopped == 0
+
+class DistributedMaster(MasterRunner):
+    def __init__(self):
+        self.listeners = {}
+        self.stopped = 0
+    def register_message(self, kind, listener): self.listeners[kind] = listener
+    def quit(self): self.stopped += 1
+
+master = Environment()
+master.events = Events()
+master.runner = DistributedMaster()
+adapter.install_fail_fast(master)
+master.runner.listeners[adapter._FAIL_FAST_MESSAGE](environment=master, msg=object())
+assert master.process_exit_code == 1
+assert master.runner.stopped == 1
 "#;
 
     let output = Command::new(python())

@@ -58,6 +58,11 @@ services:
     labels:
       name: cf-dataplane
     restart: "no"
+    cpuset: "${CF_LOAD_TARGET_CPUSET:-}"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     networks:
       mcpnet:
         aliases:
@@ -127,6 +132,11 @@ services:
     labels:
       name: cf-locust
     restart: "no"
+    cpuset: "${CF_LOAD_LOCUST_CPUSET:-}"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     networks:
       - mcpnet

@@ -300,6 +300,16 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
         compose["services"]["dataplane"]["pull_policy"].as_str(),
         Some("${CF_DATAPLANE_PULL_POLICY:-always}")
     );
+    assert_eq!(
+        compose["services"]["dataplane"]["cpuset"].as_str(),
+        Some("${CF_LOAD_TARGET_CPUSET:-}")
+    );
+    for key in ["soft", "hard"] {
+        assert_eq!(
+            compose["services"]["dataplane"]["ulimits"]["nofile"][key].as_u64(),
+            Some(65536)
+        );
+    }
     for obsolete in [
         "CONTEXTFORGE_GATEWAY_RS_ADDRESS",
         "CONTEXTFORGE_GATEWAY_RS_REDIS_HOSTNAME",
@@ -325,6 +335,30 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
     let load_proxy = fs::read_to_string(root.join("docker/nginx.cf-load-builtin.conf"))
         .expect("read builtin load proxy configuration");
     assert!(load_proxy.contains("worker_rlimit_nofile 65535;"));
+}
+
+#[test]
+fn load_generator_overlays_raise_the_open_file_limit() {
+    for file in [
+        "docker/docker-compose.cf-integration.yaml",
+        "docker/docker-compose.cf-dataplane-standalone.yaml",
+    ] {
+        let compose = fs::read_to_string(workspace_root().join(file))
+            .expect("read load-generator Compose overlay");
+        let compose: yaml_serde::Value =
+            yaml_serde::from_str(&compose).expect("parse load-generator Compose overlay");
+        assert_eq!(
+            compose["services"]["locust"]["cpuset"].as_str(),
+            Some("${CF_LOAD_LOCUST_CPUSET:-}")
+        );
+        for key in ["soft", "hard"] {
+            assert_eq!(
+                compose["services"]["locust"]["ulimits"]["nofile"][key].as_u64(),
+                Some(65536),
+                "{file} must raise Locust's {key} open-file limit"
+            );
+        }
+    }
 }
 
 #[test]
@@ -458,6 +492,10 @@ fn standalone_harness_owns_auth_without_dataplane_tools() {
             .as_str(),
         Some("http://127.0.0.1:4446/.well-known/jwks.json")
     );
+    assert_eq!(
+        compose["services"]["dataplane"]["cpuset"].as_str(),
+        Some("${CF_LOAD_TARGET_CPUSET:-}")
+    );
     assert!(compose["services"]["dataplane"]["command"].is_null());
     assert!(compose["services"]["dataplane"]["volumes"].is_null());
     assert_eq!(
@@ -489,7 +527,39 @@ fn standalone_harness_owns_auth_without_dataplane_tools() {
         compose["services"]["locust"]["image"].as_str(),
         Some("locustio/locust:2.46.2")
     );
+    for service in ["dataplane", "locust"] {
+        for key in ["soft", "hard"] {
+            assert_eq!(
+                compose["services"][service]["ulimits"]["nofile"][key].as_u64(),
+                Some(65536)
+            );
+        }
+    }
     assert!(compose["services"]["locust"]["environment"]["JWT_SECRET_KEY"].is_null());
+}
+
+#[test]
+fn builtin_load_overlay_accepts_isolated_cpus_and_raises_locust_nofile() {
+    let compose =
+        fs::read_to_string(workspace_root().join("docker/docker-compose.cf-load-builtin.yaml"))
+            .expect("read built-in load overlay");
+    let compose: yaml_serde::Value =
+        yaml_serde::from_str(&compose).expect("parse built-in load overlay");
+
+    assert_eq!(
+        compose["services"]["gateway"]["cpuset"].as_str(),
+        Some("${CF_LOAD_TARGET_CPUSET:-}")
+    );
+    assert_eq!(
+        compose["services"]["locust"]["cpuset"].as_str(),
+        Some("${CF_LOAD_LOCUST_CPUSET:-}")
+    );
+    for key in ["soft", "hard"] {
+        assert_eq!(
+            compose["services"]["locust"]["ulimits"]["nofile"][key].as_u64(),
+            Some(65536)
+        );
+    }
 }
 
 #[test]

@@ -17,6 +17,7 @@ Env:
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import random
@@ -24,7 +25,8 @@ import uuid
 from urllib.parse import quote
 
 import gevent
-from locust import HttpUser, between, events, task
+from locust import HttpUser, constant, events, task
+from locust.runners import MasterRunner, WorkerRunner
 
 PROTOCOL_VERSION = os.environ.get("MCP_PROTOCOL_VERSION", "2026-07-28")
 STATELESS = PROTOCOL_VERSION == "2026-07-28"
@@ -35,6 +37,8 @@ ACCEPT = "application/json, text/event-stream"
 _REQUEST_TIMEOUT_ERROR = (
     "LOCUST_REQUEST_TIMEOUT_SECONDS must be a finite number greater than zero"
 )
+_FAIL_FAST_MESSAGE = "cf_integration_fail_fast"
+_LOGGER = logging.getLogger(__name__)
 
 
 def _request_timeout_seconds() -> float:
@@ -205,13 +209,38 @@ def install_fail_fast(environment, **_kwargs) -> None:
     """Stop after the first request or user error, retaining failed-run reports."""
     stopping = False
 
+    def stop_runner():
+        nonlocal stopping
+        if stopping:
+            return
+        stopping = True
+        environment.process_exit_code = 1
+        # Let the triggering event finish recording statistics before stopping users.
+        gevent.spawn_later(0, environment.runner.quit)
+
+    def stop_from_worker(msg=None, **_message):
+        data = getattr(msg, "data", None)
+        detail = data.get("error") if isinstance(data, dict) else None
+        _LOGGER.error("Distributed worker failed: %s", detail or "unspecified error")
+        stop_runner()
+
+    if isinstance(environment.runner, MasterRunner):
+        environment.runner.register_message(_FAIL_FAST_MESSAGE, stop_from_worker)
+
     def stop_on_error(exception=None, **_kwargs):
         nonlocal stopping
         if exception is not None and not stopping:
             stopping = True
             environment.process_exit_code = 1
-            # Let the request event finish recording statistics before stopping users.
-            gevent.spawn_later(0, environment.runner.quit)
+            if isinstance(environment.runner, WorkerRunner):
+                gevent.spawn_later(
+                    0,
+                    environment.runner.send_message,
+                    _FAIL_FAST_MESSAGE,
+                    {"error": safe_diagnostic(exception)},
+                )
+            else:
+                gevent.spawn_later(0, environment.runner.quit)
 
     environment.events.request.add_listener(stop_on_error)
     environment.events.user_error.add_listener(stop_on_error)
@@ -220,14 +249,17 @@ def install_fail_fast(environment, **_kwargs) -> None:
 @events.quitting.add_listener
 def fail_empty_run(environment, **_kwargs) -> None:
     """Fail closed when user setup prevented every request."""
-    if environment.stats.total.num_requests == 0:
+    if (
+        not isinstance(environment.runner, WorkerRunner)
+        and environment.stats.total.num_requests == 0
+    ):
         environment.process_exit_code = 1
 
 
 class MCPGatewayUser(HttpUser):
     """Drives discovery or initialization, then tool requests on the public route."""
 
-    wait_time = between(0.05, 0.2)
+    wait_time = constant(0)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

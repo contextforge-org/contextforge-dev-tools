@@ -218,6 +218,9 @@ fn load_keeps_validated_locust_settings() {
                 users,
                 spawn_rate,
                 run_time,
+                workers,
+                builtin_memory_limit,
+                isolate_cpus,
                 ..
             }),
     }) = parse(&[
@@ -230,6 +233,11 @@ fn load_keeps_validated_locust_settings() {
         "0.5",
         "--run-time",
         "1m30s",
+        "--workers",
+        "4",
+        "--builtin-memory-limit",
+        "16G",
+        "--isolate-cpus",
     ])
     .command
     else {
@@ -241,8 +249,19 @@ fn load_keeps_validated_locust_settings() {
     assert_eq!(users, Some(2));
     assert_eq!(spawn_rate, Some(0.5));
     assert_eq!(run_time.as_deref(), Some("1m30s"));
+    assert_eq!(workers, Some(4));
+    assert_eq!(builtin_memory_limit.as_deref(), Some("16G"));
+    assert!(isolate_cpus);
 
     rejected(&["cf-integration", "load", "run", "--users", "0"]);
+    rejected(&["cf-integration", "load", "run", "--workers", "0"]);
+    rejected(&[
+        "cf-integration",
+        "load",
+        "run",
+        "--builtin-memory-limit",
+        "0G",
+    ]);
     rejected(&["cf-integration", "load", "run", "--run-time", "1ms"]);
     rejected(&["cf-integration", "load", "run", "--run-time", "zero"]);
     rejected(&["cf-integration", "load", "run", "--engine", "locust"]);
@@ -785,7 +804,7 @@ fn short_commands_and_options_resolve_identically_to_long_forms() {
         (
             &[
                 "l", "r", "-s", "-l", "external", "-c", "modern", "-o", "-S", "-u", "20", "-r",
-                "5", "-t", "2m",
+                "5", "-t", "2m", "-w", "4", "-i",
             ],
             &[
                 "load",
@@ -803,6 +822,20 @@ fn short_commands_and_options_resolve_identically_to_long_forms() {
                 "5",
                 "--run-time",
                 "2m",
+                "--workers",
+                "4",
+                "--isolate-cpus",
+            ],
+        ),
+        (
+            &["l", "r", "-l", "builtin", "-m", "16G"],
+            &[
+                "load",
+                "run",
+                "--lane",
+                "builtin",
+                "--builtin-memory-limit",
+                "16G",
             ],
         ),
         (

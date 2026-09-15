@@ -656,7 +656,9 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             let run_routed = lanes.contains(&target);
             let stack_progress = Activity::spinner(format!("Prepare {}", topology.lane_label()));
             let mut topology_failure = if standalone_topology {
-                self.stack_up_standalone_dataplane(true, true).await.err()
+                self.stack_up_standalone_dataplane(true, true, None)
+                    .await
+                    .err()
             } else {
                 self.stack_up_for_conformance(topology, true).await.err()
             };
@@ -1002,7 +1004,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         };
         let stack_progress = Activity::spinner(progress);
         let stack_result = if standalone {
-            self.stack_up_standalone_dataplane(!reuse_stack, true).await
+            self.stack_up_standalone_dataplane(!reuse_stack, true, None)
+                .await
         } else {
             self.stack_up_for_conformance(StackMode::Dataplane, !reuse_stack)
                 .await

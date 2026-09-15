@@ -22,6 +22,8 @@ pub(crate) struct LoadRequest {
     pub(crate) spawn_rate: Option<f64>,
     /// Explicit engine duration override.
     pub(crate) run_time: Option<String>,
+    /// Explicit local load-generator worker count.
+    pub(crate) workers: Option<usize>,
 }
 
 /// Validated load settings after applying CLI, process, dotenv, and default precedence.
@@ -30,6 +32,7 @@ pub(crate) struct LoadSettings {
     users: NonZeroUsize,
     spawn_rate: f64,
     run_time: String,
+    workers: NonZeroUsize,
 }
 
 impl LoadSettings {
@@ -76,10 +79,14 @@ impl LoadSettings {
         )?;
         validate_locust_run_time(&run_time)?;
 
+        let workers = NonZeroUsize::new(request.workers.unwrap_or(1))
+            .context("load workers must be an integer greater than zero")?;
+
         Ok(Self {
             users,
             spawn_rate,
             run_time,
+            workers,
         })
     }
 
@@ -99,6 +106,12 @@ impl LoadSettings {
     #[must_use]
     pub(crate) fn run_time(&self) -> &str {
         &self.run_time
+    }
+
+    /// Returns the number of local Locust worker processes.
+    #[must_use]
+    pub(crate) fn workers(&self) -> NonZeroUsize {
+        self.workers
     }
 }
 
