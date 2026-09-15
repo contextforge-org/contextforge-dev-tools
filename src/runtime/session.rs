@@ -44,6 +44,8 @@ pub(super) struct ManagedTargetOptions {
     observability: bool,
     load: bool,
     backend: StandaloneBackend,
+    builtin_memory_limit: Option<String>,
+    load_target_cpuset: Option<String>,
 }
 
 impl ManagedTargetOptions {
@@ -57,6 +59,8 @@ impl ManagedTargetOptions {
             observability,
             load: false,
             backend: StandaloneBackend::Conformance(protocol_version),
+            builtin_memory_limit: None,
+            load_target_cpuset: None,
         }
     }
 
@@ -64,12 +68,16 @@ impl ManagedTargetOptions {
         standalone: bool,
         observability: bool,
         protocol_version: ProtocolVersion,
+        builtin_memory_limit: Option<String>,
+        load_target_cpuset: Option<String>,
     ) -> Self {
         Self {
             standalone,
             observability,
             load: true,
             backend: StandaloneBackend::FastTime(protocol_version),
+            builtin_memory_limit,
+            load_target_cpuset,
         }
     }
 }
@@ -179,8 +187,12 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let mut scope = ManagedSessionScope::new(self, topology, options.standalone);
         let primary = async {
             let token = if options.standalone {
-                self.stack_up_standalone_dataplane(false, options.observability)
-                    .await?;
+                self.stack_up_standalone_dataplane(
+                    false,
+                    options.observability,
+                    options.load_target_cpuset.as_deref(),
+                )
+                .await?;
                 match options.backend {
                     StandaloneBackend::Conformance(version) => {
                         self.start_standalone_fixture(&version, options.observability)
@@ -195,8 +207,18 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             } else {
                 let project =
                     self.performance_compose_project(topology, options.observability, options.load);
-                self.stack_up_with_project(topology, false, project, false, options.observability)
-                    .await?;
+                self.stack_up_with_project(
+                    topology,
+                    false,
+                    project,
+                    false,
+                    options.observability,
+                    stack::StackRuntimeOverrides {
+                        builtin_memory_limit: options.builtin_memory_limit.as_deref(),
+                        load_target_cpuset: options.load_target_cpuset.as_deref(),
+                    },
+                )
+                .await?;
                 self.prepare_test_target(topology, server_id).await?;
                 self.managed_bearer_token(topology, server_id).await?
             };

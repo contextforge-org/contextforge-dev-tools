@@ -61,6 +61,11 @@ services:
     labels:
       name: cf-dataplane
     restart: unless-stopped
+    cpuset: "${CF_LOAD_TARGET_CPUSET:-}"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     networks:
       mcpnet:
         aliases:

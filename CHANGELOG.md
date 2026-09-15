@@ -7,6 +7,25 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- Add `-w/--workers` to distribute load across local Locust processes,
+  `-i/--isolate-cpus` to split Docker CPUs between the target and load
+  generator, and `-m/--builtin-memory-limit` to tune the built-in gateway
+  without external environment setup.
+
+### Fixed
+
+- Propagate distributed worker failures to the Locust coordinator and reject
+  reports containing a hidden worker failure.
+
+- Raise the open-file limit for the load generator and external dataplane so
+  high-concurrency tests measure service capacity instead of Docker's low
+  default descriptor limit.
+
+- Remove the Locust client's 50-200 ms think time so load runs measure maximum
+  request throughput.
+
 ## [0.4.0] - 2026-09-14
 
 ### Added

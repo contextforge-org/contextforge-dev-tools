@@ -350,6 +350,11 @@ fn load_preserves_explicit_locust_settings() {
                 "0.5",
                 "--run-time",
                 "10s",
+                "--workers",
+                "4",
+                "--builtin-memory-limit",
+                "16G",
+                "--isolate-cpus",
             ],
             &[],
         ),
@@ -358,11 +363,14 @@ fn load_preserves_explicit_locust_settings() {
             client_era: ProtocolVersion::Legacy,
             standalone: false,
             observability: false,
+            builtin_memory_limit: Some("16G".to_owned()),
+            isolate_cpus: true,
             request: LoadRequest {
                 smoke: true,
                 users: Some(2),
                 spawn_rate: Some(0.5),
                 run_time: Some("10s".to_owned()),
+                workers: Some(4),
             },
         })
     );
@@ -388,11 +396,14 @@ fn standalone_load_is_external_only() {
             client_era: ProtocolVersion::default(),
             standalone: true,
             observability: false,
+            builtin_memory_limit: None,
+            isolate_cpus: false,
             request: LoadRequest {
                 smoke: false,
                 users: None,
                 spawn_rate: None,
                 run_time: None,
+                workers: None,
             },
         })
     );
@@ -413,6 +424,23 @@ fn standalone_load_is_external_only() {
     let error = resolve_action(cli, &Environment::new())
         .expect_err("standalone mode must reject the built-in lane");
     assert_eq!(error.to_string(), "--standalone requires --lane external");
+
+    let cli = Cli::try_parse_from([
+        "cf-integration",
+        "load",
+        "run",
+        "--lane",
+        "external",
+        "--builtin-memory-limit",
+        "16G",
+    ])
+    .expect("CLI syntax should parse before lane validation");
+    let error = resolve_action(cli, &Environment::new())
+        .expect_err("the built-in memory limit must reject the external lane");
+    assert_eq!(
+        error.to_string(),
+        "--builtin-memory-limit requires --lane builtin"
+    );
 }
 
 #[test]

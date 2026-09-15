@@ -93,6 +93,12 @@ impl Action {
                 if args.observability {
                     summary.push_str("\nObservability: ClickStack enabled during load");
                 }
+                if let Some(limit) = &args.builtin_memory_limit {
+                    summary.push_str(&format!("\nBuilt-in gateway memory limit: {limit}"));
+                }
+                if args.isolate_cpus {
+                    summary.push_str("\nCPU isolation: target and Locust split evenly");
+                }
                 summary
             }
             Self::Live {
@@ -310,6 +316,8 @@ pub(crate) struct ResolvedLoadArgs {
     pub(crate) client_era: ProtocolVersion,
     pub(crate) standalone: bool,
     pub(crate) observability: bool,
+    pub(crate) builtin_memory_limit: Option<String>,
+    pub(crate) isolate_cpus: bool,
     pub(crate) request: LoadRequest,
 }
 
@@ -396,16 +404,22 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
             let LoadCommand::Run(args) = args.command;
             let topology = resolve_lane(args.lane, environment)?;
             validate_standalone_lane(standalone, topology)?;
+            if args.builtin_memory_limit.is_some() && topology != StackMode::Controlplane {
+                bail!("--builtin-memory-limit requires --lane builtin");
+            }
             Ok(Action::Load(ResolvedLoadArgs {
                 topology,
                 client_era: args.client_era,
                 standalone,
                 observability: args.observability,
+                builtin_memory_limit: args.builtin_memory_limit,
+                isolate_cpus: args.isolate_cpus,
                 request: LoadRequest {
                     smoke: args.smoke,
                     users: args.users,
                     spawn_rate: args.spawn_rate,
                     run_time: args.run_time,
+                    workers: args.workers,
                 },
             }))
         }

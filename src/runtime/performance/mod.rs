@@ -2,6 +2,12 @@
 
 use super::*;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LoadCpuSplit {
+    target: String,
+    locust: String,
+}
+
 impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn start_standalone_fast_time(&self, observability: bool) -> AppResult<()> {
         let command = self.standalone_dataplane_project(observability).command([
@@ -59,6 +65,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn run_load(&self, args: ResolvedLoadArgs) -> AppResult<()> {
         let settings =
             LoadSettings::resolve(&self.config, &args.request).map_err(AppFailure::from)?;
+        let cpu_split = args
+            .isolate_cpus
+            .then(|| self.load_cpu_split())
+            .transpose()?;
         let server_id = self.default_server_id().to_owned();
         let operation_server_id = server_id.clone();
         let preparation = Activity::spinner("Preparing performance stack");
@@ -69,6 +79,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 args.standalone,
                 args.observability,
                 args.client_era,
+                args.builtin_memory_limit.clone(),
+                cpu_split.as_ref().map(|split| split.target.clone()),
             ),
             |token, standalone_tool_names| async move {
                 let project = if args.standalone {
@@ -97,18 +109,28 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                         .env("MCP_TOOL_NAMES", standalone_tool_names.join(","))
                         .env("MCP_SKIP_TOOL_LIST", "true");
                 }
+                if let Some(split) = &cpu_split {
+                    command_spec = command_spec.env(LOAD_LOCUST_CPUSET_ENV, split.locust.as_str());
+                }
                 let output_log = command.report_dir().join("locust.log");
                 fs::write(&output_log, [])
                     .with_context(|| format!("failed to clear Locust output log {output_log:?}"))
                     .map_err(AppFailure::from)?;
                 preparation.finish(true);
 
-                let description = format!(
-                    "Running load test ({} users, {}/s, {})",
+                let mut description = format!(
+                    "Running load test ({} users, {}/s, {}, {} workers)",
                     settings.users(),
                     settings.spawn_rate(),
                     settings.run_time(),
+                    settings.workers(),
                 );
+                if let Some(split) = &cpu_split {
+                    description.push_str(&format!(
+                        ", target CPUs {}, Locust CPUs {}",
+                        split.target, split.locust
+                    ));
+                }
                 let activity = Activity::spinner(description);
                 let started = std::time::Instant::now();
                 let process_result = self
@@ -153,6 +175,39 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         )
         .await
     }
+
+    fn load_cpu_split(&self) -> AppResult<LoadCpuSplit> {
+        let value =
+            self.capture_text(&CommandSpec::new("docker").args(["info", "--format", "{{.NCPU}}"]))?;
+        let cpus = value.parse::<usize>().map_err(|_| {
+            AppFailure::from(anyhow!(
+                "Docker returned an invalid CPU count for isolation"
+            ))
+        })?;
+        split_load_cpus(cpus)
+    }
+}
+
+fn split_load_cpus(cpus: usize) -> AppResult<LoadCpuSplit> {
+    if cpus < 2 {
+        return Err(AppFailure::from(anyhow!(
+            "--isolate-cpus requires Docker to expose at least two CPUs"
+        )));
+    }
+    let target_end = cpus / 2 - 1;
+    let locust_start = target_end + 1;
+    Ok(LoadCpuSplit {
+        target: cpu_range(0, target_end),
+        locust: cpu_range(locust_start, cpus - 1),
+    })
+}
+
+fn cpu_range(start: usize, end: usize) -> String {
+    if start == end {
+        start.to_string()
+    } else {
+        format!("{start}-{end}")
+    }
 }
 
 fn finalize_locust_run(
@@ -162,4 +217,33 @@ fn finalize_locust_run(
 ) -> AppResult<()> {
     audit_locust_reports(report_dir, bearer_token).map_err(AppFailure::from)?;
     process_result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_cpu_split_partitions_every_available_cpu() {
+        assert_eq!(
+            split_load_cpus(16).expect("sixteen CPUs should split"),
+            LoadCpuSplit {
+                target: String::from("0-7"),
+                locust: String::from("8-15"),
+            }
+        );
+        assert_eq!(
+            split_load_cpus(3).expect("three CPUs should split"),
+            LoadCpuSplit {
+                target: String::from("0"),
+                locust: String::from("1-2"),
+            }
+        );
+        assert_eq!(
+            split_load_cpus(1)
+                .expect_err("one CPU cannot be isolated")
+                .to_string(),
+            "--isolate-cpus requires Docker to expose at least two CPUs"
+        );
+    }
 }
