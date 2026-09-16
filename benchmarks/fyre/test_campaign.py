@@ -128,6 +128,19 @@ class CapacityTests(unittest.TestCase):
         self.assertNotIn("measurement", phase.call_args_list[0].kwargs)
         self.assertTrue(phase.call_args_list[1].kwargs["measurement"])
 
+    def test_smoke_passes_script_once_to_python_entrypoint(self):
+        remote = mock.Mock()
+        campaign.smoke(
+            remote,
+            {"public_ip": "192.0.2.10"},
+            ["http://192.0.2.20:4445/mcp"],
+            "locust@sha256:test",
+        )
+        command = remote.ssh.call_args.args[1]
+        self.assertIn("--entrypoint python", command)
+        self.assertIn("locust@sha256:test smoke.py --urls", command)
+        self.assertNotIn("locust@sha256:test python smoke.py", command)
+
     def test_pressure_excludes_ramp_and_warmup_samples(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "host.jsonl"

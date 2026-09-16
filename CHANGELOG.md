@@ -40,6 +40,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Omit an empty MCP allowed-origin environment value that prevented the Rust
   dataplane from starting on FYRE.
 
+- Invoke the FYRE smoke script correctly through the Locust image's Python
+  entrypoint before beginning a capacity step.
+
 - Propagate distributed worker failures to the Locust coordinator and reject
   reports containing a hidden worker failure.
 

@@ -226,7 +226,7 @@ def prepare_hosts(
             # The first auth container creates the campaign key; subsequent replicas receive it.
             remote.ssh(
                 first["public_ip"],
-                "test -s ~/cf-fyre/state/keys/jwt.key && sudo chown $USER:$(id -gn) ~/cf-fyre/state/keys/jwt.key && chmod 600 ~/cf-fyre/state/keys/jwt.key",
+                "test -s ~/cf-fyre/state/keys/jwt.key && chown root:root ~/cf-fyre/state/keys/jwt.key && chmod 600 ~/cf-fyre/state/keys/jwt.key",
             )
 
     token = remote.ssh(
@@ -328,7 +328,7 @@ def smoke(remote: Remote, locust: dict, urls: list[str], locust_image: str) -> N
             "cd ~/cf-fyre && docker run --rm --network host --entrypoint python",
             "-v $HOME/cf-fyre:/work -w /work",
             shlex.quote(locust_image),
-            "python smoke.py --urls",
+            "smoke.py --urls",
             shlex.quote(",".join(urls)),
             "--token-file state/token",
         ]
