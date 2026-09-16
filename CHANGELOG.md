@@ -60,6 +60,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Allow clean distributed-worker shutdown at the Locust time limit while still
   stopping the coordinator immediately for nonzero or missing workers.
 
+- Record FYRE measurement boundaries from Locust's keyword-based spawning event
+  so ramp and warmup traffic remain excluded from reported statistics.
+
 - Propagate distributed worker failures to the Locust coordinator and reject
   reports containing a hidden worker failure.
 

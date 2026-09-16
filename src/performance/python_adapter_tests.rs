@@ -68,6 +68,8 @@ fn locust_adapter_imports_and_handles_mcp_bodies() {
         .expect("Python path should join");
     let code = r#"
 import json
+import os
+import tempfile
 import locustfile_mcp as adapter
 
 assert adapter.PROTOCOL_VERSION == "2026-07-28"
@@ -185,6 +187,22 @@ adapter.install_fail_fast(master)
 master.runner.listeners[adapter._FAIL_FAST_MESSAGE](environment=master, msg=object())
 assert master.process_exit_code == 1
 assert master.runner.stopped == 1
+
+measurement = Environment()
+measurement.events = Events()
+measurement.events.spawning_complete = Hook()
+measurement.runner = DistributedMaster()
+with tempfile.TemporaryDirectory() as directory:
+    marker = os.path.join(directory, "measurement-start.txt")
+    os.environ["MCP_MEASUREMENT_MARKER"] = marker
+    os.environ["MCP_MEASUREMENT_SECONDS"] = "120"
+    adapter.install_fail_fast(measurement)
+    measurement.events.spawning_complete.callback(user_count=125)
+    assert os.path.isfile(marker)
+    assert float(open(marker, encoding="utf-8").read()) > 0
+    assert measurement.runner.stopped == 1
+os.environ.pop("MCP_MEASUREMENT_MARKER")
+os.environ.pop("MCP_MEASUREMENT_SECONDS")
 "#;
 
     let output = Command::new(python())

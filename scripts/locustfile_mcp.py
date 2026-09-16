@@ -290,7 +290,7 @@ def install_fail_fast(environment, **_kwargs) -> None:
         marker = os.environ.get("MCP_MEASUREMENT_MARKER")
         if marker:
 
-            def mark_measurement_start(_user_count: int) -> None:
+            def mark_measurement_start(**_kwargs) -> None:
                 Path(marker).write_text(f"{time.time()}\n", encoding="utf-8")
                 seconds = float(os.environ["MCP_MEASUREMENT_SECONDS"])
                 gevent.spawn_later(seconds, environment.runner.quit)
