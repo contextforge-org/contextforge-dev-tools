@@ -27,8 +27,14 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   configured, use API-compatible VM descriptions, and log in with the root SSH
   account provisioned by FYRE's Ubuntu images.
 
-- Fail FYRE bootstrap immediately on setup errors and install Docker Engine and
-  Compose from Docker's Ubuntu repository when the base image lacks them.
+- Bootstrap FYRE hosts in parallel with pinned Ansible, installing Docker Engine
+  and Compose from Docker's Ubuntu repository when the base image lacks them.
+
+- Keep the FYRE dataplane and loopback JWKS helper in a stable shared network
+  namespace so either process can restart without breaking sidecar startup.
+
+- Omit an empty MCP allowed-origin environment value that prevented the Rust
+  dataplane from starting on FYRE.
 
 - Propagate distributed worker failures to the Locust coordinator and reject
   reports containing a hidden worker failure.

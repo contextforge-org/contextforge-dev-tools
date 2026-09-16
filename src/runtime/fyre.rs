@@ -393,6 +393,12 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .args(["--scenario", scenario])
             .arg("--deploy")
             .arg(self.config.asset_root().join("benchmarks/fyre/deploy"))
+            .arg("--ansible")
+            .arg(
+                self.config
+                    .asset_root()
+                    .join("benchmarks/fyre/ansible/bootstrap.yml"),
+            )
             .arg("--output")
             .arg(scenario_root)
     }

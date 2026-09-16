@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 HELPER_SATURATED = 42
+ANSIBLE_CORE_VERSION = "2.21.4"
 
 
 def run(
@@ -90,49 +91,60 @@ class Remote:
         run([*arguments, f"{self.user}@{host}:{source}", str(destination)], check=check)
 
 
-def wait_for_ssh(remote: Remote, host: str, deadline: float) -> None:
-    last = "not attempted"
-    while time.monotonic() < deadline:
-        result = remote.ssh(host, "true", check=False, capture=True, timeout=15)
-        if result.returncode == 0:
-            return
-        last = (result.stderr or result.stdout).strip()[-300:]
-        time.sleep(5)
-    raise RuntimeError(f"SSH host {host} was not ready: {last}")
-
-
-def bootstrap(remote: Remote, host: str, deploy: Path) -> None:
-    wait_for_ssh(remote, host, time.monotonic() + 600)
-    remote.ssh(
-        host,
-        "set -eu; "
-        "if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then "
-        "export DEBIAN_FRONTEND=noninteractive; "
-        "apt-get update -qq; "
-        "apt-get install -y -qq ca-certificates curl; "
-        "install -m 0755 -d /etc/apt/keyrings; "
-        "curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; "
-        "chmod a+r /etc/apt/keyrings/docker.asc; "
-        '. /etc/os-release; printf "%s\\n" '
-        "'Types: deb' "
-        "'URIs: https://download.docker.com/linux/ubuntu' "
-        '"Suites: ${UBUNTU_CODENAME:-$VERSION_CODENAME}" '
-        "'Components: stable' "
-        '"Architectures: $(dpkg --print-architecture)" '
-        "'Signed-By: /etc/apt/keyrings/docker.asc' "
-        "> /etc/apt/sources.list.d/docker.sources; "
-        "apt-get update -qq; "
-        "apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin iproute2; "
-        "systemctl enable --now docker; "
-        "fi; "
-        "docker info >/dev/null; "
-        "docker compose version >/dev/null; "
-        "mkdir -p ~/cf-fyre/state/keys ~/cf-fyre/reports ~/cf-fyre/telemetry",
-        timeout=900,
+def bootstrap_hosts(
+    config: dict,
+    inventory: dict,
+    deploy: Path,
+    playbook: Path,
+    known_hosts: Path,
+    output: Path,
+) -> None:
+    hosts = [inventory["locust"], inventory["fast_time"], *inventory["dataplanes"]]
+    ansible_inventory = {
+        "all": {
+            "hosts": {
+                host["name"]: {
+                    "ansible_host": host["public_ip"],
+                    "ansible_user": config["infrastructure"]["ssh_user"],
+                    "ansible_python_interpreter": "/usr/bin/python3",
+                }
+                for host in hosts
+            },
+            "vars": {
+                "ansible_ssh_private_key_file": config["resolved_ssh_private_key"],
+                "ansible_ssh_common_args": " ".join(
+                    [
+                        "-o BatchMode=yes",
+                        "-o IdentitiesOnly=yes",
+                        f"-o UserKnownHostsFile={known_hosts}",
+                        "-o StrictHostKeyChecking=accept-new",
+                        "-o ConnectTimeout=10",
+                    ]
+                ),
+            },
+        }
+    }
+    inventory_path = output / "ansible-inventory.json"
+    inventory_path.write_text(
+        json.dumps(ansible_inventory, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
-    for path in deploy.iterdir():
-        if path.is_file():
-            remote.copy_to(host, path, f"~/cf-fyre/{path.name}")
+    run(
+        [
+            "uv",
+            "tool",
+            "run",
+            "--from",
+            f"ansible-core=={ANSIBLE_CORE_VERSION}",
+            "ansible-playbook",
+            "--inventory",
+            str(inventory_path),
+            str(playbook),
+            "--extra-vars",
+            json.dumps({"fyre_deploy_dir": str(deploy.resolve())}),
+        ],
+        timeout=1_200,
+    )
 
 
 def write_remote_file(
@@ -159,11 +171,15 @@ def compose_up(remote: Remote, host: str, compose: str) -> None:
 
 
 def prepare_hosts(
-    config: dict, inventory: dict, remote: Remote, deploy: Path, output: Path
+    config: dict,
+    inventory: dict,
+    remote: Remote,
+    deploy: Path,
+    playbook: Path,
+    known_hosts: Path,
+    output: Path,
 ) -> tuple[str, list[str]]:
-    hosts = [inventory["locust"], inventory["fast_time"], *inventory["dataplanes"]]
-    for host in hosts:
-        bootstrap(remote, host["public_ip"], deploy)
+    bootstrap_hosts(config, inventory, deploy, playbook, known_hosts, output)
 
     images = config["images"]
     fast_env = f"FAST_TIME_IMAGE={images['fast_time']}\n"
@@ -782,6 +798,7 @@ def main() -> None:
     parser.add_argument("--inventory", required=True)
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--deploy", required=True)
+    parser.add_argument("--ansible", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--collect-only", action="store_true")
     args = parser.parse_args()
@@ -800,7 +817,15 @@ def main() -> None:
     if args.collect_only:
         collect_recovery(remote, inventory, output)
         return
-    _, urls = prepare_hosts(config, inventory, remote, Path(args.deploy), output)
+    _, urls = prepare_hosts(
+        config,
+        inventory,
+        remote,
+        Path(args.deploy),
+        Path(args.ansible),
+        known_hosts,
+        output,
+    )
     result = capacity_search(remote, config, inventory, urls, output)
     result["scenario"] = scenario
     result["inventory"] = inventory

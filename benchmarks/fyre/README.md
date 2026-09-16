@@ -18,7 +18,8 @@ ephemeral signing key.
 ## Prerequisites
 
 - Terraform 1.8+, or set `CF_TERRAFORM_BIN` to a compatible Terraform binary.
-- `python3`, `uv`, SSH, and SCP on the orchestration host.
+- `python3`, `uv`, SSH, and SCP on the orchestration host. The CLI runs a pinned
+  `ansible-core` tool environment through `uv` for host bootstrap.
 - An SSH key pair at the paths configured in `scaling.yaml`.
 - FYRE provider credentials in `FYRE_USERNAME` and `FYRE_API_KEY`.
 - Optionally set `FYRE_PRODUCT_GROUP_ID` and `FYRE_SITE`. Without an explicit
