@@ -210,7 +210,7 @@ jobs:
           file: gateway/Containerfile
           platforms: linux/${{ matrix.arch }}
           push: true
-          tags: ghcr.io/contextforge-org/cf-integration-gateway:${{ env.GATEWAY_TAG }}-${{ matrix.arch }}
+          tags: ghcr.io/contextforge-org/cf-integration-fixture:gateway-${{ env.GATEWAY_TAG }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.revision=${{ env.GATEWAY_REVISION }}
             org.opencontainers.image.source=https://github.com/contextforge-org/contextforge-dev-tools
@@ -241,22 +241,14 @@ jobs:
 
       - name: Publish multi-platform manifest
         run: |
-          ref=ghcr.io/contextforge-org/cf-integration-gateway
+          ref=ghcr.io/contextforge-org/cf-integration-fixture
           docker buildx imagetools create \
-            --tag "$ref:$GATEWAY_TAG" \
-            "$ref:$GATEWAY_TAG-amd64" \
-            "$ref:$GATEWAY_TAG-arm64"
-
-      - name: Make package public
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api --method PATCH \
-            /orgs/contextforge-org/packages/container/cf-integration-gateway \
-            -f visibility=public
+            --tag "$ref:gateway-$GATEWAY_TAG" \
+            "$ref:gateway-$GATEWAY_TAG-amd64" \
+            "$ref:gateway-$GATEWAY_TAG-arm64"
 
       - name: Verify anonymous image access
         run: |
           docker logout ghcr.io
           docker buildx imagetools inspect \
-            "ghcr.io/contextforge-org/cf-integration-gateway:$GATEWAY_TAG"
+            "ghcr.io/contextforge-org/cf-integration-fixture:gateway-$GATEWAY_TAG"
