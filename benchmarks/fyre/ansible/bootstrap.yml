@@ -79,6 +79,13 @@
         dest: /root/cf-fyre/
         mode: preserve
 
+    - name: Copy the Locust workload to the load generator
+      ansible.builtin.copy:
+        src: "{{ fyre_locustfile }}"
+        dest: /root/cf-fyre/locustfile_mcp.py
+        mode: "0644"
+      when: inventory_hostname == fyre_locust_hostname
+
     - name: Verify Docker and Compose
       ansible.builtin.command: docker compose version
       changed_when: false

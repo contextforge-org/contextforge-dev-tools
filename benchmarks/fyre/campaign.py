@@ -141,7 +141,15 @@ def bootstrap_hosts(
             str(inventory_path),
             str(playbook),
             "--extra-vars",
-            json.dumps({"fyre_deploy_dir": str(deploy.resolve())}),
+            json.dumps(
+                {
+                    "fyre_deploy_dir": str(deploy.resolve()),
+                    "fyre_locustfile": str(
+                        (deploy.parents[2] / "scripts/locustfile_mcp.py").resolve()
+                    ),
+                    "fyre_locust_hostname": inventory["locust"]["name"],
+                }
+            ),
         ],
         timeout=1_200,
     )

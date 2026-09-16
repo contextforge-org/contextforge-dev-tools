@@ -77,7 +77,7 @@ _TOOL_ARGUMENTS = {
 }
 _FYRE_TOOL_ARGUMENTS = {
     "convert_time": {
-        "time": "12:00",
+        "time": "2025-06-21T16:00:00Z",
         "source_timezone": "UTC",
         "target_timezone": "Europe/Dublin",
     },

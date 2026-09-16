@@ -46,6 +46,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Run FYRE smoke and Locust containers with access to the protected benchmark
   bundle and root-owned report mounts on ephemeral load-generator VMs.
 
+- Use a valid Fast Time conversion timestamp and deploy the packaged Locust
+  workload to the FYRE load-generator VM.
+
 - Propagate distributed worker failures to the Locust coordinator and reject
   reports containing a hidden worker failure.
 

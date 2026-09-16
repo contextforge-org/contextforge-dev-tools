@@ -14,6 +14,7 @@ import campaign
 
 sys.path.insert(0, str(Path(__file__).parent / "deploy"))
 import run_locust
+import smoke
 
 
 def passed(users: int, rps: float) -> dict:
@@ -141,6 +142,9 @@ class CapacityTests(unittest.TestCase):
         self.assertIn("--user 0:0", command)
         self.assertIn("locust@sha256:test smoke.py --urls", command)
         self.assertNotIn("locust@sha256:test python smoke.py", command)
+
+    def test_smoke_uses_valid_convert_time_datetime(self):
+        self.assertEqual(smoke.TOOLS["convert_time"]["time"], "2025-06-21T16:00:00Z")
 
     @mock.patch.object(run_locust, "wait_for_cluster", return_value=0)
     @mock.patch.object(run_locust, "container_state", return_value=("exited", 0))
