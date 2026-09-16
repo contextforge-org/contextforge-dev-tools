@@ -10,6 +10,9 @@ infrastructure:
     - { cpu: 4, memory_gb: 16 }
     - { cpu: 8, memory_gb: 32 }
     - { cpu: 16, memory_gb: 32 }
+  initial_helpers:
+    locust: { cpu: 4, memory_gb: 16 }
+    fast_time: { cpu: 8, memory_gb: 32 }
 images:
   dataplane: ghcr.io/contextforge-org/contextforge-data-plane@sha256:0b3026b21659ce6c494142aee2c5866b44122232e73fcf21102da1f210692a96
   fast_time: ghcr.io/ibm/cfex-mcp-fast-time-server@sha256:110e1826f5d763e5afadba770b731dac93e0819c1bbadb68671b0124260603cf

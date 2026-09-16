@@ -83,10 +83,12 @@ The measured Locust phase resets statistics when spawning completes, and the
 telemetry summary uses the same recorded measurement-window boundary. It starts
 at 125 users and doubles until the first error or a two-step throughput plateau.
 After an error it only tests lower concurrency while refining the boundary to
-12.5 percent. The selected capacity must pass three measured repetitions with
-zero request and worker errors. Each scenario is bounded at 32,000 users, and
-the full provision-and-benchmark matrix stops after six hours before recovery
-and cleanup.
+12.5 percent. After a plateau it bisects the interval between the last scaling
+point and the first plateau point to the same 12.5-percent bound. The selected
+capacity must pass three measured repetitions with zero request and worker
+errors. Each scenario is bounded at 32,000 users, and the full
+provision-and-benchmark matrix stops after six hours before recovery and
+cleanup.
 
 Locust and Fast Time start at 2 vCPU / 8 GB. Host and container telemetry
 checks CPU, per-core use, memory, swap, pressure stalls, sockets, network
@@ -95,6 +97,10 @@ through the configured sizes. Any helper resize archives prior attempts under
 `invalidated/` and restarts the matrix so final comparisons use the same helper
 sizes. Reaching 16 vCPU / 32 GB without demonstrated headroom makes the
 campaign inconclusive.
+
+Profiles can select different initial Locust and Fast Time entries from
+`helper_sizes`. The low-memory profile starts from the helper sizes validated by
+its calibration run: Locust at 4 vCPU / 16 GB and Fast Time at 8 vCPU / 32 GB.
 
 The final report includes confirmed zero-error RPS, p50/p95/p99, vertical and
 horizontal speedups, scaling efficiency, matched horizontal advantage, RPS per

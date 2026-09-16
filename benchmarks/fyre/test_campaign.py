@@ -88,11 +88,15 @@ class CapacityTests(unittest.TestCase):
     @mock.patch.object(campaign, "one_phase")
     @mock.patch.object(campaign, "measured_step")
     def test_two_sub_five_percent_steps_stop_at_plateau(self, measured, phase, _smoke):
-        rates = {125: 100.0, 250: 103.0, 500: 106.0}
-        measured.side_effect = lambda _r, _c, _i, _u, _o, users, _name: passed(
-            users, rates[users]
-        )
-        phase.return_value = passed(500, 1000.0)
+        search_rates = {125: 100.0, 250: 130.0, 500: 133.0, 1000: 134.0}
+
+        def result(_r, _c, _i, _u, _o, users, name):
+            if name.startswith("search"):
+                return passed(users, search_rates[users])
+            return passed(users, 132.0)
+
+        measured.side_effect = result
+        phase.return_value = passed(281, 1000.0)
         with tempfile.TemporaryDirectory() as directory:
             result = campaign.capacity_search(
                 None,
@@ -105,8 +109,15 @@ class CapacityTests(unittest.TestCase):
                 [],
                 Path(directory),
             )
-        self.assertEqual(result["users"], 500)
-        self.assertNotIn(1000, [call.args[5] for call in measured.call_args_list])
+        self.assertEqual(result["users"], 281)
+        self.assertEqual(result["plateau_boundary"]["below"]["users"], 250)
+        self.assertEqual(result["plateau_boundary"]["at_or_above"]["users"], 281)
+        self.assertLessEqual(result["plateau_boundary"]["width_percent"], 12.5)
+        calls = [(call.args[5], call.args[6]) for call in measured.call_args_list]
+        self.assertIn((375, "plateau-refine-375"), calls)
+        self.assertIn((312, "plateau-refine-312"), calls)
+        self.assertIn((281, "plateau-refine-281"), calls)
+        self.assertNotIn(2000, [users for users, _name in calls])
 
     @mock.patch.object(campaign, "smoke")
     @mock.patch.object(campaign, "one_phase")
@@ -114,7 +125,9 @@ class CapacityTests(unittest.TestCase):
     def test_failed_candidate_confirmation_refines_and_confirms_a_lower_load(
         self, measured, phase, _smoke
     ):
-        search_rates = {125: 100.0, 250: 103.0, 500: 106.0}
+        search_rates = {125: 100.0, 250: 150.0, 500: 200.0}
+        test_config = config()
+        test_config["workload"]["maximum_users"] = 500
 
         def result(_r, _c, _i, _u, _o, users, name):
             if name == "confirm-1-500":
@@ -130,7 +143,7 @@ class CapacityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             result = campaign.capacity_search(
                 None,
-                config(),
+                test_config,
                 {
                     "locust": {},
                     "fast_time": {"private_ip": "10.0.0.2"},

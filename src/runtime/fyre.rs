@@ -41,12 +41,20 @@ struct InfrastructureConfig {
     ssh_public_key: PathBuf,
     expiry_hours: u32,
     helper_sizes: Vec<MachineSize>,
+    #[serde(default)]
+    initial_helpers: Option<InitialHelpers>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct MachineSize {
     cpu: u32,
     memory_gb: u32,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct InitialHelpers {
+    locust: MachineSize,
+    fast_time: MachineSize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,14 +184,16 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         .map_err(AppFailure::from)?;
         let config_path = root.join("config.json");
         write_json(&config_path, &config).map_err(AppFailure::from)?;
+        let (locust_helper_size, fast_time_helper_size) =
+            initial_helper_indices(&config).map_err(AppFailure::from)?;
         let mut state = RunState {
             schema_version: 1,
             run_id: run_id.clone(),
             phase: "initializing".to_owned(),
             config_file: source,
             current_scenario: None,
-            locust_helper_size: 0,
-            fast_time_helper_size: 0,
+            locust_helper_size,
+            fast_time_helper_size,
             completed_scenarios: Vec::new(),
             cleanup_required: true,
         };
@@ -733,6 +743,7 @@ fn validate_config(config: &FyreConfig) -> Result<()> {
         !config.infrastructure.helper_sizes.is_empty(),
         "at least one helper size is required"
     );
+    initial_helper_indices(config)?;
     let maximum = config
         .infrastructure
         .helper_sizes
@@ -795,6 +806,29 @@ fn validate_config(config: &FyreConfig) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn initial_helper_indices(config: &FyreConfig) -> Result<(usize, usize)> {
+    let Some(initial) = config.infrastructure.initial_helpers else {
+        return Ok((0, 0));
+    };
+    let find = |role: &str, size: MachineSize| {
+        config
+            .infrastructure
+            .helper_sizes
+            .iter()
+            .position(|candidate| *candidate == size)
+            .with_context(|| {
+                format!(
+                    "initial {role} helper {} vCPU / {} GB is not present in helper_sizes",
+                    size.cpu, size.memory_gb
+                )
+            })
+    };
+    Ok((
+        find("Locust", initial.locust)?,
+        find("Fast Time", initial.fast_time)?,
+    ))
 }
 
 fn required_capacity(config: &FyreConfig) -> RequiredCapacity {
@@ -1025,6 +1059,7 @@ mod tests {
         .expect("packaged low-memory FYRE config");
         validate_config(&config).expect("valid low-memory FYRE config");
         assert_eq!(config.scenarios.len(), 2);
+        assert_eq!(initial_helper_indices(&config).unwrap(), (1, 2));
         assert_eq!(
             required_capacity(&config),
             RequiredCapacity {

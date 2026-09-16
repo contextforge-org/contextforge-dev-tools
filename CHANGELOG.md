@@ -25,7 +25,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 - Add a repeatable low-memory vertical profile for 2 vCPU / 2 GB and
   4 vCPU / 4 GB dataplanes, with scenario multipliers derived from each
-  configuration's baseline resources.
+  configuration's baseline resources. Allow profiles to start Locust and Fast
+  Time at independently validated helper sizes.
 
 - Add `-w/--workers` to distribute load across local Locust processes,
   `-i/--isolate-cpus` to split Docker CPUs between the target and load
@@ -33,6 +34,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   without external environment setup.
 
 ### Fixed
+
+- Refine detected throughput plateaus to the configured concurrency boundary
+  before confirming capacity instead of confirming the highest doubled load.
 
 - Publish the dataplane's Redis-backed MCP Host and Origin policy before
   startup, and isolate client-conformance scenarios from its per-user config

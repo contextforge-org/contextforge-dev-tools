@@ -647,6 +647,7 @@ def capacity_search(
     started = time.monotonic()
     passing: list[dict] = []
     failing: dict | None = None
+    plateau: tuple[dict, dict] | None = None
     improvements: list[float] = []
     users = workload["first_users"]
     step = 0
@@ -668,6 +669,7 @@ def capacity_search(
             value < workload["plateau_improvement_percent"]
             for value in improvements[-2:]
         ):
+            plateau = (passing[-3], passing[-2])
             break
         if users == workload["maximum_users"]:
             break
@@ -701,6 +703,48 @@ def capacity_search(
                 high = users
         return low_result
 
+    def refine_plateau(low_result: dict, high_result: dict) -> tuple[dict, dict]:
+        nonlocal failing
+        low = low_result["users"]
+        high = high_result["users"]
+        while (high - low) / high > workload["boundary_percent"] / 100.0:
+            refined_users = (low + high) // 2
+            result = measured_step(
+                remote,
+                config,
+                inventory,
+                urls,
+                output,
+                refined_users,
+                f"plateau-refine-{refined_users}",
+            )
+            if not result.get("passed"):
+                failing = {"users": refined_users, **result}
+                refined = refine_below(refined_users, "plateau-failure-refine")
+                if refined is None:
+                    return low_result, {
+                        "below": low_result,
+                        "at_or_above": failing,
+                    }
+                return refined, {
+                    "below": refined,
+                    "at_or_above": failing,
+                }
+            passing.append(result)
+            improvement = 100.0 * (result["rps"] / low_result["rps"] - 1.0)
+            if improvement >= workload["plateau_improvement_percent"]:
+                low = refined_users
+                low_result = result
+            else:
+                high = refined_users
+                high_result = result
+        return high_result, {
+            "below": low_result,
+            "at_or_above": high_result,
+            "width_percent": 100.0 * (high - low) / high,
+        }
+
+    plateau_boundary = None
     if failing:
         candidate = refine_below(failing["users"], "refine")
         if candidate is None:
@@ -709,6 +753,8 @@ def capacity_search(
                 "reason": "no zero-error concurrency passed below the failing bound",
                 "failing": failing,
             }
+    elif plateau:
+        candidate, plateau_boundary = refine_plateau(*plateau)
     else:
         candidate = max(passing, key=lambda item: item["users"])
 
@@ -794,6 +840,7 @@ def capacity_search(
         "failing": failing,
         "confirmations": confirmations,
         "confirmation_failures": confirmation_failures,
+        "plateau_boundary": plateau_boundary,
         "rps": statistics.fmean(rps_values),
         "rps_min": min(rps_values),
         "rps_max": max(rps_values),
