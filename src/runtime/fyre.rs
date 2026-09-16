@@ -1059,7 +1059,10 @@ mod tests {
         .expect("packaged low-memory FYRE config");
         validate_config(&config).expect("valid low-memory FYRE config");
         assert_eq!(config.scenarios.len(), 2);
-        assert_eq!(initial_helper_indices(&config).unwrap(), (1, 2));
+        assert_eq!(
+            initial_helper_indices(&config).expect("valid initial helper indices"),
+            (1, 2)
+        );
         assert_eq!(
             required_capacity(&config),
             RequiredCapacity {

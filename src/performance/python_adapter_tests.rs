@@ -122,6 +122,8 @@ class Total:
 
 class Stats:
     total = Total()
+    def __init__(self): self.reset_calls = 0
+    def reset_all(self): self.reset_calls += 1
 
 class Environment:
     stats = Stats()
@@ -176,6 +178,7 @@ assert worker.runner.stopped == 0
 class DistributedMaster(MasterRunner):
     def __init__(self):
         self.listeners = {}
+        self.stats = Stats()
         self.stopped = 0
     def register_message(self, kind, listener): self.listeners[kind] = listener
     def quit(self): self.stopped += 1
@@ -196,13 +199,16 @@ with tempfile.TemporaryDirectory() as directory:
     marker = os.path.join(directory, "measurement-start.txt")
     os.environ["MCP_MEASUREMENT_MARKER"] = marker
     os.environ["MCP_MEASUREMENT_SECONDS"] = "120"
+    os.environ["MCP_WARMUP_SECONDS"] = "0"
     adapter.install_fail_fast(measurement)
     measurement.events.spawning_complete.callback(user_count=125)
     assert os.path.isfile(marker)
     assert float(open(marker, encoding="utf-8").read()) > 0
+    assert measurement.runner.stats.reset_calls == 1
     assert measurement.runner.stopped == 1
 os.environ.pop("MCP_MEASUREMENT_MARKER")
 os.environ.pop("MCP_MEASUREMENT_SECONDS")
+os.environ.pop("MCP_WARMUP_SECONDS")
 "#;
 
     let output = Command::new(python())
