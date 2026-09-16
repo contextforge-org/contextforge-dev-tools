@@ -1012,19 +1012,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         };
         stack_progress.finish(stack_result.is_ok());
         let mut failure = stack_result.err();
-        let mut token = None;
         let mut publisher_stopped = false;
 
-        if failure.is_none() {
-            match if standalone {
-                self.standalone_dataplane_token(true)
-            } else {
-                self.issue_conformance_token().await
-            } {
-                Ok(issued) => token = Some(issued),
-                Err(error) => failure = Some(error),
-            }
-        }
         if failure.is_none() && !standalone {
             let progress = Activity::spinner("Pause the control-plane publisher");
             let result = self.set_control_plane_publisher(false).await;
@@ -1035,26 +1024,16 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             failure = result.err();
         }
         if failure.is_none() {
-            match token.as_ref() {
-                Some(issued) => {
-                    failure = self
-                        .run_official_client_conformance(
-                            spec_version,
-                            server_era,
-                            &issued.value,
-                            paths,
-                            cancellation,
-                            standalone,
-                        )
-                        .await
-                        .err();
-                }
-                None => {
-                    failure = Some(AppFailure::from(anyhow!(
-                        "client conformance token was not available after issuance"
-                    )));
-                }
-            }
+            failure = self
+                .run_official_client_conformance(
+                    spec_version,
+                    server_era,
+                    paths,
+                    cancellation,
+                    standalone,
+                )
+                .await
+                .err();
         }
 
         if publisher_stopped {
@@ -1062,9 +1041,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             let result = self.set_control_plane_publisher(true).await;
             progress.finish(result.is_ok());
             failure = finish_with_cleanup(failure, result).err();
-        }
-        if !standalone && let Some(token) = token.as_ref() {
-            failure = finish_with_cleanup(failure, self.revoke_managed_token(token).await).err();
         }
         let cleanup = if standalone {
             self.cleanup_standalone_dataplane(CleanupKind::Down)
@@ -1133,7 +1109,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         &self,
         spec_version: &str,
         server_era: ConformanceServerEra,
-        token: &str,
         paths: &ConformancePaths,
         cancellation: tokio::sync::watch::Receiver<bool>,
         standalone: bool,
@@ -1190,18 +1165,29 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 standalone,
             )?
             .env(CLIENT_BASE_URL_ENV, "http://nginx")
-            .env(CLIENT_SERVER_ID_ENV, CLIENT_CONFORMANCE_SERVER_ID)
-            .env(CLIENT_TOKEN_ENV, token);
+            .env(CLIENT_SERVER_ID_ENV, CLIENT_CONFORMANCE_SERVER_ID);
         let progress = Activity::spinner(format!(
             "Run external dataplane client ({} scenarios)",
             expected_scenarios.len()
         ));
         let mut operational_failures = Vec::new();
+        let mut tokens = Vec::new();
         for scenario in DEFAULT_CLIENT_CONFORMANCE_SCENARIOS {
+            let token = match self.client_conformance_token(standalone) {
+                Ok(token) => token,
+                Err(error) => {
+                    operational_failures.push(format!(
+                        "{scenario}: failed to issue isolated client-conformance token: {error}"
+                    ));
+                    continue;
+                }
+            };
+            let compose = compose.clone().env(CLIENT_TOKEN_ENV, &token.value);
+            tokens.push(token.value);
             let arguments = ["client", scenario, spec_version].map(OsString::from);
             let result = self
                 .run_tool(
-                    compose.clone(),
+                    compose,
                     &arguments,
                     Some(&lane_paths.root),
                     Some(&lane_paths.root.join(format!("runner-{scenario}.log"))),
@@ -1219,11 +1205,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         }
 
         match client_driver_failures(&lane_paths.official_results) {
-            Ok(failures) => operational_failures.extend(
-                failures
-                    .into_iter()
-                    .map(|failure| failure.replace(token, "[redacted]")),
-            ),
+            Ok(failures) => operational_failures.extend(failures.into_iter().map(|failure| {
+                tokens.iter().fold(failure, |failure, token| {
+                    failure.replace(token, "[redacted]")
+                })
+            })),
             Err(error) => operational_failures.push(error.to_string()),
         }
 

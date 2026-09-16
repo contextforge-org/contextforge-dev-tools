@@ -76,13 +76,12 @@ services:
       CONTEXTFORGE_DATA_PLANE_REDIS_CONNECTION_MODE: plain-text
       CONTEXTFORGE_DATA_PLANE_JWKS_URL: http://127.0.0.1:4446/.well-known/jwks.json
       CONTEXTFORGE_DATA_PLANE_UPSTREAM_CONNECTION_MODE: plain-text-or-tls
-      CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS: ${CF_DATAPLANE_MCP_ALLOWED_HOSTS:-127.0.0.1:${NGINX_PORT:-8080},localhost:${NGINX_PORT:-8080},nginx}
-      CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_ORIGINS: ${CF_DATAPLANE_MCP_ALLOWED_ORIGINS:-http://127.0.0.1:${NGINX_PORT:-8080},http://localhost:${NGINX_PORT:-8080}}
-      CONTEXTFORGE_DATA_PLANE_USER_CONFIG_CACHE_EXPIRY_SECONDS: "0"
       RUST_LOG: ${CF_DATAPLANE_LOG:-info}
     depends_on:
       redis:
         condition: service_healthy
+      global_config_writer:
+        condition: service_completed_successfully
 
   nginx:
     image: nginx:1.30.4-alpine3.24

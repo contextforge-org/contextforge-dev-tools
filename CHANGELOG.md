@@ -23,6 +23,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ### Fixed
 
+- Publish the dataplane's Redis-backed MCP Host and Origin policy before
+  startup, and isolate client-conformance scenarios from its per-user config
+  cache.
+
 - Discover the FYRE account's default or sole product group when no override is
   configured, use API-compatible VM descriptions, and log in with the root SSH
   account provisioned by FYRE's Ubuntu images.

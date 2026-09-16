@@ -232,6 +232,39 @@ fn client_config_uses_named_messagepack_maps_and_compact_user_key() {
     );
 }
 
+#[test]
+fn global_config_uses_the_dataplane_messagepack_contract() {
+    let (key, body) = config::encode_global_config(
+        "127.0.0.1:8080,localhost:8080,nginx",
+        "http://127.0.0.1:8080,http://localhost:8080",
+    )
+    .expect("encode global config");
+    assert_eq!(key, b"\x90");
+    let decoded: Value = rmp_serde::from_slice(&body).expect("decode global config");
+    assert_eq!(
+        decoded["mcp_allowed_hosts"],
+        json!([
+            {"hostname": "127.0.0.1", "port": 8080},
+            {"hostname": "localhost", "port": 8080},
+            {"hostname": "nginx", "port": 80},
+        ])
+    );
+    assert_eq!(
+        decoded["mcp_allowed_origins"],
+        json!(["http://127.0.0.1:8080/", "http://localhost:8080/"])
+    );
+    for field in [
+        "mcp_standard_header_max_count",
+        "mcp_standard_header_max_value_bytes",
+        "mcp_standard_header_max_total_bytes",
+    ] {
+        assert!(decoded[field].is_null());
+    }
+    assert!(config::encode_global_config("", "http://localhost:8080").is_err());
+    assert!(config::encode_global_config("localhost:8080/path", "http://localhost:8080").is_err());
+    assert!(config::encode_global_config("localhost:8080", "https://example.com/path").is_err());
+}
+
 #[tokio::test]
 async fn auth_reuses_private_key_and_serves_only_public_jwks() {
     let directory = tempfile::tempdir().expect("key directory");

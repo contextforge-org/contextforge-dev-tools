@@ -135,14 +135,42 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             STANDALONE_USER_ID,
         ]);
         let command = self.standalone_dataplane_environment(command, true)?;
-        let output = self.runner.capture_stdout(&command)?;
+        self.capture_harness_token(&command)
+    }
+
+    pub(super) fn client_conformance_token(
+        &self,
+        standalone: bool,
+    ) -> AppResult<ManagedBearerToken> {
+        let subject = format!("cf-integration-client-{}", uuid::Uuid::new_v4().simple());
+        let project = if standalone {
+            self.standalone_conformance_compose_project(true)
+        } else {
+            self.conformance_runtime_project(StackMode::Dataplane)
+        };
+        let command = project.command([
+            "run",
+            "--quiet-build",
+            "--rm",
+            "--no-deps",
+            "config_writer",
+            "token",
+            STANDALONE_TENANT_ID,
+            &subject,
+        ]);
+        let command = self.target_environment(command, StackMode::Dataplane, standalone)?;
+        self.capture_harness_token(&command)
+    }
+
+    fn capture_harness_token(&self, command: &CommandSpec) -> AppResult<ManagedBearerToken> {
+        let output = self.runner.capture_stdout(command)?;
         let token = std::str::from_utf8(&output)
-            .context("standalone dataplane token helper returned non-UTF-8 output")
+            .context("dataplane token helper returned non-UTF-8 output")
             .map_err(AppFailure::from)?
             .trim();
         if token.split('.').count() != 3 {
             return Err(AppFailure::from(anyhow!(
-                "standalone dataplane token helper returned an invalid JWT"
+                "dataplane token helper returned an invalid JWT"
             )));
         }
         Ok(ManagedBearerToken::unmanaged(token.to_owned()))

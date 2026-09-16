@@ -38,6 +38,12 @@ enum HelperCommand {
         tenant_id: String,
         user_id: String,
     },
+    GlobalConfig {
+        #[arg(long)]
+        allowed_hosts: String,
+        #[arg(long)]
+        allowed_origins: String,
+    },
     Fixture(ConfigArgs),
 }
 
@@ -90,6 +96,15 @@ pub(crate) async fn run(arguments: &[OsString]) -> Result<()> {
                 "{}",
                 auth::issue_token(std::path::Path::new(KEY_PATH), &tenant_id, &user_id)?
             );
+            return Ok(());
+        }
+        HelperCommand::GlobalConfig {
+            allowed_hosts,
+            allowed_origins,
+        } => {
+            let redis_url = std::env::var("CF_CONFIG_REDIS_URL")
+                .unwrap_or_else(|_| "redis://redis:6379".to_owned());
+            config::publish_global(&redis_url, &allowed_hosts, &allowed_origins).await?;
             return Ok(());
         }
         HelperCommand::Fixture(args) => args,

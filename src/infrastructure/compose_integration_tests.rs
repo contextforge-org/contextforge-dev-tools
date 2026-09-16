@@ -273,9 +273,6 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
         "CONTEXTFORGE_DATA_PLANE_REDIS_CONNECTION_MODE",
         "CONTEXTFORGE_DATA_PLANE_JWKS_URL",
         "CONTEXTFORGE_DATA_PLANE_UPSTREAM_CONNECTION_MODE",
-        "CONTEXTFORGE_DATA_PLANE_USER_CONFIG_CACHE_EXPIRY_SECONDS",
-        "CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS",
-        "CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_ORIGINS",
     ] {
         assert!(
             environment.contains_key(yaml_serde::Value::String(key.to_owned())),
@@ -288,13 +285,14 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
     ] {
         assert!(!environment.contains_key(yaml_serde::Value::String(key.to_owned())));
     }
-    assert!(
-        environment
-            [yaml_serde::Value::String("CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS".to_owned())]
-        .as_str()
-        .expect("MCP Host allowlist must be text")
-        .contains(",nginx}"),
-        "the default MCP Host allowlist must accept containerized Locust through nginx"
+    assert_eq!(
+        compose["services"]["dataplane"]["depends_on"]["global_config_writer"]["condition"]
+            .as_str(),
+        Some("service_completed_successfully")
+    );
+    assert_eq!(
+        compose["services"]["config_writer"]["volumes"][0].as_str(),
+        Some("integration_auth:/keys:ro")
     );
     assert_eq!(
         compose["services"]["dataplane"]["pull_policy"].as_str(),
@@ -316,6 +314,9 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
         "CONTEXTFORGE_GATEWAY_RS_TOKEN_SECRET",
         "CONTEXTFORGE_GATEWAY_RS_UPSTREAM_CONNECTION_MODE",
         "CONTEXTFORGE_GATEWAY_RS_USER_CONFIG_CACHE_EXPIRY_SECONDS",
+        "CONTEXTFORGE_DATA_PLANE_USER_CONFIG_CACHE_EXPIRY_SECONDS",
+        "CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS",
+        "CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_ORIGINS",
     ] {
         assert!(
             !environment.contains_key(yaml_serde::Value::String(obsolete.to_owned())),
@@ -448,6 +449,40 @@ fn both_external_projects_provide_the_client_conformance_config_writer() {
         assert_eq!(helpers[0]["profiles"][0].as_str(), Some("helpers"));
         assert_eq!(helpers[0]["networks"][0].as_str(), Some("mcpnet"));
         assert_eq!(helpers[0]["entrypoint"][1].as_str(), Some("__helper"));
+
+        let global_helpers: Vec<_> = project
+            .files()
+            .iter()
+            .filter_map(|file| {
+                let source = fs::read_to_string(file).ok()?;
+                let compose: yaml_serde::Value =
+                    yaml_serde::from_str(&source).expect("Compose YAML");
+                let service = &compose["services"]["global_config_writer"];
+                (!service["command"].is_null()).then(|| service.clone())
+            })
+            .collect();
+        assert_eq!(
+            global_helpers.len(),
+            1,
+            "each external project needs exactly one global config initializer"
+        );
+        let command = global_helpers[0]["command"]
+            .as_sequence()
+            .expect("global config command");
+        assert!(
+            command
+                .iter()
+                .any(|value| value.as_str() == Some("global-config"))
+        );
+        assert!(command.iter().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|value| value.contains("nginx:80"))
+        }));
+        assert_eq!(
+            global_helpers[0]["depends_on"]["redis"]["condition"].as_str(),
+            Some("service_healthy")
+        );
     }
 }
 
@@ -505,6 +540,11 @@ fn standalone_harness_owns_auth_without_dataplane_tools() {
     assert_eq!(
         compose["services"]["config_writer"]["volumes"][0].as_str(),
         Some("standalone_auth:/keys:ro")
+    );
+    assert_eq!(
+        compose["services"]["dataplane"]["depends_on"]["global_config_writer"]["condition"]
+            .as_str(),
+        Some("service_completed_successfully")
     );
     assert!(
         compose["services"]["dataplane"]["environment"]["CONTEXTFORGE_DATA_PLANE_TOKEN_SECRET"]

@@ -25,6 +25,7 @@ pub(crate) const SERVICE_DISPLAY_NAMES: &[(&str, &str)] = &[
     ("pgbouncer", "cf-pgbouncer"),
     ("redis", "cf-redis"),
     ("dataplane", "cf-dataplane"),
+    ("global_config_writer", "cf-dataplane-global-config-writer"),
     ("config_writer", "cf-dataplane-config-writer"),
     ("locust", "cf-locust"),
     ("locust_worker", "cf-locust-worker"),
