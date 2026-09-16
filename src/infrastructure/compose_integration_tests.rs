@@ -576,6 +576,15 @@ fn standalone_harness_owns_auth_without_dataplane_tools() {
         }
     }
     assert!(compose["services"]["locust"]["environment"]["JWT_SECRET_KEY"].is_null());
+
+    for file in [
+        "docker/nginx.cf-dataplane.conf",
+        "docker/nginx.cf-dataplane-standalone.conf.template",
+    ] {
+        let nginx = fs::read_to_string(root.join(file)).expect("read dataplane nginx config");
+        assert!(nginx.contains("\"nginx\" \"nginx:80\";"));
+        assert!(nginx.contains("proxy_set_header Host $dataplane_host;"));
+    }
 }
 
 #[test]
