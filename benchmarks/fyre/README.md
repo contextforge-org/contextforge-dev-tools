@@ -21,8 +21,10 @@ ephemeral signing key.
 - `python3`, `uv`, SSH, and SCP on the orchestration host.
 - An SSH key pair at the paths configured in `scaling.yaml`.
 - FYRE provider credentials in `FYRE_USERNAME` and `FYRE_API_KEY`.
-- Optionally set `FYRE_PRODUCT_GROUP_ID` and `FYRE_SITE`. Without a product
-  group the configuration uses quick-burn quota with an eight-hour TTL.
+- Optionally set `FYRE_PRODUCT_GROUP_ID` and `FYRE_SITE`. Without an explicit
+  product group, the configuration uses the account default, then its sole
+  product group, and finally quick-burn quota when the account permits it.
+  Quick-burn VMs use an eight-hour TTL.
 
 Credential values are inherited by Terraform and are never copied into the
 run manifest, command arguments, reports, or logs.
