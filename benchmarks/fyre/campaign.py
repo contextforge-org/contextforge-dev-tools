@@ -482,12 +482,15 @@ def one_phase(
     seconds: int,
     label: str,
     env_file: str = "benchmark.secret.env",
-    measurement: bool = False,
 ) -> dict:
     locust = inventory["locust"]
     workers = max(2, int(config["active_helper"]["locust_cpu"]) - 1)
     spawn_rate = max(1.0, users / config["workload"]["ramp_seconds"])
-    total_seconds = seconds + config["workload"]["ramp_seconds"]
+    total_seconds = (
+        seconds
+        + config["workload"]["ramp_seconds"]
+        + config["workload"]["warmup_seconds"]
+    )
     remote_output = f"reports/{label}"
     monitors: list[tuple[str, int]] = []
     monitor_hosts = [
@@ -520,10 +523,13 @@ def one_phase(
                 shlex.quote(remote_output),
                 "--env-file",
                 shlex.quote(env_file),
+                "--reset-stats",
+                "--measurement-seconds",
+                str(seconds),
+                "--warmup-seconds",
+                str(config["workload"]["warmup_seconds"]),
             ]
         )
-        if measurement:
-            command += f" --reset-stats --measurement-seconds {seconds}"
         result = remote.ssh(
             locust["public_ip"], command, check=False, timeout=total_seconds + 180
         )
@@ -540,16 +546,12 @@ def one_phase(
         check=False,
     )
     pressures = {}
-    measurement_start = None
     marker = local / "measurement-start.txt"
-    if measurement:
-        if not marker.is_file():
-            return {
-                "passed": False,
-                "reason": "Locust did not record the measurement-window start",
-                "pressure": pressures,
-            }
-        measurement_start = float(marker.read_text(encoding="utf-8").strip())
+    measurement_start = (
+        float(marker.read_text(encoding="utf-8").strip())
+        if marker.is_file()
+        else None
+    )
     for host, role in monitor_hosts:
         path = local / f"{role}.jsonl"
         remote.copy_from(
@@ -557,13 +559,19 @@ def one_phase(
         )
         if path.exists():
             pressures[role] = pressure(path, after=measurement_start)
+    if measurement_start is None:
+        return {
+            "passed": False,
+            "reason": "Locust did not record the measurement-window start",
+            "pressure": pressures,
+        }
     if result.returncode != 0:
         return {
             "passed": False,
             "reason": f"Locust exited {result.returncode}",
             "pressure": pressures,
         }
-    stats = read_stats(local / "locust_stats.csv", use_aggregate=measurement)
+    stats = read_stats(local / "locust_stats.csv", use_aggregate=True)
     stats.update(
         {"passed": stats["failures"] == 0, "pressure": pressures, "users": users}
     )
@@ -595,18 +603,6 @@ def measured_step(
     name: str,
 ) -> dict:
     smoke(remote, inventory["locust"], urls, config["images"]["locust"])
-    warmup = one_phase(
-        remote,
-        config,
-        inventory,
-        urls,
-        output,
-        users,
-        config["workload"]["warmup_seconds"],
-        f"{name}-warmup",
-    )
-    if not warmup.get("passed"):
-        return warmup
     result = one_phase(
         remote,
         config,
@@ -616,7 +612,6 @@ def measured_step(
         users,
         config["workload"]["measure_seconds"],
         name,
-        measurement=True,
     )
     saturated = helper_saturation(config, result)
     if saturated:
@@ -737,23 +732,6 @@ def capacity_search(
         candidate = refined
     direct_url = f"http://{inventory['fast_time']['private_ip']}:9080/mcp"
     smoke(remote, inventory["locust"], [direct_url], config["images"]["locust"])
-    direct_warmup = one_phase(
-        remote,
-        config,
-        inventory,
-        [direct_url],
-        output,
-        candidate["users"],
-        workload["warmup_seconds"],
-        "calibration-warmup",
-        "direct.secret.env",
-    )
-    if not direct_warmup.get("passed"):
-        return {
-            "status": "inconclusive",
-            "reason": "direct Fast Time calibration warmup failed",
-            "calibration": direct_warmup,
-        }
     calibration = one_phase(
         remote,
         config,
@@ -764,7 +742,6 @@ def capacity_search(
         workload["measure_seconds"],
         "calibration",
         "direct.secret.env",
-        measurement=True,
     )
     saturated = helper_saturation(config, calibration)
     if saturated:

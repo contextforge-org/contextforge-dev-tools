@@ -84,6 +84,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   then confirm the lower zero-error boundary instead of aborting the remaining
   FYRE comparison scenarios.
 
+- Keep each FYRE capacity step on one continuous Locust user population through
+  ramp, steady-state warmup, and measurement, resetting statistics only after
+  warmup completes.
+
 ## [0.4.0] - 2026-09-14
 
 ### Added

@@ -155,18 +155,15 @@ class CapacityTests(unittest.TestCase):
 
     @mock.patch.object(campaign, "smoke")
     @mock.patch.object(campaign, "one_phase")
-    def test_warmup_and_measurement_are_separate_phases(self, phase, _smoke):
-        phase.side_effect = [passed(125, 90.0), passed(125, 100.0)]
+    def test_step_uses_one_continuous_warmup_and_measurement(self, phase, _smoke):
+        phase.return_value = passed(125, 100.0)
         result = campaign.measured_step(
             None, config(), {"locust": {}}, [], Path("unused"), 125, "step"
         )
         self.assertTrue(result["passed"])
-        self.assertEqual(
-            [(call.args[7], call.args[6]) for call in phase.call_args_list],
-            [("step-warmup", 30), ("step", 120)],
+        phase.assert_called_once_with(
+            None, config(), {"locust": {}}, [], Path("unused"), 125, 120, "step"
         )
-        self.assertNotIn("measurement", phase.call_args_list[0].kwargs)
-        self.assertTrue(phase.call_args_list[1].kwargs["measurement"])
 
     def test_smoke_passes_script_once_to_python_entrypoint(self):
         remote = mock.Mock()
@@ -219,6 +216,11 @@ class CapacityTests(unittest.TestCase):
                 directory,
                 "--env-file",
                 "benchmark.secret.env",
+                "--reset-stats",
+                "--measurement-seconds",
+                "1",
+                "--warmup-seconds",
+                "1",
             ]
             with (
                 mock.patch.object(sys, "argv", args),
@@ -233,6 +235,9 @@ class CapacityTests(unittest.TestCase):
             arguments = call.args
             user_index = arguments.index("--user")
             self.assertEqual(arguments[user_index + 1], "0:0")
+        master_arguments = docker.call_args_list[0].args
+        self.assertIn("MCP_WARMUP_SECONDS=1", master_arguments)
+        self.assertNotIn("--reset-stats", master_arguments)
 
     def test_pressure_excludes_ramp_and_warmup_samples(self):
         with tempfile.TemporaryDirectory() as directory:

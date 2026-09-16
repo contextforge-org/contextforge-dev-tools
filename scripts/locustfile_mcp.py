@@ -16,8 +16,9 @@ Env:
   MCP_DIRECT_DATAPLANE                   use the native dataplane route without nginx
   MCP_FYRE_WORKLOAD                      enable the six-tool FYRE workload arguments
   MCP_EXPLICIT_ZERO_DELAY                send zero delay to Fast Time echo
-  MCP_MEASUREMENT_MARKER                 FYRE path written when spawning completes
+  MCP_MEASUREMENT_MARKER                 FYRE path written after ramp and warmup
   MCP_MEASUREMENT_SECONDS                FYRE measured duration after the marker
+  MCP_WARMUP_SECONDS                     FYRE steady-state warmup after spawning
   LOCUST_REQUEST_TIMEOUT_SECONDS         positive finite per-request timeout (default 60)
 """
 
@@ -287,15 +288,22 @@ def install_fail_fast(environment, **_kwargs) -> None:
 
     if isinstance(environment.runner, MasterRunner):
         environment.runner.register_message(_FAIL_FAST_MESSAGE, stop_from_worker)
-        marker = os.environ.get("MCP_MEASUREMENT_MARKER")
-        if marker:
 
-            def mark_measurement_start(**_kwargs) -> None:
+    marker = os.environ.get("MCP_MEASUREMENT_MARKER")
+    if marker:
+        warmup_seconds = float(os.environ["MCP_WARMUP_SECONDS"])
+        measurement_seconds = float(os.environ["MCP_MEASUREMENT_SECONDS"])
+
+        def begin_measurement() -> None:
+            environment.runner.stats.reset_all()
+            if isinstance(environment.runner, MasterRunner):
                 Path(marker).write_text(f"{time.time()}\n", encoding="utf-8")
-                seconds = float(os.environ["MCP_MEASUREMENT_SECONDS"])
-                gevent.spawn_later(seconds, environment.runner.quit)
+                gevent.spawn_later(measurement_seconds, environment.runner.quit)
 
-            environment.events.spawning_complete.add_listener(mark_measurement_start)
+        def finish_warmup(**_kwargs) -> None:
+            gevent.spawn_later(warmup_seconds, begin_measurement)
+
+        environment.events.spawning_complete.add_listener(finish_warmup)
 
     def stop_on_error(exception=None, **_kwargs):
         nonlocal stopping

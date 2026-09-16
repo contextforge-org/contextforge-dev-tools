@@ -81,13 +81,19 @@ def main() -> None:
     parser.add_argument("--env-file", required=True)
     parser.add_argument("--reset-stats", action="store_true")
     parser.add_argument("--measurement-seconds", type=int)
+    parser.add_argument("--warmup-seconds", type=int)
     args = parser.parse_args()
     if min(args.users, args.spawn_rate, args.seconds, args.workers) <= 0:
         parser.error("users, spawn-rate, seconds, and workers must be positive")
     if args.measurement_seconds is not None and args.measurement_seconds <= 0:
         parser.error("measurement-seconds must be positive")
-    if args.reset_stats != (args.measurement_seconds is not None):
-        parser.error("reset-stats and measurement-seconds must be used together")
+    if args.warmup_seconds is not None and args.warmup_seconds < 0:
+        parser.error("warmup-seconds cannot be negative")
+    measurement = args.measurement_seconds is not None
+    if args.reset_stats != measurement or (args.warmup_seconds is not None) != measurement:
+        parser.error(
+            "reset-stats, measurement-seconds, and warmup-seconds must be used together"
+        )
 
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
@@ -117,13 +123,11 @@ def main() -> None:
                 "MCP_MEASUREMENT_MARKER=/mnt/reports/measurement-start.txt",
                 "--env",
                 f"MCP_MEASUREMENT_SECONDS={args.measurement_seconds}",
+                "--env",
+                f"MCP_WARMUP_SECONDS={args.warmup_seconds}",
             ]
         )
-    run_seconds = (
-        args.measurement_seconds + 60
-        if args.measurement_seconds is not None
-        else args.seconds
-    )
+    run_seconds = args.seconds + 30 if args.measurement_seconds is not None else args.seconds
     master_args = [
         "run",
         "--detach",
@@ -157,8 +161,6 @@ def main() -> None:
         "--logfile",
         "/mnt/reports/locust.log",
     ]
-    if args.reset_stats:
-        master_args.append("--reset-stats")
     docker(*master_args)
     try:
         workers = []
