@@ -105,7 +105,30 @@ def bootstrap(remote: Remote, host: str, deploy: Path) -> None:
     wait_for_ssh(remote, host, time.monotonic() + 600)
     remote.ssh(
         host,
-        "if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; then sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io docker-compose-v2 iproute2 && sudo usermod -aG docker $USER && sudo systemctl enable --now docker; fi; mkdir -p ~/cf-fyre/state/keys ~/cf-fyre/reports ~/cf-fyre/telemetry",
+        "set -eu; "
+        "if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then "
+        "export DEBIAN_FRONTEND=noninteractive; "
+        "apt-get update -qq; "
+        "apt-get install -y -qq ca-certificates curl; "
+        "install -m 0755 -d /etc/apt/keyrings; "
+        "curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; "
+        "chmod a+r /etc/apt/keyrings/docker.asc; "
+        '. /etc/os-release; printf "%s\\n" '
+        "'Types: deb' "
+        "'URIs: https://download.docker.com/linux/ubuntu' "
+        '"Suites: ${UBUNTU_CODENAME:-$VERSION_CODENAME}" '
+        "'Components: stable' "
+        '"Architectures: $(dpkg --print-architecture)" '
+        "'Signed-By: /etc/apt/keyrings/docker.asc' "
+        "> /etc/apt/sources.list.d/docker.sources; "
+        "apt-get update -qq; "
+        "apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin iproute2; "
+        "systemctl enable --now docker; "
+        "fi; "
+        "docker info >/dev/null; "
+        "docker compose version >/dev/null; "
+        "mkdir -p ~/cf-fyre/state/keys ~/cf-fyre/reports ~/cf-fyre/telemetry",
+        timeout=900,
     )
     for path in deploy.iterdir():
         if path.is_file():
