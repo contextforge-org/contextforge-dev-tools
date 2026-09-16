@@ -318,7 +318,13 @@ def prepare_hosts(
 
 
 def start_monitor(remote: Remote, host: str, role: str, name: str) -> int:
-    command = f"cd ~/cf-fyre && nohup python3 monitor.py --role {shlex.quote(role)} --output telemetry/{shlex.quote(name)}.jsonl >telemetry/{shlex.quote(name)}.log 2>&1 & echo $!"
+    command = (
+        "nohup python3 cf-fyre/monitor.py"
+        f" --role {shlex.quote(role)}"
+        f" --output cf-fyre/telemetry/{shlex.quote(name)}.jsonl"
+        " </dev/null"
+        f" >cf-fyre/telemetry/{shlex.quote(name)}.log 2>&1 & echo $!"
+    )
     return int(remote.ssh(host, command, capture=True).stdout.strip())
 
 

@@ -49,6 +49,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Use a valid Fast Time conversion timestamp and deploy the packaged Locust
   workload to the FYRE load-generator VM.
 
+- Fully detach telemetry monitors from their SSH sessions so a benchmark phase
+  starts immediately instead of waiting for its own monitor to exit.
+
 - Propagate distributed worker failures to the Locust coordinator and reject
   reports containing a hidden worker failure.
 

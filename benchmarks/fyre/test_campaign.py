@@ -146,6 +146,17 @@ class CapacityTests(unittest.TestCase):
     def test_smoke_uses_valid_convert_time_datetime(self):
         self.assertEqual(smoke.TOOLS["convert_time"]["time"], "2025-06-21T16:00:00Z")
 
+    def test_monitor_detaches_all_standard_streams_from_ssh(self):
+        remote = mock.Mock()
+        remote.ssh.return_value.stdout = "123\n"
+        self.assertEqual(
+            campaign.start_monitor(remote, "192.0.2.10", "locust", "phase-1"), 123
+        )
+        command = remote.ssh.call_args.args[1]
+        self.assertNotIn("cd ", command)
+        self.assertIn("</dev/null", command)
+        self.assertIn(">cf-fyre/telemetry/phase-1.log 2>&1 & echo $!", command)
+
     @mock.patch.object(run_locust, "wait_for_cluster", return_value=0)
     @mock.patch.object(run_locust, "container_state", return_value=("exited", 0))
     @mock.patch.object(run_locust, "docker")
