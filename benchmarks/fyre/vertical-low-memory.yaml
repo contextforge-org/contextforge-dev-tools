@@ -14,8 +14,8 @@ images:
   dataplane: ghcr.io/contextforge-org/contextforge-data-plane@sha256:0b3026b21659ce6c494142aee2c5866b44122232e73fcf21102da1f210692a96
   fast_time: ghcr.io/ibm/cfex-mcp-fast-time-server@sha256:110e1826f5d763e5afadba770b731dac93e0819c1bbadb68671b0124260603cf
   helpers: ghcr.io/contextforge-org/cf-integration-helpers@sha256:f7e557e263737328225d827e73b519d0b40facb2698c55ee3d2de0ed82f00fa3
-  locust: locustio/locust@sha256:fd39232c31971fe7509582717a95592f0fbf9a917b705f355bd7471e03bdd649
-  redis: redis@sha256:a7859ed111db3c1f5404a973a4747505d559fb5ca32d37e447afc0ef845a2103
+  locust: mirror.gcr.io/locustio/locust@sha256:fd39232c31971fe7509582717a95592f0fbf9a917b705f355bd7471e03bdd649
+  redis: mirror.gcr.io/library/redis@sha256:a7859ed111db3c1f5404a973a4747505d559fb5ca32d37e447afc0ef845a2103
 workload:
   protocol_version: 2026-07-28
   first_users: 125

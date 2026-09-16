@@ -171,9 +171,27 @@ def write_remote_file(
 
 
 def compose_up(remote: Remote, host: str, compose: str) -> None:
+    prefix = (
+        "cd ~/cf-fyre && docker compose --env-file benchmark.env "
+        f"-f {shlex.quote(compose)}"
+    )
+    pull = f"{prefix} pull"
+    retry_delays = (5, 15, 30)
+    for attempt in range(len(retry_delays) + 1):
+        result = remote.ssh(host, pull, check=False, timeout=900)
+        if result.returncode == 0:
+            break
+        if attempt == len(retry_delays):
+            result.check_returncode()
+        delay = retry_delays[attempt]
+        print(
+            f"container pull failed on {host}; retrying in {delay} seconds",
+            flush=True,
+        )
+        time.sleep(delay)
     remote.ssh(
         host,
-        f"cd ~/cf-fyre && docker compose --env-file benchmark.env -f {shlex.quote(compose)} pull && docker compose --env-file benchmark.env -f {shlex.quote(compose)} up -d --wait",
+        f"{prefix} up -d --wait",
         timeout=900,
     )
 

@@ -182,6 +182,21 @@ class CapacityTests(unittest.TestCase):
     def test_smoke_uses_valid_convert_time_datetime(self):
         self.assertEqual(smoke.TOOLS["convert_time"]["time"], "2025-06-21T16:00:00Z")
 
+    def test_compose_pull_retries_before_starting_containers(self):
+        remote = mock.Mock()
+        remote.ssh.side_effect = [
+            mock.Mock(returncode=1),
+            mock.Mock(returncode=0),
+            mock.Mock(returncode=0),
+        ]
+        with mock.patch.object(campaign.time, "sleep") as sleep:
+            campaign.compose_up(remote, "192.0.2.10", "dataplane.compose.yaml")
+        self.assertEqual(remote.ssh.call_count, 3)
+        self.assertIn(" pull", remote.ssh.call_args_list[0].args[1])
+        self.assertIn(" pull", remote.ssh.call_args_list[1].args[1])
+        self.assertIn(" up -d --wait", remote.ssh.call_args_list[2].args[1])
+        sleep.assert_called_once_with(5)
+
     def test_monitor_detaches_all_standard_streams_from_ssh(self):
         remote = mock.Mock()
         remote.ssh.return_value.stdout = "123\n"

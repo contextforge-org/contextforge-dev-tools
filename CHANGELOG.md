@@ -88,6 +88,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   ramp, steady-state warmup, and measurement, resetting statistics only after
   warmup completes.
 
+- Pull the pinned Locust and Redis images through the Google registry mirror and
+  retry transient container-pull failures with bounded backoff.
+
 ## [0.4.0] - 2026-09-14
 
 ### Added
