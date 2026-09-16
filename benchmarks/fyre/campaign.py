@@ -404,17 +404,21 @@ def kernel_counter(text: str, name: str) -> int:
 def docker_pressure(text: str) -> bool:
     for line in text.splitlines():
         try:
-            state = json.loads(line)
+            parsed = json.loads(line)
         except ValueError:
             continue
-        health = state.get("Health") or {}
-        if (
-            state.get("OOMKilled") is True
-            or state.get("Status") == "dead"
-            or (state.get("Status") == "exited" and state.get("ExitCode") != 0)
-            or health.get("Status") == "unhealthy"
-        ):
-            return True
+        states = parsed if isinstance(parsed, list) else [parsed]
+        for state in states:
+            if not isinstance(state, dict):
+                continue
+            health = state.get("Health") or {}
+            if (
+                state.get("OOMKilled") is True
+                or state.get("Status") == "dead"
+                or (state.get("Status") == "exited" and state.get("ExitCode") != 0)
+                or health.get("Status") == "unhealthy"
+            ):
+                return True
     return False
 
 

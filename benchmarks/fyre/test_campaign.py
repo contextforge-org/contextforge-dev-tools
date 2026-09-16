@@ -259,6 +259,7 @@ class CapacityTests(unittest.TestCase):
         self.assertTrue(result["worker_or_network_pressure"])
 
     def test_docker_pressure_ignores_clean_exit_and_detects_oom(self):
+        self.assertFalse(campaign.docker_pressure("[]"))
         self.assertFalse(
             campaign.docker_pressure(
                 '{"Status":"exited","ExitCode":0,"OOMKilled":false}'
@@ -267,6 +268,11 @@ class CapacityTests(unittest.TestCase):
         self.assertTrue(
             campaign.docker_pressure(
                 '{"Status":"exited","ExitCode":137,"OOMKilled":true}'
+            )
+        )
+        self.assertTrue(
+            campaign.docker_pressure(
+                '[{"Status":"running","ExitCode":0,"OOMKilled":true}]'
             )
         )
 
@@ -279,6 +285,14 @@ class CapacityTests(unittest.TestCase):
         docker.assert_called_once_with(
             "stop", "--time", "1", "master", check=False, capture=True
         )
+
+    @mock.patch.object(run_locust.time, "sleep")
+    @mock.patch.object(run_locust, "docker")
+    @mock.patch.object(run_locust, "container_state")
+    def test_clean_worker_exit_waits_for_clean_master(self, state, docker, _sleep):
+        state.side_effect = [("running", 0), ("exited", 0), ("exited", 0)]
+        self.assertEqual(run_locust.wait_for_cluster("master", ["worker"]), 0)
+        docker.assert_not_called()
 
     def test_stats_preserve_replica_rates_and_exclude_discovery(self):
         with tempfile.TemporaryDirectory() as directory:

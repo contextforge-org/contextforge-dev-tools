@@ -61,7 +61,9 @@ def wait_for_cluster(master: str, workers: list[str]) -> int:
         if master_state in {"exited", "dead", "missing", "invalid"}:
             return master_exit
         for worker in workers:
-            worker_state, _worker_exit = container_state(worker)
+            worker_state, worker_exit = container_state(worker)
+            if worker_state in {"exited", "dead"} and worker_exit == 0:
+                continue
             if worker_state != "running":
                 docker("stop", "--time", "1", master, check=False, capture=True)
                 return 1

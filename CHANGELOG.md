@@ -54,6 +54,12 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Fully detach telemetry monitors from their SSH sessions so a benchmark phase
   starts immediately instead of waiting for its own monitor to exit.
 
+- Accept Docker's empty-container telemetry form when evaluating helper and
+  dataplane pressure after a load phase.
+
+- Allow clean distributed-worker shutdown at the Locust time limit while still
+  stopping the coordinator immediately for nonzero or missing workers.
+
 - Propagate distributed worker failures to the Locust coordinator and reject
   reports containing a hidden worker failure.
 
