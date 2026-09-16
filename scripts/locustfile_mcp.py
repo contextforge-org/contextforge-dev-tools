@@ -12,27 +12,44 @@ Env:
   MCPGATEWAY_BEARER_TOKEN                bearer token (required)
   MCP_TOOL_NAMES                         optional comma-separated tools to call
   MCP_SKIP_TOOL_LIST                     true when direct tool aliases are supplied
+  MCP_BASE_URLS                          optional comma-separated replica origins
+  MCP_DIRECT_DATAPLANE                   use the native dataplane route without nginx
+  MCP_FYRE_WORKLOAD                      enable the six-tool FYRE workload arguments
+  MCP_EXPLICIT_ZERO_DELAY                send zero delay to Fast Time echo
+  MCP_MEASUREMENT_MARKER                 FYRE path written when spawning completes
+  MCP_MEASUREMENT_SECONDS                FYRE measured duration after the marker
   LOCUST_REQUEST_TIMEOUT_SECONDS         positive finite per-request timeout (default 60)
 """
+
 from __future__ import annotations
 
+import itertools
 import json
 import logging
 import math
 import os
 import random
+import time
 import uuid
+from pathlib import Path
 from urllib.parse import quote
 
 import gevent
-from locust import HttpUser, constant, events, task
+from locust import constant, events, task
+
+try:
+    from locust import FastHttpUser
+except ImportError:  # Minimal test doubles expose only HttpUser.
+    from locust import HttpUser as FastHttpUser
 from locust.runners import MasterRunner, WorkerRunner
 
 PROTOCOL_VERSION = os.environ.get("MCP_PROTOCOL_VERSION", "2026-07-28")
 STATELESS = PROTOCOL_VERSION == "2026-07-28"
 LEGACY_PROTOCOL_VERSIONS = {"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"}
 if PROTOCOL_VERSION not in {"2025-11-25", "2026-07-28"}:
-    raise RuntimeError("MCP_PROTOCOL_VERSION must be a harness-selected client revision")
+    raise RuntimeError(
+        "MCP_PROTOCOL_VERSION must be a harness-selected client revision"
+    )
 ACCEPT = "application/json, text/event-stream"
 _REQUEST_TIMEOUT_ERROR = (
     "LOCUST_REQUEST_TIMEOUT_SECONDS must be a finite number greater than zero"
@@ -57,6 +74,17 @@ _TOOL_ARGUMENTS = {
     "echo": {"message": "cf-integration"},
     "fast_time_echo": {"message": "cf-integration"},
     "fast-time-echo": {"message": "cf-integration"},
+}
+_FYRE_TOOL_ARGUMENTS = {
+    "convert_time": {
+        "time": "12:00",
+        "source_timezone": "UTC",
+        "target_timezone": "Europe/Dublin",
+    },
+    "get_stats": {},
+    "get_system_time": {"timezone": "UTC"},
+    "schema_success": {},
+    "verify-protocol": {},
 }
 
 
@@ -124,7 +152,20 @@ def parse_mcp_body(text: str, content_type: str):
 def tool_call_args(tool_name: str) -> dict | None:
     """Use the same Fast Time echo payload for raw and control-plane aliases."""
     arguments = _TOOL_ARGUMENTS.get(tool_name)
-    return dict(arguments) if arguments is not None else None
+    if (
+        arguments is None
+        and os.environ.get("MCP_FYRE_WORKLOAD", "false").lower() == "true"
+    ):
+        arguments = _FYRE_TOOL_ARGUMENTS.get(tool_name)
+    if arguments is None:
+        return None
+    result = dict(arguments)
+    if (
+        tool_name == "echo"
+        and os.environ.get("MCP_EXPLICIT_ZERO_DELAY", "false").lower() == "true"
+    ):
+        result["delay"] = 0
+    return result
 
 
 def validate_result(method: str, result) -> dict:
@@ -134,7 +175,9 @@ def validate_result(method: str, result) -> dict:
     if method == "initialize":
         version = result.get("protocolVersion")
         if not isinstance(version, str) or version not in LEGACY_PROTOCOL_VERSIONS:
-            raise ValueError("initialize must negotiate a supported legacy protocol revision")
+            raise ValueError(
+                "initialize must negotiate a supported legacy protocol revision"
+            )
         if not isinstance(result.get("capabilities"), dict):
             raise ValueError("initialize result must include capabilities")
         server_info = result.get("serverInfo")
@@ -142,11 +185,15 @@ def validate_result(method: str, result) -> dict:
             isinstance(server_info.get(field), str) and server_info[field]
             for field in ("name", "version")
         ):
-            raise ValueError("initialize result must include serverInfo name and version")
+            raise ValueError(
+                "initialize result must include serverInfo name and version"
+            )
     elif method == "server/discover":
         versions = result.get("supportedVersions")
         if not isinstance(versions, list) or PROTOCOL_VERSION not in versions:
-            raise ValueError("server/discover must advertise the requested protocol version")
+            raise ValueError(
+                "server/discover must advertise the requested protocol version"
+            )
         if not isinstance(result.get("capabilities"), dict):
             raise ValueError("server/discover result must include capabilities")
         if not isinstance(result.get("resultType"), str):
@@ -184,11 +231,23 @@ def validate_result(method: str, result) -> dict:
             raise ValueError("tools/call result contains invalid content")
     return result
 
+
 MCP_SERVER_ID = os.environ.get("MCP_SERVER_ID", "")
 MCP_STACK_MODE = os.environ.get("MCP_STACK_MODE", "dataplane")
 BEARER_TOKEN = os.environ.get("MCPGATEWAY_BEARER_TOKEN", "")
-TOOL_NAMES = [name.strip() for name in os.environ.get("MCP_TOOL_NAMES", "").split(",") if name.strip()]
+TOOL_NAMES = [
+    name.strip()
+    for name in os.environ.get("MCP_TOOL_NAMES", "").split(",")
+    if name.strip()
+]
 SKIP_TOOL_LIST = os.environ.get("MCP_SKIP_TOOL_LIST", "false").lower() == "true"
+BASE_URLS = [
+    url.strip().rstrip("/")
+    for url in os.environ.get("MCP_BASE_URLS", "").split(",")
+    if url.strip()
+]
+DIRECT_DATAPLANE = os.environ.get("MCP_DIRECT_DATAPLANE", "false").lower() == "true"
+_TARGET_SEQUENCE = itertools.count()
 
 
 def safe_diagnostic(value) -> str:
@@ -201,6 +260,8 @@ def mcp_path() -> str:
     """Return the mode-aware public MCP route."""
     if MCP_STACK_MODE == "controlplane":
         return "/mcp"
+    if DIRECT_DATAPLANE:
+        return f"/contextforge-rs/servers/{quote(MCP_SERVER_ID, safe='')}/mcp"
     return f"/servers/{quote(MCP_SERVER_ID, safe='')}/mcp"
 
 
@@ -226,6 +287,15 @@ def install_fail_fast(environment, **_kwargs) -> None:
 
     if isinstance(environment.runner, MasterRunner):
         environment.runner.register_message(_FAIL_FAST_MESSAGE, stop_from_worker)
+        marker = os.environ.get("MCP_MEASUREMENT_MARKER")
+        if marker:
+
+            def mark_measurement_start(_user_count: int) -> None:
+                Path(marker).write_text(f"{time.time()}\n", encoding="utf-8")
+                seconds = float(os.environ["MCP_MEASUREMENT_SECONDS"])
+                gevent.spawn_later(seconds, environment.runner.quit)
+
+            environment.events.spawning_complete.add_listener(mark_measurement_start)
 
     def stop_on_error(exception=None, **_kwargs):
         nonlocal stopping
@@ -256,12 +326,18 @@ def fail_empty_run(environment, **_kwargs) -> None:
         environment.process_exit_code = 1
 
 
-class MCPGatewayUser(HttpUser):
+class MCPGatewayUser(FastHttpUser):
     """Drives discovery or initialization, then tool requests on the public route."""
 
     wait_time = constant(0)
+    host = BASE_URLS[0] if BASE_URLS else None
 
     def __init__(self, *args, **kwargs):
+        self._replica_index = (
+            next(_TARGET_SEQUENCE) % len(BASE_URLS) if BASE_URLS else None
+        )
+        if self._replica_index is not None:
+            self.host = BASE_URLS[self._replica_index]
         super().__init__(*args, **kwargs)
         self._session_id: str | None = None
         self._protocol_version = PROTOCOL_VERSION
@@ -300,7 +376,9 @@ class MCPGatewayUser(HttpUser):
             raise RuntimeError("initialize response did not include Mcp-Session-Id")
         if not STATELESS:
             self._protocol_version = result["protocolVersion"]
-            if not self._mcp_notification("notifications/initialized", None, name="MCP initialized"):
+            if not self._mcp_notification(
+                "notifications/initialized", None, name="MCP initialized"
+            ):
                 return
         if not self._tool_names and not SKIP_TOOL_LIST:
             listed = self._mcp_request("tools/list", {}, name="MCP tools/list")
@@ -312,9 +390,13 @@ class MCPGatewayUser(HttpUser):
                     and isinstance(tool.get("name"), str)
                     and tool["name"].strip()
                 ]
-        self._tool_names = [name for name in self._tool_names if tool_call_args(name) is not None]
+        self._tool_names = [
+            name for name in self._tool_names if tool_call_args(name) is not None
+        ]
         if not self._tool_names:
-            raise RuntimeError("Fast Time echo tool is required; refusing an empty load workload")
+            raise RuntimeError(
+                "Fast Time echo tool is required; refusing an empty load workload"
+            )
         self._ready = True
 
     def on_stop(self):
@@ -331,7 +413,9 @@ class MCPGatewayUser(HttpUser):
             if not self._validate_backend(response):
                 return
             if response.status_code not in (200, 202, 204, 404, 405):
-                response.failure(f"HTTP {response.status_code}; expected session termination response")
+                response.failure(
+                    f"HTTP {response.status_code}; expected session termination response"
+                )
                 return
             response.success()
 
@@ -371,9 +455,13 @@ class MCPGatewayUser(HttpUser):
 
     @staticmethod
     def _validate_backend(response) -> bool:
-        if MCP_STACK_MODE != "dataplane":
+        if MCP_STACK_MODE != "dataplane" or DIRECT_DATAPLANE:
             return True
-        marker = response.headers.get("X-CF-Integration-Backend") if response.headers else None
+        marker = (
+            response.headers.get("X-CF-Integration-Backend")
+            if response.headers
+            else None
+        )
         if marker != "dataplane":
             response.failure("Missing or invalid dataplane backend marker")
             return False
@@ -405,16 +493,25 @@ class MCPGatewayUser(HttpUser):
         ) as response:
             if not self._validate_backend(response):
                 return None
-            session_id = response.headers.get("Mcp-Session-Id") if response.headers else None
+            session_id = (
+                response.headers.get("Mcp-Session-Id") if response.headers else None
+            )
             if session_id and not STATELESS:
                 self._session_id = session_id
 
             if response.status_code != 200:
                 detail = getattr(response, "error", None)
-                response.failure(safe_diagnostic(f"HTTP {response.status_code}" + (f": {detail}" if detail else "")))
+                response.failure(
+                    safe_diagnostic(
+                        f"HTTP {response.status_code}"
+                        + (f": {detail}" if detail else "")
+                    )
+                )
                 return None
             try:
-                message = parse_mcp_body(response.text, response.headers.get("Content-Type", ""))
+                message = parse_mcp_body(
+                    response.text, response.headers.get("Content-Type", "")
+                )
             except ValueError as exc:
                 response.failure(safe_diagnostic(f"Invalid body: {exc}"))
                 return None
@@ -460,7 +557,12 @@ class MCPGatewayUser(HttpUser):
                 return False
             if response.status_code != 202:
                 detail = getattr(response, "error", None)
-                response.failure(safe_diagnostic(f"HTTP {response.status_code}; expected 202" + (f": {detail}" if detail else "")))
+                response.failure(
+                    safe_diagnostic(
+                        f"HTTP {response.status_code}; expected 202"
+                        + (f": {detail}" if detail else "")
+                    )
+                )
                 return False
             if response.content:
                 response.failure("HTTP 202 notification response body must be empty")
@@ -474,4 +576,7 @@ class MCPGatewayUser(HttpUser):
             return
         tool = random.choice(self._tool_names)
         args = tool_call_args(tool)
-        self._mcp_request("tools/call", {"name": tool, "arguments": args}, name="MCP tools/call")
+        name = "MCP tools/call"
+        if self._replica_index is not None:
+            name += f" [replica-{self._replica_index + 1}]"
+        self._mcp_request("tools/call", {"name": tool, "arguments": args}, name=name)

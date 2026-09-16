@@ -70,7 +70,7 @@ fn command_tree_contains_only_distinct_public_workflows() {
         subcommands(&["stack"]),
         ["up", "down", "status", "logs", "config"]
     );
-    assert_eq!(subcommands(&["load"]), ["run"]);
+    assert_eq!(subcommands(&["load"]), ["run", "fyre"]);
     assert_eq!(subcommands(&["conformance"]), ["run", "report"]);
     assert_eq!(subcommands(&["debug"]), ["inspect", "token"]);
 }
@@ -88,6 +88,10 @@ fn every_public_command_renders_help() {
         &["probe"],
         &["load"],
         &["load", "run"],
+        &["load", "fyre"],
+        &["load", "fyre", "run"],
+        &["load", "fyre", "status"],
+        &["load", "fyre", "destroy"],
         &["live"],
         &["conformance"],
         &["conformance", "run"],
@@ -282,7 +286,9 @@ fn load_accepts_standalone_external_dataplane_mode() {
         panic!("expected load")
     };
 
-    let LoadCommand::Run(args) = args.command;
+    let LoadCommand::Run(args) = args.command else {
+        panic!("expected load run")
+    };
     assert_eq!(args.lane, Some(CliRoutedLane::External));
 }
 
@@ -293,7 +299,9 @@ fn load_accepts_explicit_observability() {
         panic!("expected load")
     };
 
-    let LoadCommand::Run(args) = args.command;
+    let LoadCommand::Run(args) = args.command else {
+        panic!("expected load run")
+    };
     assert!(args.observability);
 }
 
@@ -695,7 +703,9 @@ fn load_uses_client_eras_and_rejects_version_or_server_selectors() {
         else {
             panic!("expected load")
         };
-        let LoadCommand::Run(args) = args.command;
+        let LoadCommand::Run(args) = args.command else {
+            panic!("expected load run")
+        };
         assert_eq!(args.client_era, expected);
     }
     for arguments in [
@@ -837,6 +847,26 @@ fn short_commands_and_options_resolve_identically_to_long_forms() {
                 "--builtin-memory-limit",
                 "16G",
             ],
+        ),
+        (
+            &["l", "f", "r", "-f", "scenario.yaml", "-i", "scale-run"],
+            &[
+                "load",
+                "fyre",
+                "run",
+                "--file",
+                "scenario.yaml",
+                "--run-id",
+                "scale-run",
+            ],
+        ),
+        (
+            &["l", "f", "s", "-i", "scale-run"],
+            &["load", "fyre", "status", "--run-id", "scale-run"],
+        ),
+        (
+            &["l", "f", "d", "-i", "scale-run"],
+            &["load", "fyre", "destroy", "--run-id", "scale-run"],
         ),
         (
             &["v", "-l", "builtin", "-p", "legacy", "-g", "protocol"],

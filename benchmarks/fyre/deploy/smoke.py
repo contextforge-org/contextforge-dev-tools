@@ -1,0 +1,80 @@
+"""Call every measured Fast Time tool through every dataplane replica."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import urllib.request
+import uuid
+
+TOOLS = {
+    "convert_time": {
+        "time": "12:00",
+        "source_timezone": "UTC",
+        "target_timezone": "Europe/Dublin",
+    },
+    "echo": {"message": "cf-integration", "delay": 0},
+    "get_stats": {},
+    "get_system_time": {"timezone": "UTC"},
+    "schema_success": {},
+    "verify-protocol": {},
+}
+
+
+def call(url: str, token: str, tool: str, arguments: dict) -> None:
+    payload = {
+        "jsonrpc": "2.0",
+        "id": str(uuid.uuid4()),
+        "method": "tools/call",
+        "params": {
+            "name": tool,
+            "arguments": arguments,
+            "_meta": {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientInfo": {
+                    "name": "cf-integration-smoke",
+                    "version": "1.0",
+                },
+                "io.modelcontextprotocol/clientCapabilities": {},
+            },
+        },
+    }
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        headers={
+            "Accept": "application/json, text/event-stream",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Mcp-Protocol-Version": "2026-07-28",
+            "Mcp-Method": "tools/call",
+            "Mcp-Name": tool,
+        },
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        body = response.read().decode()
+        if (
+            response.status != 200
+            or '"error"' in body
+            or '"isError":true' in body.replace(" ", "")
+        ):
+            raise RuntimeError(
+                f"{url} {tool} failed: HTTP {response.status}: {body[:500]}"
+            )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--urls", required=True)
+    parser.add_argument("--token-file", required=True)
+    args = parser.parse_args()
+    with open(args.token_file, encoding="utf-8") as stream:
+        token = stream.read().strip()
+    for url in args.urls.split(","):
+        for tool, arguments in TOOLS.items():
+            call(url, token, tool, arguments)
+            print(f"PASS {url} {tool}")
+
+
+if __name__ == "__main__":
+    main()

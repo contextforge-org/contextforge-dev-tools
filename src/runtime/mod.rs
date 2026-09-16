@@ -65,6 +65,7 @@ const LOAD_TARGET_CPUSET_ENV: &str = "CF_LOAD_TARGET_CPUSET";
 mod ci;
 mod conformance;
 mod control_plane;
+mod fyre;
 mod inspect;
 mod live;
 mod performance;
@@ -110,6 +111,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     .await
             }
             Action::Load(args) => self.run_load(args).await,
+            Action::Fyre(action) => self.execute_fyre(action).await,
             Action::Live {
                 lane,
                 group,

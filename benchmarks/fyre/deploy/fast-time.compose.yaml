@@ -1,0 +1,19 @@
+services:
+  fast_time:
+    image: ${FAST_TIME_IMAGE:?Set FAST_TIME_IMAGE to a pinned digest}
+    restart: unless-stopped
+    network_mode: host
+    command: []
+    environment:
+      BIND_ADDRESS: 0.0.0.0:9080
+      RUST_LOG: warn
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9080/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 2s

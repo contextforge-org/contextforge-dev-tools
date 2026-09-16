@@ -4,6 +4,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY docker ./docker
 COPY scripts ./scripts
+COPY benchmarks ./benchmarks
 COPY tests/conformance/baselines ./tests/conformance/baselines
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \

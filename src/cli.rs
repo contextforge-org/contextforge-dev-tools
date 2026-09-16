@@ -323,6 +323,51 @@ pub(crate) enum LoadCommand {
     /// Run Locust through the selected public MCP route.
     #[command(visible_alias = "r")]
     Run(LoadRunArgs),
+    /// Run repeatable scaling benchmarks on FYRE virtual machines.
+    #[command(visible_alias = "f")]
+    Fyre(FyreArgs),
+}
+
+/// FYRE benchmark command selection.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub(crate) struct FyreArgs {
+    /// FYRE benchmark operation to run.
+    #[command(subcommand)]
+    pub(crate) command: FyreCommand,
+}
+
+/// Operations on one FYRE benchmark run.
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub(crate) enum FyreCommand {
+    /// Provision, benchmark, download reports, and destroy run-owned VMs.
+    #[command(visible_alias = "r")]
+    Run(FyreRunArgs),
+    /// Show durable state for a benchmark run.
+    #[command(visible_alias = "s")]
+    Status(FyreExistingRunArgs),
+    /// Destroy only the VMs owned by a benchmark run.
+    #[command(visible_alias = "d")]
+    Destroy(FyreExistingRunArgs),
+}
+
+/// Common FYRE benchmark options.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub(crate) struct FyreRunArgs {
+    /// Scenario configuration file; defaults to the packaged scaling matrix.
+    #[arg(short = 'f', long, value_name = "FILE")]
+    pub(crate) file: Option<PathBuf>,
+
+    /// Run identifier; generated when omitted.
+    #[arg(short = 'i', long, value_name = "RUN_ID")]
+    pub(crate) run_id: Option<String>,
+}
+
+/// Options for an existing FYRE benchmark run.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub(crate) struct FyreExistingRunArgs {
+    /// Existing run identifier.
+    #[arg(short = 'i', long, value_name = "RUN_ID", required = true)]
+    pub(crate) run_id: String,
 }
 
 /// Load-test options.

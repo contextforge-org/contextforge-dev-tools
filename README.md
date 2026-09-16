@@ -47,7 +47,7 @@ Every public command and option has a short form, shown in `--help`.
 | --- | --- | --- |
 | `stack` | `s` | `up` → `u`, `down` → `d`, `status` → `s`, `logs` → `l`, `config` → `c` |
 | `probe` | `p` | — |
-| `load` | `l` | `run` → `r` |
+| `load` | `l` | `run` → `r`, `fyre` → `f` (`run` → `r`, `status` → `s`, `destroy` → `d`) |
 | `live` | `v` | — |
 | `conformance` | `c` | `run` → `r`, `report` → `p` |
 | `debug` | `d` | `inspect` → `i`, `token` → `t` |
@@ -218,6 +218,24 @@ era. `--standalone` runs Fast Time with the external dataplane and a harness
 routing snapshot in Redis, without the control plane. It discovers Fast Time's
 catalog directly; it never starts the conformance fixture or its proxy.
 Conformance, probes, and Inspector retain their protocol fixtures.
+
+### FYRE scaling campaign
+
+Run the reproducible vertical and horizontal Rust dataplane comparison on FYRE:
+
+```bash
+cf-integration load fyre run
+cf-integration load fyre status --run-id scale-candidate
+cf-integration load fyre destroy --run-id scale-candidate
+```
+
+The short forms are `cf-integration l f r`, `l f s`, and `l f d`; configuration
+and run IDs use `-f` and `-i`. The packaged matrix, infrastructure lifecycle,
+capacity-search rules, recovery behavior, and report layout are documented in
+[`benchmarks/fyre/README.md`](benchmarks/fyre/README.md). FYRE credentials stay
+in provider environment variables. All generated Terraform state, inventories,
+raw reports, telemetry, manifests, and the Slack-ready PNG are kept under
+`CF_INTEGRATION_DIR/fyre/<run-id>/`.
 
 ## Live gateway checks
 
