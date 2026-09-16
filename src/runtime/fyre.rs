@@ -18,7 +18,7 @@ const OWNERSHIP_FILE: &str = "run.json";
 const TERRAFORM_DIRECTORY: &str = "terraform";
 const TERRAFORM_VARIABLES: &str = "scenario.tfvars.json";
 const HELPER_SATURATION_EXIT: i32 = 42;
-const FYRE_UBUNTU_OS_DISK_GB: u32 = 250;
+const FYRE_STANDALONE_UBUNTU_OS_DISK_GB: u32 = 250;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FyreConfig {
@@ -834,7 +834,7 @@ fn required_capacity(config: &FyreConfig) -> RequiredCapacity {
     RequiredCapacity {
         cpu: dataplane_cpu + helper_cpu * 2,
         memory: dataplane_memory + helper_memory * 2,
-        disk: vm_count * FYRE_UBUNTU_OS_DISK_GB,
+        disk: vm_count * FYRE_STANDALONE_UBUNTU_OS_DISK_GB,
         public_ips: vm_count,
     }
 }
@@ -893,11 +893,11 @@ fn ensure_fyre_quota(config: &FyreConfig, quota: &FyreQuota) -> Result<()> {
         return Ok(());
     }
     bail!(
-        "FYRE product group {} ({}) cannot fit the configured campaign: {}. FYRE fixes the Ubuntu 24.04 root disk at {} GB and exposes no boot-disk size setting; cf-integration does not request additional disks",
+        "FYRE product group {} ({}) cannot fit the configured campaign: {}. The standalone VM API and pinned Terraform provider allocate a {} GB Ubuntu 24.04 root disk and expose no create-time root-disk setting; the OCP cluster API's base_disk_size setting does not apply to these standalone VMs",
         quota.product_group_id,
         quota.product_group_name,
         shortages.join("; "),
-        FYRE_UBUNTU_OS_DISK_GB,
+        FYRE_STANDALONE_UBUNTU_OS_DISK_GB,
     )
 }
 
@@ -1065,7 +1065,7 @@ mod tests {
     }
 
     #[test]
-    fn packaged_matrix_requires_five_fixed_size_os_disks() {
+    fn packaged_matrix_requires_five_standalone_vm_os_disks() {
         let config = read_config(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("benchmarks/fyre/scaling.yaml")
@@ -1084,7 +1084,7 @@ mod tests {
     }
 
     #[test]
-    fn quota_preflight_reports_fixed_disk_shortage() {
+    fn quota_preflight_reports_standalone_vm_disk_shortage() {
         let config = read_config(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("benchmarks/fyre/scaling.yaml")
@@ -1110,6 +1110,7 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("disk requires 1250 GB"));
         assert!(message.contains("shortage 500"));
-        assert!(message.contains("root disk at 250 GB"));
+        assert!(message.contains("allocate a 250 GB Ubuntu 24.04 root disk"));
+        assert!(message.contains("OCP cluster API's base_disk_size"));
     }
 }
