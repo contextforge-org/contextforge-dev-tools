@@ -30,6 +30,13 @@ ephemeral signing key.
 Credential values are inherited by Terraform and are never copied into the
 run manifest, command arguments, reports, or logs.
 
+FYRE's Ubuntu 24.04 image currently allocates a fixed 250 GB root disk. The VM
+API exposes CPU, memory, and additional disks, but no root-disk size setting.
+The full matrix therefore needs room for five concurrent VMs, or 1,250 GB, even
+though the benchmark uses little of that storage. Before creating a VM, the CLI
+checks that the product group can fit the full campaign at its largest helper
+sizes and reports the exact CPU, memory, disk, or public-IP shortage.
+
 ## Run and recover
 
 ```bash

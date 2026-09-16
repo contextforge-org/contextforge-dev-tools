@@ -35,3 +35,18 @@ output "inventory" {
     }]
   }
 }
+
+output "quota" {
+  value = {
+    product_group_id   = data.fyre_quota.current.details.product_group_id
+    product_group_name = data.fyre_quota.current.details.product_group_name
+    cpu                = data.fyre_quota.current.details.x.cpu
+    cpu_used           = data.fyre_quota.current.details.x.cpu_used
+    memory             = data.fyre_quota.current.details.x.memory
+    memory_used        = data.fyre_quota.current.details.x.memory_used
+    disk               = data.fyre_quota.current.details.x.disk
+    disk_used          = data.fyre_quota.current.details.x.disk_used
+    public_ips         = data.fyre_quota.current.details.ip.public.quota
+    public_ips_used    = data.fyre_quota.current.details.ip.public.used
+  }
+}

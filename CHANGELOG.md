@@ -18,6 +18,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   preserves raw reports before cleanup, and produces JSON, CSV, and a
   Slack-ready comparison PNG.
 
+- Preflight FYRE product-group CPU, memory, fixed Ubuntu root-disk, and public-IP
+  quota for the full scaling matrix before provisioning any benchmark VM.
+
 - Add `-w/--workers` to distribute load across local Locust processes,
   `-i/--isolate-cpus` to split Docker CPUs between the target and load
   generator, and `-m/--builtin-memory-limit` to tune the built-in gateway

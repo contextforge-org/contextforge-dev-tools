@@ -18,6 +18,7 @@ const OWNERSHIP_FILE: &str = "run.json";
 const TERRAFORM_DIRECTORY: &str = "terraform";
 const TERRAFORM_VARIABLES: &str = "scenario.tfvars.json";
 const HELPER_SATURATION_EXIT: i32 = 42;
+const FYRE_UBUNTU_OS_DISK_GB: u32 = 250;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FyreConfig {
@@ -92,6 +93,28 @@ struct Scenario {
     cpu: u32,
     memory_gb: u32,
     multiplier: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FyreQuota {
+    product_group_id: u64,
+    product_group_name: String,
+    cpu: u32,
+    cpu_used: u32,
+    memory: u32,
+    memory_used: u32,
+    disk: u32,
+    disk_used: u32,
+    public_ips: u32,
+    public_ips_used: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RequiredCapacity {
+    cpu: u32,
+    memory: u32,
+    disk: u32,
+    public_ips: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,6 +203,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     .cwd(root.join(TERRAFORM_DIRECTORY)),
             );
             self.run_cancellable(&validate).await?;
+            self.preflight_fyre_quota(&terraform, &root, &public_key, &mut config, &mut state)
+                .await?;
             let matrix = tokio::time::timeout(
                 Duration::from_secs(config.workload.maximum_campaign_seconds.into()),
                 self.run_fyre_matrix(
@@ -243,6 +268,60 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         }
         let _ = write_state(&root, &state);
         super::finish_with_cleanup(primary.err(), cleanup)
+    }
+
+    async fn preflight_fyre_quota(
+        &self,
+        terraform: &OsString,
+        root: &Path,
+        public_key: &Path,
+        config: &mut FyreConfig,
+        state: &mut RunState,
+    ) -> AppResult<()> {
+        let helper = config.infrastructure.helper_sizes[0];
+        config.active_helper = Some(ActiveHelper {
+            locust_cpu: helper.cpu,
+            locust_memory_gb: helper.memory_gb,
+            fast_time_cpu: helper.cpu,
+            fast_time_memory_gb: helper.memory_gb,
+        });
+        write_json(&root.join("config.json"), config).map_err(AppFailure::from)?;
+        state.phase = "checking-quota".to_owned();
+        write_state(root, state).map_err(AppFailure::from)?;
+
+        let public_key = fs::read_to_string(public_key)
+            .context("failed to read FYRE SSH public key")
+            .map_err(AppFailure::from)?;
+        let scenario = config
+            .scenarios
+            .first()
+            .expect("validated FYRE configuration has a baseline scenario");
+        let variables = terraform_variables(
+            &state.run_id,
+            config,
+            scenario,
+            &public_key,
+            self.fyre_text("FYRE_PRODUCT_GROUP_ID"),
+            self.fyre_text("FYRE_SITE"),
+        );
+        write_json(&root.join(TERRAFORM_VARIABLES), &variables).map_err(AppFailure::from)?;
+
+        let refresh = self.fyre_environment(
+            CommandSpec::new(terraform)
+                .args([
+                    "apply",
+                    "-refresh-only",
+                    "-input=false",
+                    "-auto-approve",
+                    "-var-file",
+                ])
+                .arg(root.join(TERRAFORM_VARIABLES))
+                .cwd(root.join(TERRAFORM_DIRECTORY)),
+        );
+        self.run_cancellable(&refresh).await?;
+        let quota = self.terraform_quota(terraform, root)?;
+        write_json(&root.join("quota.json"), &quota).map_err(AppFailure::from)?;
+        ensure_fyre_quota(config, &quota).map_err(AppFailure::from)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -431,6 +510,21 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             .map_err(AppFailure::from)?;
         serde_json::from_slice(&output)
             .context("Terraform inventory output is not valid JSON")
+            .map_err(AppFailure::from)
+    }
+
+    fn terraform_quota(&self, terraform: &OsString, root: &Path) -> AppResult<FyreQuota> {
+        let command = self.fyre_environment(
+            CommandSpec::new(terraform)
+                .args(["output", "-json", "quota"])
+                .cwd(root.join(TERRAFORM_DIRECTORY)),
+        );
+        let output = self
+            .runner
+            .capture_stdout(&command)
+            .map_err(AppFailure::from)?;
+        serde_json::from_slice(&output)
+            .context("Terraform FYRE quota output is not valid JSON")
             .map_err(AppFailure::from)
     }
 
@@ -688,6 +782,110 @@ fn validate_config(config: &FyreConfig) -> Result<()> {
     Ok(())
 }
 
+fn required_capacity(config: &FyreConfig) -> RequiredCapacity {
+    let maximum_replicas = config
+        .scenarios
+        .iter()
+        .map(|scenario| scenario.replicas)
+        .max()
+        .unwrap_or_default();
+    let dataplane_cpu = config
+        .scenarios
+        .iter()
+        .map(|scenario| scenario.replicas * scenario.cpu)
+        .max()
+        .unwrap_or_default();
+    let dataplane_memory = config
+        .scenarios
+        .iter()
+        .map(|scenario| scenario.replicas * scenario.memory_gb)
+        .max()
+        .unwrap_or_default();
+    let helper_cpu = config
+        .infrastructure
+        .helper_sizes
+        .iter()
+        .map(|size| size.cpu)
+        .max()
+        .unwrap_or_default();
+    let helper_memory = config
+        .infrastructure
+        .helper_sizes
+        .iter()
+        .map(|size| size.memory_gb)
+        .max()
+        .unwrap_or_default();
+    let vm_count = maximum_replicas + 2;
+    RequiredCapacity {
+        cpu: dataplane_cpu + helper_cpu * 2,
+        memory: dataplane_memory + helper_memory * 2,
+        disk: vm_count * FYRE_UBUNTU_OS_DISK_GB,
+        public_ips: vm_count,
+    }
+}
+
+fn ensure_fyre_quota(config: &FyreConfig, quota: &FyreQuota) -> Result<()> {
+    let required = required_capacity(config);
+    let available = RequiredCapacity {
+        cpu: quota.cpu.saturating_sub(quota.cpu_used),
+        memory: quota.memory.saturating_sub(quota.memory_used),
+        disk: quota.disk.saturating_sub(quota.disk_used),
+        public_ips: quota.public_ips.saturating_sub(quota.public_ips_used),
+    };
+    let mut shortages = Vec::new();
+    for (name, unit, needed, free, total, used) in [
+        (
+            "CPU",
+            "vCPU",
+            required.cpu,
+            available.cpu,
+            quota.cpu,
+            quota.cpu_used,
+        ),
+        (
+            "memory",
+            "GB",
+            required.memory,
+            available.memory,
+            quota.memory,
+            quota.memory_used,
+        ),
+        (
+            "disk",
+            "GB",
+            required.disk,
+            available.disk,
+            quota.disk,
+            quota.disk_used,
+        ),
+        (
+            "public IPs",
+            "addresses",
+            required.public_ips,
+            available.public_ips,
+            quota.public_ips,
+            quota.public_ips_used,
+        ),
+    ] {
+        if needed > free {
+            shortages.push(format!(
+                "{name} requires {needed} {unit}, but only {free} are available ({total} total, {used} used; shortage {})",
+                needed - free
+            ));
+        }
+    }
+    if shortages.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "FYRE product group {} ({}) cannot fit the configured campaign: {}. FYRE fixes the Ubuntu 24.04 root disk at {} GB and exposes no boot-disk size setting; cf-integration does not request additional disks",
+        quota.product_group_id,
+        quota.product_group_name,
+        shortages.join("; "),
+        FYRE_UBUNTU_OS_DISK_GB,
+    )
+}
+
 fn validate_run_id(run_id: &str) -> Result<()> {
     ensure!(
         !run_id.is_empty()
@@ -828,5 +1026,54 @@ mod tests {
         for invalid in ["../manual-vm", "UPPER", "-leading", "trailing-"] {
             assert!(validate_run_id(invalid).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn packaged_matrix_requires_five_fixed_size_os_disks() {
+        let config = read_config(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("benchmarks/fyre/scaling.yaml")
+                .as_path(),
+        )
+        .expect("packaged FYRE config");
+        assert_eq!(
+            required_capacity(&config),
+            RequiredCapacity {
+                cpu: 40,
+                memory: 96,
+                disk: 1_250,
+                public_ips: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn quota_preflight_reports_fixed_disk_shortage() {
+        let config = read_config(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("benchmarks/fyre/scaling.yaml")
+                .as_path(),
+        )
+        .expect("packaged FYRE config");
+        let error = ensure_fyre_quota(
+            &config,
+            &FyreQuota {
+                product_group_id: 808,
+                product_group_name: "benchmark".to_owned(),
+                cpu: 316,
+                cpu_used: 248,
+                memory: 632,
+                memory_used: 528,
+                disk: 8_000,
+                disk_used: 7_250,
+                public_ips: 50,
+                public_ips_used: 0,
+            },
+        )
+        .expect_err("disk quota must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("disk requires 1250 GB"));
+        assert!(message.contains("shortage 500"));
+        assert!(message.contains("root disk at 250 GB"));
     }
 }

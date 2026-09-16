@@ -1,5 +1,9 @@
 data "fyre_user" "current" {}
 
+data "fyre_quota" "current" {
+  site = var.site
+}
+
 locals {
   account_default_product_group_id = try(
     data.fyre_user.current.development.default_product_group_id == null
