@@ -49,6 +49,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Bootstrap FYRE hosts in parallel with pinned Ansible, installing Docker Engine
   and Compose from Docker's Ubuntu repository when the base image lacks them.
 
+- Disable Ubuntu's automatic APT timers and services on FYRE benchmark hosts so
+  package upgrades cannot consume resources or restart services during a run.
+
 - Keep the FYRE dataplane and loopback JWKS helper in a stable shared network
   namespace so either process can restart without breaking sidecar startup.
 
