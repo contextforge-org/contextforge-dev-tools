@@ -95,6 +95,8 @@ def main() -> None:
     master = f"{prefix}-master"
     CONTAINERS.append(master)
     common = [
+        "--user",
+        "0:0",
         "--network",
         "host",
         "--ulimit",

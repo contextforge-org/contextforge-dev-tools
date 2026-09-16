@@ -325,7 +325,7 @@ def stop_monitor(remote: Remote, host: str, pid: int) -> None:
 def smoke(remote: Remote, locust: dict, urls: list[str], locust_image: str) -> None:
     command = " ".join(
         [
-            "cd ~/cf-fyre && docker run --rm --network host --entrypoint python",
+            "cd ~/cf-fyre && docker run --rm --user 0:0 --network host --entrypoint python",
             "-v $HOME/cf-fyre:/work -w /work",
             shlex.quote(locust_image),
             "smoke.py --urls",

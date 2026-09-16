@@ -43,6 +43,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Invoke the FYRE smoke script correctly through the Locust image's Python
   entrypoint before beginning a capacity step.
 
+- Run FYRE smoke and Locust containers with access to the protected benchmark
+  bundle and root-owned report mounts on ephemeral load-generator VMs.
+
 - Propagate distributed worker failures to the Locust coordinator and reject
   reports containing a hidden worker failure.
 

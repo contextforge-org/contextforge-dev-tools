@@ -138,8 +138,47 @@ class CapacityTests(unittest.TestCase):
         )
         command = remote.ssh.call_args.args[1]
         self.assertIn("--entrypoint python", command)
+        self.assertIn("--user 0:0", command)
         self.assertIn("locust@sha256:test smoke.py --urls", command)
         self.assertNotIn("locust@sha256:test python smoke.py", command)
+
+    @mock.patch.object(run_locust, "wait_for_cluster", return_value=0)
+    @mock.patch.object(run_locust, "container_state", return_value=("exited", 0))
+    @mock.patch.object(run_locust, "docker")
+    def test_locust_containers_can_write_root_owned_reports(
+        self, docker, _state, _wait
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            args = [
+                "run_locust.py",
+                "--image",
+                "locust@sha256:test",
+                "--users",
+                "1",
+                "--spawn-rate",
+                "1",
+                "--seconds",
+                "1",
+                "--workers",
+                "1",
+                "--output",
+                directory,
+                "--env-file",
+                "benchmark.secret.env",
+            ]
+            with (
+                mock.patch.object(sys, "argv", args),
+                mock.patch.object(run_locust.signal, "signal"),
+                mock.patch.object(run_locust.time, "sleep"),
+                mock.patch.object(run_locust, "cleanup"),
+                self.assertRaises(SystemExit) as exit_status,
+            ):
+                run_locust.main()
+        self.assertEqual(exit_status.exception.code, 0)
+        for call in docker.call_args_list[:2]:
+            arguments = call.args
+            user_index = arguments.index("--user")
+            self.assertEqual(arguments[user_index + 1], "0:0")
 
     def test_pressure_excludes_ramp_and_warmup_samples(self):
         with tempfile.TemporaryDirectory() as directory:
