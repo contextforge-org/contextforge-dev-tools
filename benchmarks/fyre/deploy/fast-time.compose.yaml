@@ -5,14 +5,14 @@ services:
     network_mode: host
     command: []
     environment:
-      BIND_ADDRESS: 0.0.0.0:9080
+      BIND_ADDRESS: ${FAST_TIME_BIND_IP:?Set FAST_TIME_BIND_IP to the backend private IP}:9080
       RUST_LOG: warn
     ulimits:
       nofile:
         soft: 65536
         hard: 65536
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9080/health"]
+      test: ["CMD-SHELL", "curl -fsS http://${FAST_TIME_BIND_IP}:9080/health"]
       interval: 2s
       timeout: 2s
       retries: 60

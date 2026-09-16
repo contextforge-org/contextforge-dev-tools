@@ -13,6 +13,7 @@ Env:
   MCP_TOOL_NAMES                         optional comma-separated tools to call
   MCP_SKIP_TOOL_LIST                     true when direct tool aliases are supplied
   MCP_BASE_URLS                          optional comma-separated replica origins
+  MCP_REPLICA_OFFSET                    worker-specific replica rotation offset
   MCP_DIRECT_DATAPLANE                   use the native dataplane route without nginx
   MCP_FYRE_WORKLOAD                      enable the six-tool FYRE workload arguments
   MCP_EXPLICIT_ZERO_DELAY                send zero delay to Fast Time echo
@@ -157,12 +158,19 @@ def tool_call_args(tool_name: str) -> dict | None:
         arguments is None
         and os.environ.get("MCP_FYRE_WORKLOAD", "false").lower() == "true"
     ):
-        arguments = _FYRE_TOOL_ARGUMENTS.get(tool_name)
+        base_name = tool_name
+        for prefix in ("fast_time_", "fast-time-"):
+            if base_name.startswith(prefix):
+                base_name = base_name[len(prefix) :]
+                break
+        if base_name == "verify_protocol":
+            base_name = "verify-protocol"
+        arguments = _TOOL_ARGUMENTS.get(base_name) or _FYRE_TOOL_ARGUMENTS.get(base_name)
     if arguments is None:
         return None
     result = dict(arguments)
     if (
-        tool_name == "echo"
+        tool_name in {"echo", "fast_time_echo", "fast-time-echo"}
         and os.environ.get("MCP_EXPLICIT_ZERO_DELAY", "false").lower() == "true"
     ):
         result["delay"] = 0
@@ -248,7 +256,13 @@ BASE_URLS = [
     if url.strip()
 ]
 DIRECT_DATAPLANE = os.environ.get("MCP_DIRECT_DATAPLANE", "false").lower() == "true"
-_TARGET_SEQUENCE = itertools.count()
+try:
+    _REPLICA_OFFSET = int(os.environ.get("MCP_REPLICA_OFFSET", "0"))
+except ValueError:
+    raise RuntimeError("MCP_REPLICA_OFFSET must be a non-negative integer") from None
+if _REPLICA_OFFSET < 0:
+    raise RuntimeError("MCP_REPLICA_OFFSET must be a non-negative integer")
+_TARGET_SEQUENCE = itertools.count(_REPLICA_OFFSET)
 
 
 def safe_diagnostic(value) -> str:
@@ -283,7 +297,12 @@ def install_fail_fast(environment, **_kwargs) -> None:
     def stop_from_worker(msg=None, **_message):
         data = getattr(msg, "data", None)
         detail = data.get("error") if isinstance(data, dict) else None
-        _LOGGER.error("Distributed worker failed: %s", detail or "unspecified error")
+        worker = data.get("worker") if isinstance(data, dict) else None
+        _LOGGER.error(
+            "Distributed worker %s failed: %s",
+            worker or "<unknown>",
+            detail or "unspecified error",
+        )
         stop_runner()
 
     if isinstance(environment.runner, MasterRunner):
@@ -315,7 +334,10 @@ def install_fail_fast(environment, **_kwargs) -> None:
                     0,
                     environment.runner.send_message,
                     _FAIL_FAST_MESSAGE,
-                    {"error": safe_diagnostic(exception)},
+                    {
+                        "error": safe_diagnostic(exception),
+                        "worker": getattr(environment.runner, "client_id", "<unknown>"),
+                    },
                 )
             else:
                 gevent.spawn_later(0, environment.runner.quit)

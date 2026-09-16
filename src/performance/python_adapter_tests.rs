@@ -160,6 +160,7 @@ class DistributedWorker(WorkerRunner):
     def __init__(self):
         self.messages = []
         self.stopped = 0
+        self.client_id = "worker-1"
     def send_message(self, kind, payload): self.messages.append((kind, payload))
     def quit(self): self.stopped += 1
 
@@ -171,7 +172,7 @@ worker.events.request.callback(exception=RuntimeError("worker request failed"))
 assert worker.process_exit_code == 1
 assert worker.runner.messages == [(
     adapter._FAIL_FAST_MESSAGE,
-    {"error": "worker request failed"},
+    {"error": "worker request failed", "worker": "worker-1"},
 )]
 assert worker.runner.stopped == 0
 

@@ -51,6 +51,119 @@ def config() -> dict:
 
 
 class CapacityTests(unittest.TestCase):
+    @mock.patch.object(campaign, "reset_comparison_target")
+    @mock.patch.object(campaign, "smoke")
+    @mock.patch.object(campaign, "prepare_builtin_comparison")
+    @mock.patch.object(campaign, "prepare_rust_comparison")
+    @mock.patch.object(campaign, "one_phase")
+    def test_fixed_comparison_runs_the_eight_default_benchmarks(
+        self, phase, rust, builtin, _smoke, _reset
+    ):
+        rust.return_value = (["http://rust/mcp"], list(smoke.TOOLS), "rust.env")
+        builtin.return_value = (
+            ["http://builtin/mcp"],
+            [f"fast_time_{name}" for name in smoke.TOOLS],
+            "builtin.env",
+        )
+        phase.side_effect = lambda _r, _c, _i, _u, _o, users, *_args: passed(
+            users, float(users)
+        )
+        test_config = config()
+        test_config.update(
+            {
+                "scenarios": [{"id": "comparison"}],
+                "workload": {
+                    **test_config["workload"],
+                    "protocol_version": "2026-07-28",
+                    "user_levels": [125, 250, 500, 1000],
+                },
+            }
+        )
+        inventory = {"locust": {}, "fast_time": {}, "dataplanes": [{}]}
+        with tempfile.TemporaryDirectory() as directory:
+            result = campaign.fixed_comparison(
+                None, test_config, inventory, Path(directory)
+            )
+        self.assertEqual(result["status"], "confirmed")
+        self.assertEqual(
+            [(item["lane"], item["users"]) for lane in result["runs"].values() for item in lane],
+            [
+                ("rust", 125),
+                ("rust", 250),
+                ("rust", 500),
+                ("rust", 1000),
+                ("builtin", 125),
+                ("builtin", 250),
+                ("builtin", 500),
+                ("builtin", 1000),
+            ],
+        )
+
+    @mock.patch.object(campaign, "reset_comparison_target")
+    @mock.patch.object(campaign, "smoke")
+    @mock.patch.object(campaign, "prepare_builtin_comparison")
+    @mock.patch.object(campaign, "prepare_rust_comparison")
+    @mock.patch.object(campaign, "one_phase")
+    def test_fixed_comparison_stops_after_first_error(
+        self, phase, rust, builtin, _smoke, _reset
+    ):
+        rust.return_value = (["http://rust/mcp"], list(smoke.TOOLS), "rust.env")
+        phase.side_effect = [passed(125, 100.0), {"passed": False, "reason": "error"}]
+        test_config = config()
+        test_config.update(
+            {
+                "scenarios": [{"id": "comparison"}],
+                "workload": {
+                    **test_config["workload"],
+                    "protocol_version": "2026-07-28",
+                    "user_levels": [125, 250, 500, 1000],
+                },
+            }
+        )
+        inventory = {"locust": {}, "fast_time": {}, "dataplanes": [{}]}
+        with tempfile.TemporaryDirectory() as directory:
+            result = campaign.fixed_comparison(
+                None, test_config, inventory, Path(directory)
+            )
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(phase.call_count, 2)
+        builtin.assert_not_called()
+
+    @mock.patch.object(campaign, "reset_comparison_target")
+    @mock.patch.object(campaign, "smoke")
+    @mock.patch.object(campaign, "prepare_builtin_comparison")
+    @mock.patch.object(campaign, "prepare_rust_comparison")
+    @mock.patch.object(campaign, "one_phase")
+    def test_fixed_comparison_requests_a_full_rerun_after_helper_saturation(
+        self, phase, rust, builtin, _smoke, _reset
+    ):
+        rust.return_value = (["http://rust/mcp"], list(smoke.TOOLS), "rust.env")
+        saturated = passed(125, 100.0)
+        saturated["pressure"] = {"locust": {"mean_cpu_percent": 71.0}}
+        phase.return_value = saturated
+        test_config = config()
+        test_config.update(
+            {
+                "scenarios": [{"id": "comparison"}],
+                "workload": {
+                    **test_config["workload"],
+                    "protocol_version": "2026-07-28",
+                    "user_levels": [125, 250, 500, 1000],
+                },
+            }
+        )
+        inventory = {"locust": {}, "fast_time": {}, "dataplanes": [{}]}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaises(SystemExit) as exit_status:
+                campaign.fixed_comparison(None, test_config, inventory, root)
+            request = json.loads((root / "helper-request.json").read_text())
+            result = json.loads((root / "result.json").read_text())
+        self.assertEqual(exit_status.exception.code, campaign.HELPER_SATURATED)
+        self.assertEqual(request, {"role": "locust"})
+        self.assertEqual(result["status"], "inconclusive")
+        builtin.assert_not_called()
+
     @mock.patch.object(campaign, "smoke")
     @mock.patch.object(campaign, "one_phase")
     @mock.patch.object(campaign, "measured_step")
@@ -195,6 +308,11 @@ class CapacityTests(unittest.TestCase):
     def test_smoke_uses_valid_convert_time_datetime(self):
         self.assertEqual(smoke.TOOLS["convert_time"]["time"], "2025-06-21T16:00:00Z")
 
+    def test_builtin_verify_protocol_alias_maps_to_fast_time_tool(self):
+        self.assertEqual(
+            smoke.base_tool_name("fast_time_verify_protocol"), "verify-protocol"
+        )
+
     def test_compose_pull_retries_before_starting_containers(self):
         remote = mock.Mock()
         remote.ssh.side_effect = [
@@ -259,13 +377,25 @@ class CapacityTests(unittest.TestCase):
             ):
                 run_locust.main()
         self.assertEqual(exit_status.exception.code, 0)
-        for call in docker.call_args_list[:2]:
+        run_calls = [call for call in docker.call_args_list if call.args[0] == "run"]
+        self.assertEqual(
+            docker.call_args_list[0].args[:2], ("network", "create")
+        )
+        for call in run_calls[:2]:
             arguments = call.args
             user_index = arguments.index("--user")
             self.assertEqual(arguments[user_index + 1], "0:0")
-        master_arguments = docker.call_args_list[0].args
+        master_arguments = run_calls[0].args
         self.assertIn("MCP_WARMUP_SECONDS=1", master_arguments)
+        self.assertNotIn("--master-bind-host", master_arguments)
         self.assertNotIn("--reset-stats", master_arguments)
+        worker_arguments = run_calls[1].args
+        master_index = worker_arguments.index("--master-host")
+        name_index = master_arguments.index("--name")
+        self.assertEqual(
+            worker_arguments[master_index + 1], master_arguments[name_index + 1]
+        )
+        self.assertIn("MCP_REPLICA_OFFSET=0", worker_arguments)
 
     def test_pressure_excludes_ramp_and_warmup_samples(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -363,6 +493,23 @@ class CapacityTests(unittest.TestCase):
     @mock.patch.object(run_locust, "container_state")
     def test_clean_worker_exit_waits_for_clean_master(self, state, docker, _sleep):
         state.side_effect = [("running", 0), ("exited", 0), ("exited", 0)]
+        self.assertEqual(run_locust.wait_for_cluster("master", ["worker"]), 0)
+        docker.assert_not_called()
+
+    @mock.patch.object(run_locust.time, "sleep")
+    @mock.patch.object(run_locust, "docker")
+    @mock.patch.object(run_locust, "container_state")
+    def test_created_containers_are_allowed_to_finish_starting(
+        self, state, docker, _sleep
+    ):
+        state.side_effect = [
+            ("created", 0),
+            ("running", 0),
+            ("created", 0),
+            ("running", 0),
+            ("running", 0),
+            ("exited", 0),
+        ]
         self.assertEqual(run_locust.wait_for_cluster("master", ["worker"]), 0)
         docker.assert_not_called()
 

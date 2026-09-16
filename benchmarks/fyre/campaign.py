@@ -1,10 +1,11 @@
-"""Bootstrap FYRE hosts and find one scenario's zero-error capacity."""
+"""Bootstrap FYRE hosts and run a fixed comparison or capacity search."""
 
 from __future__ import annotations
 
 import argparse
 import csv
 import json
+import secrets
 import shlex
 import statistics
 import subprocess
@@ -170,9 +171,13 @@ def write_remote_file(
         temporary.unlink(missing_ok=True)
 
 
-def compose_up(remote: Remote, host: str, compose: str) -> None:
+def compose_up(
+    remote: Remote, host: str, compose: str, project: str | None = None
+) -> None:
     prefix = (
-        "cd ~/cf-fyre && docker compose --env-file benchmark.env "
+        "cd ~/cf-fyre && docker compose "
+        + (f"-p {shlex.quote(project)} " if project else "")
+        + "--env-file benchmark.env "
         f"-f {shlex.quote(compose)}"
     )
     pull = f"{prefix} pull"
@@ -196,6 +201,17 @@ def compose_up(remote: Remote, host: str, compose: str) -> None:
     )
 
 
+def compose_down(remote: Remote, host: str, compose: str, project: str) -> None:
+    remote.ssh(
+        host,
+        "cd ~/cf-fyre && docker compose "
+        f"-p {shlex.quote(project)} --env-file benchmark.env "
+        f"-f {shlex.quote(compose)} down --volumes --remove-orphans",
+        check=False,
+        timeout=300,
+    )
+
+
 def prepare_hosts(
     config: dict,
     inventory: dict,
@@ -208,7 +224,13 @@ def prepare_hosts(
     bootstrap_hosts(config, inventory, deploy, playbook, known_hosts, output)
 
     images = config["images"]
-    fast_env = f"FAST_TIME_IMAGE={images['fast_time']}\n"
+    fast_env = "\n".join(
+        [
+            f"FAST_TIME_IMAGE={images['fast_time']}",
+            f"FAST_TIME_BIND_IP={inventory['fast_time']['private_ip']}",
+            "",
+        ]
+    )
     write_remote_file(
         remote, inventory["fast_time"]["public_ip"], fast_env, "~/cf-fyre/benchmark.env"
     )
@@ -229,6 +251,7 @@ def prepare_hosts(
                 f"DATAPLANE_IMAGE={images['dataplane']}",
                 f"HELPERS_IMAGE={images['helpers']}",
                 f"REDIS_IMAGE={images['redis']}",
+                f"TARGET_BIND_IP={target['private_ip']}",
                 f"DATAPLANE_ALLOWED_HOSTS={allowed}",
                 f"CONFIG_CACHE_SECONDS={config['workload']['config_cache_seconds']}",
                 "",
@@ -354,7 +377,13 @@ def stop_monitor(remote: Remote, host: str, pid: int) -> None:
     )
 
 
-def smoke(remote: Remote, locust: dict, urls: list[str], locust_image: str) -> None:
+def smoke(
+    remote: Remote,
+    locust: dict,
+    urls: list[str],
+    locust_image: str,
+    tool_names: list[str] | None = None,
+) -> None:
     command = " ".join(
         [
             "cd ~/cf-fyre && docker run --rm --user 0:0 --network host --entrypoint python",
@@ -363,9 +392,22 @@ def smoke(remote: Remote, locust: dict, urls: list[str], locust_image: str) -> N
             "smoke.py --urls",
             shlex.quote(",".join(urls)),
             "--token-file state/token",
+            "--tool-names",
+            shlex.quote(",".join(tool_names) if tool_names else ",".join(configured_tools())),
         ]
     )
     remote.ssh(locust["public_ip"], command, timeout=120)
+
+
+def configured_tools() -> list[str]:
+    return [
+        "convert_time",
+        "echo",
+        "get_stats",
+        "get_system_time",
+        "schema_success",
+        "verify-protocol",
+    ]
 
 
 def read_stats(path: Path, use_aggregate: bool = False) -> dict:
@@ -500,6 +542,7 @@ def one_phase(
     seconds: int,
     label: str,
     env_file: str = "benchmark.secret.env",
+    target_role_prefix: str = "dataplane",
 ) -> dict:
     locust = inventory["locust"]
     workers = max(2, int(config["active_helper"]["locust_cpu"]) - 1)
@@ -515,7 +558,7 @@ def one_phase(
         (locust, "locust"),
         (inventory["fast_time"], "fast-time"),
         *[
-            (target, f"dataplane-{index + 1}")
+            (target, f"{target_role_prefix}-{index + 1}")
             for index, target in enumerate(inventory["dataplanes"])
         ],
     ]
@@ -860,6 +903,313 @@ def capacity_search(
     }
 
 
+def write_lane_environment(
+    remote: Remote,
+    locust: dict,
+    token: str,
+    protocol_version: str,
+    stack_mode: str,
+    base_url: str,
+    tool_names: list[str],
+    destination: str,
+) -> None:
+    values = [
+        f"MCPGATEWAY_BEARER_TOKEN={token}",
+        f"MCP_PROTOCOL_VERSION={protocol_version}",
+        f"MCP_STACK_MODE={stack_mode}",
+        "MCP_SERVER_ID=fyre-fast-time",
+        "MCP_DIRECT_DATAPLANE=true" if stack_mode == "dataplane" else "MCP_DIRECT_DATAPLANE=false",
+        "MCP_SKIP_TOOL_LIST=true",
+        "MCP_EXPLICIT_ZERO_DELAY=true",
+        "MCP_FYRE_WORKLOAD=true",
+        f"MCP_TOOL_NAMES={','.join(tool_names)}",
+        "LOCUST_REQUEST_TIMEOUT_SECONDS=30",
+        f"MCP_BASE_URLS={base_url}",
+        "",
+    ]
+    write_remote_file(
+        remote,
+        locust["public_ip"],
+        "\n".join(values),
+        f"~/cf-fyre/{destination}",
+    )
+    write_remote_file(
+        remote,
+        locust["public_ip"],
+        token,
+        "~/cf-fyre/state/token",
+    )
+
+
+def prepare_comparison_shared(
+    config: dict,
+    inventory: dict,
+    remote: Remote,
+    deploy: Path,
+    playbook: Path,
+    known_hosts: Path,
+    output: Path,
+) -> None:
+    bootstrap_hosts(config, inventory, deploy, playbook, known_hosts, output)
+    write_remote_file(
+        remote,
+        inventory["fast_time"]["public_ip"],
+        "\n".join(
+            [
+                f"FAST_TIME_IMAGE={config['images']['fast_time']}",
+                f"FAST_TIME_BIND_IP={inventory['fast_time']['private_ip']}",
+                "",
+            ]
+        ),
+        "~/cf-fyre/benchmark.env",
+    )
+    compose_up(remote, inventory["fast_time"]["public_ip"], "fast-time.compose.yaml")
+
+
+def reset_comparison_target(remote: Remote, target: dict) -> None:
+    for compose, project in (
+        ("dataplane.compose.yaml", "cf-fyre-rust"),
+        ("builtin.compose.yaml", "cf-fyre-builtin"),
+    ):
+        compose_down(remote, target["public_ip"], compose, project)
+    remote.ssh(
+        target["public_ip"],
+        "rm -rf ~/cf-fyre/state/keys ~/cf-fyre/state/token && mkdir -p ~/cf-fyre/state/keys",
+    )
+
+
+def prepare_rust_comparison(
+    config: dict, inventory: dict, remote: Remote
+) -> tuple[list[str], list[str], str]:
+    target = inventory["dataplanes"][0]
+    reset_comparison_target(remote, target)
+    allowed = ",".join(
+        [
+            f"{target['private_ip']}:4445",
+            f"{target['public_ip']}:4445",
+            "127.0.0.1:4445",
+            "localhost:4445",
+        ]
+    )
+    images = config["images"]
+    write_remote_file(
+        remote,
+        target["public_ip"],
+        "\n".join(
+            [
+                f"DATAPLANE_IMAGE={images['dataplane']}",
+                f"HELPERS_IMAGE={images['helpers']}",
+                f"REDIS_IMAGE={images['redis']}",
+                f"TARGET_BIND_IP={target['private_ip']}",
+                f"DATAPLANE_ALLOWED_HOSTS={allowed}",
+                f"CONFIG_CACHE_SECONDS={config['workload']['config_cache_seconds']}",
+                "",
+            ]
+        ),
+        "~/cf-fyre/benchmark.env",
+    )
+    compose_up(
+        remote,
+        target["public_ip"],
+        "dataplane.compose.yaml",
+        "cf-fyre-rust",
+    )
+    prefix = (
+        "cd ~/cf-fyre && docker compose -p cf-fyre-rust "
+        "--env-file benchmark.env -f dataplane.compose.yaml run --rm --no-deps config_writer"
+    )
+    token = remote.ssh(
+        target["public_ip"],
+        f"{prefix} token fyre-benchmark fyre-user",
+        capture=True,
+        timeout=120,
+    ).stdout.strip()
+    if not token or "\n" in token:
+        raise RuntimeError("config helper did not return one bearer token")
+    write_remote_file(
+        remote,
+        target["public_ip"],
+        token,
+        "~/cf-fyre/state/token",
+    )
+    backend_url = f"http://{inventory['fast_time']['private_ip']}:9080/mcp"
+    remote.ssh(
+        target["public_ip"],
+        'cd ~/cf-fyre && export MCP_CONFORMANCE_TOKEN="$(cat state/token)" && '
+        f"docker compose -p cf-fyre-rust --env-file benchmark.env "
+        f"-f dataplane.compose.yaml run --rm --no-deps -e MCP_CONFORMANCE_TOKEN "
+        f"config_writer fixture fyre-fast-time "
+        f"{shlex.quote(backend_url)} "
+        f"{config['workload']['protocol_version']}",
+        timeout=120,
+    )
+    tools = list(config["workload"]["tools"])
+    write_lane_environment(
+        remote,
+        inventory["locust"],
+        token,
+        config["workload"]["protocol_version"],
+        "dataplane",
+        f"http://{target['private_ip']}:4445",
+        tools,
+        "rust.secret.env",
+    )
+    return (
+        [f"http://{target['private_ip']}:4445/contextforge-rs/servers/fyre-fast-time/mcp"],
+        tools,
+        "rust.secret.env",
+    )
+
+
+def prepare_builtin_comparison(
+    config: dict, inventory: dict, remote: Remote
+) -> tuple[list[str], list[str], str]:
+    target = inventory["dataplanes"][0]
+    reset_comparison_target(remote, target)
+    images = config["images"]
+    password = secrets.token_hex(24)
+    target_env = "\n".join(
+        [
+            f"CONTROLPLANE_IMAGE={images['controlplane']}",
+            f"HELPERS_IMAGE={images['helpers']}",
+            f"POSTGRES_IMAGE={images['postgres']}",
+            f"REDIS_IMAGE={images['redis']}",
+            f"TARGET_BIND_IP={target['private_ip']}",
+            f"POSTGRES_PASSWORD={secrets.token_hex(24)}",
+            f"JWT_SECRET_KEY={secrets.token_hex(32)}",
+            f"AUTH_ENCRYPTION_SECRET={secrets.token_hex(32)}",
+            f"DEFAULT_USER_PASSWORD={password}",
+            f"PLATFORM_ADMIN_PASSWORD={password}",
+            "",
+        ]
+    )
+    write_remote_file(
+        remote, target["public_ip"], target_env, "~/cf-fyre/benchmark.env"
+    )
+    compose_up(
+        remote,
+        target["public_ip"],
+        "builtin.compose.yaml",
+        "cf-fyre-builtin",
+    )
+    backend_url = f"http://{inventory['fast_time']['private_ip']}:9080/mcp"
+    command = (
+        "cd ~/cf-fyre && docker compose -p cf-fyre-builtin "
+        "--env-file benchmark.env -f builtin.compose.yaml run --rm --no-deps admin "
+        f"--backend {shlex.quote(backend_url)}"
+    )
+    output = remote.ssh(
+        target["public_ip"], command, capture=True, timeout=300
+    ).stdout.splitlines()
+    if not output:
+        raise RuntimeError("built-in registration returned no result")
+    registration = json.loads(output[-1])
+    tools = registration["tool_names"]
+    if len(tools) != 6:
+        raise RuntimeError("built-in registration did not select six benchmark tools")
+    write_lane_environment(
+        remote,
+        inventory["locust"],
+        registration["token"],
+        config["workload"]["protocol_version"],
+        "controlplane",
+        f"http://{target['private_ip']}:4444",
+        tools,
+        "builtin.secret.env",
+    )
+    return (
+        [f"http://{target['private_ip']}:4444/mcp"],
+        tools,
+        "builtin.secret.env",
+    )
+
+
+def fixed_comparison(
+    remote: Remote, config: dict, inventory: dict, output: Path
+) -> dict:
+    result = {
+        "status": "running",
+        "scenario": config["scenarios"][0],
+        "inventory": inventory,
+        "protocol_version": config["workload"]["protocol_version"],
+        "user_levels": config["workload"]["user_levels"],
+        "runs": {"rust": [], "builtin": []},
+    }
+    result_path = output / "result.json"
+
+    def save() -> None:
+        result_path.write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+    save()
+    target = inventory["dataplanes"][0]
+    try:
+        for lane, prepare in (
+            ("rust", prepare_rust_comparison),
+            ("builtin", prepare_builtin_comparison),
+        ):
+            urls, tools, env_file = prepare(config, inventory, remote)
+            for users in config["workload"]["user_levels"]:
+                smoke(
+                    remote,
+                    inventory["locust"],
+                    urls,
+                    config["images"]["locust"],
+                    tools,
+                )
+                phase = one_phase(
+                    remote,
+                    config,
+                    inventory,
+                    urls,
+                    output,
+                    users,
+                    config["workload"]["measure_seconds"],
+                    f"{lane}-{users}",
+                    env_file,
+                    "target",
+                )
+                phase["lane"] = lane
+                result["runs"][lane].append(phase)
+                save()
+                saturated = helper_saturation(config, phase)
+                if saturated:
+                    result.update(
+                        {
+                            "status": "inconclusive",
+                            "reason": f"{saturated} helper saturated at {users} users",
+                        }
+                    )
+                    save()
+                    (output / "helper-request.json").write_text(
+                        json.dumps({"role": saturated}, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                    raise SystemExit(HELPER_SATURATED)
+                if not phase.get("passed"):
+                    result.update(
+                        {
+                            "status": "failed",
+                            "reason": phase.get("reason", f"{lane} failed at {users} users"),
+                        }
+                    )
+                    save()
+                    return result
+            reset_comparison_target(remote, target)
+        result["status"] = "confirmed"
+        save()
+        return result
+    except BaseException as error:
+        if isinstance(error, SystemExit) and error.code == HELPER_SATURATED:
+            raise
+        result.update({"status": "failed", "reason": str(error)})
+        save()
+        raise
+    finally:
+        reset_comparison_target(remote, target)
+
+
 def collect_recovery(remote: Remote, inventory: dict, output: Path) -> None:
     recovery = output / "recovery"
     recovery.mkdir(parents=True, exist_ok=True)
@@ -912,21 +1262,33 @@ def main() -> None:
     if args.collect_only:
         collect_recovery(remote, inventory, output)
         return
-    _, urls = prepare_hosts(
-        config,
-        inventory,
-        remote,
-        Path(args.deploy),
-        Path(args.ansible),
-        known_hosts,
-        output,
-    )
-    result = capacity_search(remote, config, inventory, urls, output)
-    result["scenario"] = scenario
-    result["inventory"] = inventory
-    (output / "result.json").write_text(
-        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    if config.get("benchmark_kind", "scaling") == "comparison":
+        prepare_comparison_shared(
+            config,
+            inventory,
+            remote,
+            Path(args.deploy),
+            Path(args.ansible),
+            known_hosts,
+            output,
+        )
+        result = fixed_comparison(remote, config, inventory, output)
+    else:
+        _, urls = prepare_hosts(
+            config,
+            inventory,
+            remote,
+            Path(args.deploy),
+            Path(args.ansible),
+            known_hosts,
+            output,
+        )
+        result = capacity_search(remote, config, inventory, urls, output)
+        result["scenario"] = scenario
+        result["inventory"] = inventory
+        (output / "result.json").write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
     if result["status"] != "confirmed":
         raise SystemExit(1)
 

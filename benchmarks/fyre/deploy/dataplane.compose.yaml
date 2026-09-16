@@ -4,7 +4,7 @@ services:
     restart: unless-stopped
     entrypoint: ["/bin/sh", "-c"]
     command: ["exec sleep infinity"]
-    ports: ["4445:4445"]
+    ports: ["${TARGET_BIND_IP:?Set TARGET_BIND_IP to the target private IP}:4445:4445"]
 
   redis:
     image: ${REDIS_IMAGE:?Set REDIS_IMAGE to a pinned digest}

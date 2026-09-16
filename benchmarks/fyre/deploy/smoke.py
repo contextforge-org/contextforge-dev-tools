@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import urllib.error
 import urllib.request
 import uuid
 
@@ -19,6 +20,14 @@ TOOLS = {
     "schema_success": {},
     "verify-protocol": {},
 }
+
+
+def base_tool_name(name: str) -> str:
+    for prefix in ("fast_time_", "fast-time-"):
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+            break
+    return "verify-protocol" if name == "verify_protocol" else name
 
 
 def call(url: str, token: str, tool: str, arguments: dict) -> None:
@@ -51,27 +60,38 @@ def call(url: str, token: str, tool: str, arguments: dict) -> None:
             "Mcp-Name": tool,
         },
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
-        body = response.read().decode()
-        if (
-            response.status != 200
-            or '"error"' in body
-            or '"isError":true' in body.replace(" ", "")
-        ):
-            raise RuntimeError(
-                f"{url} {tool} failed: HTTP {response.status}: {body[:500]}"
-            )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            body = response.read().decode()
+            if (
+                response.status != 200
+                or '"error"' in body
+                or '"isError":true' in body.replace(" ", "")
+            ):
+                raise RuntimeError(
+                    f"{url} {tool} failed: HTTP {response.status}: {body[:500]}"
+                )
+    except urllib.error.HTTPError as error:
+        body = error.read().decode(errors="replace")
+        raise RuntimeError(
+            f"{url} {tool} failed: HTTP {error.code}: {body[:500]}"
+        ) from error
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--urls", required=True)
     parser.add_argument("--token-file", required=True)
+    parser.add_argument("--tool-names", default=",".join(TOOLS))
     args = parser.parse_args()
     with open(args.token_file, encoding="utf-8") as stream:
         token = stream.read().strip()
+    tool_names = [name.strip() for name in args.tool_names.split(",") if name.strip()]
+    if {base_tool_name(name) for name in tool_names} != set(TOOLS):
+        raise RuntimeError("smoke requires exactly the six Fast Time benchmark tools")
     for url in args.urls.split(","):
-        for tool, arguments in TOOLS.items():
+        for tool in tool_names:
+            arguments = dict(TOOLS[base_tool_name(tool)])
             call(url, token, tool, arguments)
             print(f"PASS {url} {tool}")
 

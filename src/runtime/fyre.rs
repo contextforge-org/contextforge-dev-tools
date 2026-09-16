@@ -1,4 +1,4 @@
-//! Repeatable FYRE infrastructure and scaling-campaign orchestration.
+//! Repeatable FYRE infrastructure and benchmark-campaign orchestration.
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
@@ -23,6 +23,8 @@ const FYRE_STANDALONE_UBUNTU_OS_DISK_GB: u32 = 250;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FyreConfig {
     schema_version: u32,
+    #[serde(default = "default_benchmark_kind")]
+    benchmark_kind: String,
     infrastructure: InfrastructureConfig,
     images: ImageConfig,
     workload: WorkloadConfig,
@@ -68,15 +70,21 @@ struct ActiveHelper {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ImageConfig {
     dataplane: String,
+    #[serde(default)]
+    controlplane: Option<String>,
     fast_time: String,
     helpers: String,
     locust: String,
+    #[serde(default)]
+    postgres: Option<String>,
     redis: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WorkloadConfig {
     protocol_version: String,
+    #[serde(default)]
+    user_levels: Vec<u32>,
     first_users: u32,
     maximum_users: u32,
     ramp_seconds: u32,
@@ -288,12 +296,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         config: &mut FyreConfig,
         state: &mut RunState,
     ) -> AppResult<()> {
-        let helper = config.infrastructure.helper_sizes[0];
+        let locust = config.infrastructure.helper_sizes[state.locust_helper_size];
+        let fast_time = config.infrastructure.helper_sizes[state.fast_time_helper_size];
         config.active_helper = Some(ActiveHelper {
-            locust_cpu: helper.cpu,
-            locust_memory_gb: helper.memory_gb,
-            fast_time_cpu: helper.cpu,
-            fast_time_memory_gb: helper.memory_gb,
+            locust_cpu: locust.cpu,
+            locust_memory_gb: locust.memory_gb,
+            fast_time_cpu: fast_time.cpu,
+            fast_time_memory_gb: fast_time.memory_gb,
         });
         write_json(&root.join("config.json"), config).map_err(AppFailure::from)?;
         state.phase = "checking-quota".to_owned();
@@ -688,6 +697,10 @@ fn read_config(path: &Path) -> Result<FyreConfig> {
         .with_context(|| format!("failed to parse FYRE configuration {}", path.display()))
 }
 
+fn default_benchmark_kind() -> String {
+    "scaling".to_owned()
+}
+
 fn validate_config(config: &FyreConfig) -> Result<()> {
     ensure!(
         config.schema_version == 1,
@@ -698,8 +711,8 @@ fn validate_config(config: &FyreConfig) -> Result<()> {
         "FYRE benchmark OS must be Ubuntu 24.04"
     );
     ensure!(
-        config.infrastructure.expiry_hours == 8,
-        "FYRE expiry must remain eight hours"
+        (8..=24).contains(&config.infrastructure.expiry_hours),
+        "FYRE expiry must be between eight and 24 hours"
     );
     ensure!(
         config.workload.protocol_version == "2026-07-28",
@@ -714,13 +727,41 @@ fn validate_config(config: &FyreConfig) -> Result<()> {
         "FYRE load must be bounded at 32,000 users"
     );
     ensure!(
-        config.workload.maximum_campaign_seconds <= 21_600,
-        "FYRE campaign must be bounded at six hours"
+        config.workload.maximum_campaign_seconds <= 36_000,
+        "FYRE campaign must be bounded at ten hours"
     );
-    ensure!(
-        config.workload.repetitions == 3,
-        "candidate capacity must use three repetitions"
-    );
+    match config.benchmark_kind.as_str() {
+        "scaling" => ensure!(
+            config.workload.repetitions == 3,
+            "candidate capacity must use three repetitions"
+        ),
+        "comparison" => {
+            ensure!(
+                config.workload.repetitions == 1,
+                "the fixed comparison runs each benchmark once"
+            );
+            ensure!(
+                config.workload.user_levels == [125, 250, 500, 1_000],
+                "the default comparison must run 125, 250, 500, and 1,000 users"
+            );
+            ensure!(
+                config.workload.measure_seconds == 3_600,
+                "each default comparison benchmark must measure for one hour"
+            );
+            ensure!(
+                config.scenarios.len() == 1
+                    && config.scenarios[0].replicas == 1
+                    && config.scenarios[0].cpu == 4
+                    && config.scenarios[0].memory_gb == 4,
+                "the comparison target must be one 4 vCPU / 4 GB VM"
+            );
+            ensure!(
+                config.images.controlplane.is_some() && config.images.postgres.is_some(),
+                "the comparison requires pinned control-plane and PostgreSQL images"
+            );
+        }
+        other => bail!("unsupported FYRE benchmark kind {other}"),
+    }
     let expected_tools = BTreeSet::from([
         "convert_time",
         "echo",
@@ -757,8 +798,8 @@ fn validate_config(config: &FyreConfig) -> Result<()> {
     let baseline = config
         .scenarios
         .iter()
-        .find(|scenario| scenario.id == "baseline")
-        .context("FYRE matrix requires baseline")?;
+        .find(|scenario| scenario.multiplier == 1)
+        .context("FYRE matrix requires a multiplier-one baseline")?;
     ensure!(
         baseline.multiplier == 1,
         "baseline scenario multiplier must be one"
@@ -793,13 +834,16 @@ fn validate_config(config: &FyreConfig) -> Result<()> {
             scenario.id
         );
     }
-    for image in [
+    let mut images = vec![
         &config.images.dataplane,
         &config.images.fast_time,
         &config.images.helpers,
         &config.images.locust,
         &config.images.redis,
-    ] {
+    ];
+    images.extend(config.images.controlplane.iter());
+    images.extend(config.images.postgres.iter());
+    for image in images {
         ensure!(
             image.contains("@sha256:"),
             "all benchmark images must be pinned by digest"
@@ -850,24 +894,21 @@ fn required_capacity(config: &FyreConfig) -> RequiredCapacity {
         .map(|scenario| scenario.replicas * scenario.memory_gb)
         .max()
         .unwrap_or_default();
-    let helper_cpu = config
+    let maximum = config
         .infrastructure
         .helper_sizes
         .iter()
-        .map(|size| size.cpu)
-        .max()
-        .unwrap_or_default();
-    let helper_memory = config
-        .infrastructure
-        .helper_sizes
-        .iter()
-        .map(|size| size.memory_gb)
-        .max()
-        .unwrap_or_default();
+        .copied()
+        .max_by_key(|size| (size.cpu, size.memory_gb))
+        .unwrap_or(MachineSize {
+            cpu: 0,
+            memory_gb: 0,
+        });
+    let (locust, fast_time) = (maximum, maximum);
     let vm_count = maximum_replicas + 2;
     RequiredCapacity {
-        cpu: dataplane_cpu + helper_cpu * 2,
-        memory: dataplane_memory + helper_memory * 2,
+        cpu: dataplane_cpu + locust.cpu + fast_time.cpu,
+        memory: dataplane_memory + locust.memory_gb + fast_time.memory_gb,
         disk: vm_count * FYRE_STANDALONE_UBUNTU_OS_DISK_GB,
         public_ips: vm_count,
     }
@@ -1038,7 +1079,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn packaged_matrix_is_valid_and_matched() {
+    fn packaged_default_is_the_eight_run_comparison() {
         let config = read_config(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("benchmarks/fyre/scaling.yaml")
@@ -1046,7 +1087,11 @@ mod tests {
         )
         .expect("packaged FYRE config");
         validate_config(&config).expect("valid FYRE config");
-        assert_eq!(config.scenarios.len(), 6);
+        assert_eq!(config.benchmark_kind, "comparison");
+        assert_eq!(config.workload.user_levels, [125, 250, 500, 1_000]);
+        assert_eq!(config.workload.measure_seconds, 3_600);
+        assert_eq!(config.workload.protocol_version, "2026-07-28");
+        assert_eq!(config.scenarios.len(), 1);
     }
 
     #[test]
@@ -1103,7 +1148,7 @@ mod tests {
     }
 
     #[test]
-    fn packaged_matrix_requires_five_standalone_vm_os_disks() {
+    fn packaged_comparison_requires_three_standalone_vms() {
         let config = read_config(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("benchmarks/fyre/scaling.yaml")
@@ -1113,10 +1158,10 @@ mod tests {
         assert_eq!(
             required_capacity(&config),
             RequiredCapacity {
-                cpu: 40,
-                memory: 96,
-                disk: 1_250,
-                public_ips: 5,
+                cpu: 36,
+                memory: 68,
+                disk: 750,
+                public_ips: 3,
             }
         );
     }
@@ -1139,15 +1184,15 @@ mod tests {
                 memory: 632,
                 memory_used: 528,
                 disk: 8_000,
-                disk_used: 7_250,
+                disk_used: 7_500,
                 public_ips: 50,
                 public_ips_used: 0,
             },
         )
         .expect_err("disk quota must be rejected");
         let message = error.to_string();
-        assert!(message.contains("disk requires 1250 GB"));
-        assert!(message.contains("shortage 500"));
+        assert!(message.contains("disk requires 750 GB"));
+        assert!(message.contains("shortage 250"));
         assert!(message.contains("allocate a 250 GB Ubuntu 24.04 root disk"));
         assert!(message.contains("OCP cluster API's base_disk_size"));
     }

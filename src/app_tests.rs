@@ -33,7 +33,7 @@ fn every_subcommand_has_a_stable_progress_description() {
         (&["cf-integration", "load", "run"], "load test"),
         (
             &["cf-integration", "load", "fyre", "run"],
-            "FYRE scaling benchmark",
+            "FYRE benchmark campaign",
         ),
         (
             &[

@@ -323,7 +323,7 @@ pub(crate) enum LoadCommand {
     /// Run Locust through the selected public MCP route.
     #[command(visible_alias = "r")]
     Run(LoadRunArgs),
-    /// Run repeatable scaling benchmarks on FYRE virtual machines.
+    /// Run repeatable comparison and scaling benchmarks on FYRE VMs.
     #[command(visible_alias = "f")]
     Fyre(FyreArgs),
 }
@@ -353,7 +353,7 @@ pub(crate) enum FyreCommand {
 /// Common FYRE benchmark options.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub(crate) struct FyreRunArgs {
-    /// Scenario configuration file; defaults to the packaged scaling matrix.
+    /// Configuration file; defaults to the eight-run built-in/Rust comparison.
     #[arg(short = 'f', long, value_name = "FILE")]
     pub(crate) file: Option<PathBuf>,
 

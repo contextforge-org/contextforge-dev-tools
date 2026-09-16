@@ -54,7 +54,7 @@ impl Action {
             Self::Stack(StackAction::Config { .. }) => "stack config",
             Self::Probe { .. } => "probe",
             Self::Load(_) => "load test",
-            Self::Fyre(FyreAction::Run { .. }) => "FYRE scaling benchmark",
+            Self::Fyre(FyreAction::Run { .. }) => "FYRE benchmark campaign",
             Self::Fyre(FyreAction::Status { .. }) => "FYRE benchmark status",
             Self::Fyre(FyreAction::Destroy { .. }) => "FYRE benchmark destroy",
             Self::Live { .. } => "live tests",

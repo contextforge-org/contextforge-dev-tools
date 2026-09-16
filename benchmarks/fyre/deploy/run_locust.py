@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 CONTAINERS: list[str] = []
+NETWORKS: list[str] = []
 
 
 def docker(
@@ -28,6 +29,17 @@ def docker(
 def cleanup() -> None:
     if CONTAINERS:
         docker("rm", "--force", *CONTAINERS, check=False, capture=True)
+    if NETWORKS:
+        docker("network", "rm", *NETWORKS, check=False, capture=True)
+
+
+def collect_container_logs(output: Path) -> None:
+    for name in CONTAINERS:
+        result = docker("logs", name, check=False, capture=True)
+        if isinstance(result.stdout, str) and result.stdout:
+            output.joinpath(f"{name}.docker.log").write_text(
+                result.stdout, encoding="utf-8"
+            )
 
 
 def stop(_signal: int, _frame) -> None:
@@ -56,17 +68,28 @@ def container_state(name: str) -> tuple[str, int]:
 
 
 def wait_for_cluster(master: str, workers: list[str]) -> int:
+    startup_attempts = 60
     while True:
         master_state, master_exit = container_state(master)
         if master_state in {"exited", "dead", "missing", "invalid"}:
             return master_exit
+        if master_state == "created" and startup_attempts:
+            startup_attempts -= 1
+            time.sleep(0.5)
+            continue
+        pending = False
         for worker in workers:
             worker_state, worker_exit = container_state(worker)
             if worker_state in {"exited", "dead"} and worker_exit == 0:
                 continue
+            if worker_state == "created" and startup_attempts:
+                pending = True
+                continue
             if worker_state != "running":
                 docker("stop", "--time", "1", master, check=False, capture=True)
                 return 1
+        if pending:
+            startup_attempts -= 1
         time.sleep(0.5)
 
 
@@ -101,12 +124,15 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=True)
     prefix = f"cf-fyre-{os.getpid()}"
     master = f"{prefix}-master"
+    network = f"{prefix}-network"
+    docker("network", "create", network, capture=True)
+    NETWORKS.append(network)
     CONTAINERS.append(master)
     common = [
         "--user",
         "0:0",
         "--network",
-        "host",
+        network,
         "--ulimit",
         "nofile=65536:65536",
         "--env-file",
@@ -174,12 +200,14 @@ def main() -> None:
                 "--name",
                 name,
                 *common,
+                "--env",
+                f"MCP_REPLICA_OFFSET={index}",
                 args.image,
                 "-f",
                 "/mnt/locust-cf/locustfile_mcp.py",
                 "--worker",
                 "--master-host",
-                "127.0.0.1",
+                master,
             )
         status = wait_for_cluster(master, workers)
         for name in CONTAINERS:
@@ -189,6 +217,7 @@ def main() -> None:
         sys.exit(status)
     finally:
         time.sleep(0.2)
+        collect_container_logs(output)
         cleanup()
 
 

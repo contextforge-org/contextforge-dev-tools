@@ -33,7 +33,21 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   generator, and `-m/--builtin-memory-limit` to tune the built-in gateway
   without external environment setup.
 
+### Changed
+
+- Make bare `load fyre run` execute the CI-ready built-in-versus-Rust
+  comparison by default: the same modern `2026-07-28` client runs at 125, 250,
+  500, and 1,000 users for one measured hour per lane on the same 4 vCPU / 4 GB
+  target VM. Produce combined JSON, CSV, and Slack-ready PNG artifacts with
+  matching-lane throughput ratios, and restart the full comparison with larger
+  helpers when telemetry shows helper saturation.
+
 ### Fixed
+
+- Pin the built-in comparison lane to the MCP SDK v2 gateway revision that
+  supports the same `2026-07-28` client as Rust, balance replicas across
+  distributed Locust workers, and keep benchmark services off FYRE public
+  interfaces.
 
 - Refine detected throughput plateaus to the configured concurrency boundary
   before confirming capacity instead of confirming the highest doubled load.
