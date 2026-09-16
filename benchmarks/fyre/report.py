@@ -71,7 +71,26 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(rows)
 
-    figure = plt.figure(figsize=(16, 9), dpi=160, facecolor="#0b1020")
+    helpers = config["active_helper"]
+    workload = config["workload"]
+    architecture = (
+        f"Architecture: Locust {helpers['locust_cpu']}c/{helpers['locust_memory_gb']}G VM"
+        "  →  Rust dataplane VM(s)  →  "
+        f"Fast Time {helpers['fast_time_cpu']}c/{helpers['fast_time_memory_gb']}G VM"
+        "  •  private FYRE traffic"
+    )
+    method = (
+        f"MCP {workload['protocol_version']}  •  {len(workload['tools'])} zero-delay tools"
+        f"  •  {workload['ramp_seconds']}s ramp  •  {workload['warmup_seconds']}s warmup"
+        f"  •  {workload['measure_seconds']}s measured  •  "
+        f"{workload['repetitions']} confirmations  •  fail-fast on first error"
+    )
+    deployment = (
+        "Each dataplane VM: one Rust instance + local Redis + loopback JWKS  •  "
+        f"{config['infrastructure']['os']}  •  direct balanced replica traffic"
+    )
+
+    figure = plt.figure(figsize=(16, 10), dpi=160, facecolor="#0b1020")
     grid = figure.add_gridspec(2, 1, height_ratios=[2.1, 1.5], hspace=0.2)
     axis = figure.add_subplot(grid[0])
     axis.set_facecolor("#0b1020")
@@ -119,12 +138,21 @@ def main() -> None:
     figure.text(
         0.065,
         0.935,
-        "Same total dataplane CPU/RAM for matched vertical and horizontal comparisons",
+        architecture,
         color="#a7b0c0",
         fontsize=10,
         ha="left",
     )
-    figure.subplots_adjust(top=0.88)
+    figure.text(0.065, 0.91, method, color="#a7b0c0", fontsize=10, ha="left")
+    figure.text(
+        0.065,
+        0.885,
+        deployment,
+        color="#a7b0c0",
+        fontsize=10,
+        ha="left",
+    )
+    figure.subplots_adjust(top=0.83)
 
     table_axis = figure.add_subplot(grid[1])
     table_axis.axis("off")
