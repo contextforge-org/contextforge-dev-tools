@@ -743,6 +743,17 @@ fn validate_config(config: &FyreConfig) -> Result<()> {
         "helper resources exceed 16 vCPU / 32 GB"
     );
     let mut ids = BTreeSet::<&str>::new();
+    let baseline = config
+        .scenarios
+        .iter()
+        .find(|scenario| scenario.id == "baseline")
+        .context("FYRE matrix requires baseline")?;
+    ensure!(
+        baseline.multiplier == 1,
+        "baseline scenario multiplier must be one"
+    );
+    let baseline_cpu = baseline.replicas * baseline.cpu;
+    let baseline_memory = baseline.replicas * baseline.memory_gb;
     for scenario in &config.scenarios {
         validate_run_id(&scenario.id)?;
         ensure!(
@@ -756,17 +767,21 @@ fn validate_config(config: &FyreConfig) -> Result<()> {
             scenario.id
         );
         ensure!(
-            scenario.replicas * scenario.cpu == scenario.multiplier * 2,
+            scenario.multiplier > 0,
+            "scenario {} has a zero multiplier",
+            scenario.id
+        );
+        ensure!(
+            scenario.replicas * scenario.cpu == scenario.multiplier * baseline_cpu,
             "scenario {} CPU total does not match its multiplier",
             scenario.id
         );
         ensure!(
-            scenario.replicas * scenario.memory_gb == scenario.multiplier * 8,
+            scenario.replicas * scenario.memory_gb == scenario.multiplier * baseline_memory,
             "scenario {} memory total does not match its multiplier",
             scenario.id
         );
     }
-    ensure!(ids.contains("baseline"), "FYRE matrix requires baseline");
     for image in [
         &config.images.dataplane,
         &config.images.fast_time,
@@ -998,6 +1013,27 @@ mod tests {
         .expect("packaged FYRE config");
         validate_config(&config).expect("valid FYRE config");
         assert_eq!(config.scenarios.len(), 6);
+    }
+
+    #[test]
+    fn packaged_low_memory_vertical_profile_is_valid_and_matched() {
+        let config = read_config(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("benchmarks/fyre/vertical-low-memory.yaml")
+                .as_path(),
+        )
+        .expect("packaged low-memory FYRE config");
+        validate_config(&config).expect("valid low-memory FYRE config");
+        assert_eq!(config.scenarios.len(), 2);
+        assert_eq!(
+            required_capacity(&config),
+            RequiredCapacity {
+                cpu: 36,
+                memory: 68,
+                disk: 750,
+                public_ips: 3,
+            }
+        );
     }
 
     #[test]

@@ -21,6 +21,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Preflight FYRE product-group CPU, memory, fixed Ubuntu root-disk, and public-IP
   quota for the full scaling matrix before provisioning any benchmark VM.
 
+- Add a repeatable low-memory vertical profile for 2 vCPU / 2 GB and
+  4 vCPU / 4 GB dataplanes, with scenario multipliers derived from each
+  configuration's baseline resources.
+
 - Add `-w/--workers` to distribute load across local Locust processes,
   `-i/--isolate-cpus` to split Docker CPUs between the target and load
   generator, and `-m/--builtin-memory-limit` to tune the built-in gateway

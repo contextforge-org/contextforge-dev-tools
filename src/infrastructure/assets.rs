@@ -32,6 +32,7 @@ static ASSETS: LazyLock<Vec<EmbeddedAsset>> = LazyLock::new(|| {
         asset!("Cargo.toml"),
         asset!("Cargo.lock"),
         asset!("benchmarks/fyre/scaling.yaml"),
+        asset!("benchmarks/fyre/vertical-low-memory.yaml"),
         asset!("benchmarks/fyre/campaign.py"),
         asset!("benchmarks/fyre/report.py"),
         asset!("benchmarks/fyre/README.md"),

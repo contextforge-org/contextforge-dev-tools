@@ -42,6 +42,7 @@ sizes and reports the exact CPU, memory, disk, or public-IP shortage.
 ```bash
 cf-integration load fyre run
 cf-integration l f r -f benchmarks/fyre/scaling.yaml -i scale-candidate
+cf-integration l f r -f benchmarks/fyre/vertical-low-memory.yaml -i vertical-low-memory
 
 cf-integration load fyre status --run-id scale-candidate
 cf-integration l f s -i scale-candidate
@@ -49,6 +50,11 @@ cf-integration l f s -i scale-candidate
 cf-integration load fyre destroy --run-id scale-candidate
 cf-integration l f d -i scale-candidate
 ```
+
+`vertical-low-memory.yaml` runs a three-VM capacity comparison with dedicated
+Locust and Fast Time helpers: one 2 vCPU / 2 GB dataplane followed by one
+4 vCPU / 4 GB dataplane. Custom matrices use the configured baseline's CPU and
+memory as the multiplier reference.
 
 Generated state lives under
 `$CF_INTEGRATION_DIR/fyre/<run-id>/`. The CLI copies Terraform into that
