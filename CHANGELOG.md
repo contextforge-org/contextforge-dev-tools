@@ -24,7 +24,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 ### Fixed
 
 - Discover the FYRE account's default or sole product group when no override is
-  configured, and use API-compatible VM descriptions during provisioning.
+  configured, use API-compatible VM descriptions, and log in with the root SSH
+  account provisioned by FYRE's Ubuntu images.
 
 - Propagate distributed worker failures to the Locust coordinator and reject
   reports containing a hidden worker failure.
