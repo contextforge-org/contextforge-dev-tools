@@ -80,6 +80,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Remove the Locust client's 50-200 ms think time so load runs measure maximum
   request throughput.
 
+- Refine below a provisional capacity when a confirmation repetition fails,
+  then confirm the lower zero-error boundary instead of aborting the remaining
+  FYRE comparison scenarios.
+
 ## [0.4.0] - 2026-09-14
 
 ### Added

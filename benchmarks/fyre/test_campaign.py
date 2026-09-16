@@ -108,6 +108,45 @@ class CapacityTests(unittest.TestCase):
         self.assertEqual(result["users"], 500)
         self.assertNotIn(1000, [call.args[5] for call in measured.call_args_list])
 
+    @mock.patch.object(campaign, "smoke")
+    @mock.patch.object(campaign, "one_phase")
+    @mock.patch.object(campaign, "measured_step")
+    def test_failed_candidate_confirmation_refines_and_confirms_a_lower_load(
+        self, measured, phase, _smoke
+    ):
+        search_rates = {125: 100.0, 250: 103.0, 500: 106.0}
+
+        def result(_r, _c, _i, _u, _o, users, name):
+            if name == "confirm-1-500":
+                return {"passed": False, "users": users, "reason": "first error"}
+            if name.startswith("search"):
+                return passed(users, search_rates[users])
+            if name == "confirm-refine-1-468":
+                return {"passed": False, "users": users, "reason": "first error"}
+            return passed(users, float(users))
+
+        measured.side_effect = result
+        phase.return_value = passed(437, 1000.0)
+        with tempfile.TemporaryDirectory() as directory:
+            result = campaign.capacity_search(
+                None,
+                config(),
+                {
+                    "locust": {},
+                    "fast_time": {"private_ip": "10.0.0.2"},
+                    "dataplanes": [],
+                },
+                [],
+                Path(directory),
+            )
+
+        self.assertEqual(result["status"], "confirmed")
+        self.assertEqual(result["users"], 437)
+        self.assertEqual(len(result["confirmation_failures"]), 1)
+        calls = [(call.args[5], call.args[6]) for call in measured.call_args_list]
+        self.assertIn((375, "confirm-refine-1-375"), calls)
+        self.assertIn((437, "confirm-1-437"), calls)
+
     def test_helper_saturation_uses_sustained_thresholds(self):
         result = {"pressure": {"locust": {"mean_cpu_percent": 71.0}}}
         self.assertEqual(campaign.helper_saturation(config(), result), "locust")

@@ -666,41 +666,75 @@ def capacity_search(
             "reason": "no zero-error concurrency passed",
             "failing": failing,
         }
-    if failing:
-        low = passing[-1]["users"]
-        high = failing["users"]
+
+    def refine_below(high: int, label: str) -> dict | None:
+        nonlocal failing
+        eligible = [item for item in passing if item["users"] < high]
+        if not eligible:
+            return None
+        low_result = max(eligible, key=lambda item: item["users"])
+        low = low_result["users"]
         while (high - low) / high > workload["boundary_percent"] / 100.0:
             users = (low + high) // 2
             result = measured_step(
-                remote, config, inventory, urls, output, users, f"refine-{users}"
+                remote, config, inventory, urls, output, users, f"{label}-{users}"
             )
             if result.get("passed"):
                 passing.append(result)
                 low = users
+                low_result = result
             else:
                 failing = {"users": users, **result}
                 high = users
+        return low_result
 
-    candidate = max(passing, key=lambda item: item["users"])
-    confirmations = []
-    for repetition in range(workload["repetitions"]):
-        result = measured_step(
-            remote,
-            config,
-            inventory,
-            urls,
-            output,
-            candidate["users"],
-            f"confirm-{repetition + 1}-{candidate['users']}",
+    if failing:
+        candidate = refine_below(failing["users"], "refine")
+        if candidate is None:
+            return {
+                "status": "failed",
+                "reason": "no zero-error concurrency passed below the failing bound",
+                "failing": failing,
+            }
+    else:
+        candidate = max(passing, key=lambda item: item["users"])
+
+    confirmation_failures = []
+    while True:
+        confirmations = []
+        failure = None
+        for repetition in range(workload["repetitions"]):
+            result = measured_step(
+                remote,
+                config,
+                inventory,
+                urls,
+                output,
+                candidate["users"],
+                f"confirm-{repetition + 1}-{candidate['users']}",
+            )
+            if not result.get("passed"):
+                failure = result
+                break
+            confirmations.append(result)
+        if failure is None:
+            break
+        failing = {"users": candidate["users"], **failure}
+        confirmation_failures.append(
+            {"candidate": candidate, "confirmations": confirmations, "failure": failure}
         )
-        if not result.get("passed"):
+        refined = refine_below(
+            candidate["users"], f"confirm-refine-{len(confirmation_failures)}"
+        )
+        if refined is None:
             return {
                 "status": "failed-confirmation",
                 "candidate": candidate,
                 "confirmations": confirmations,
-                "failure": result,
+                "confirmation_failures": confirmation_failures,
+                "failure": failure,
             }
-        confirmations.append(result)
+        candidate = refined
     direct_url = f"http://{inventory['fast_time']['private_ip']}:9080/mcp"
     smoke(remote, inventory["locust"], [direct_url], config["images"]["locust"])
     direct_warmup = one_phase(
@@ -764,6 +798,7 @@ def capacity_search(
         "search": passing,
         "failing": failing,
         "confirmations": confirmations,
+        "confirmation_failures": confirmation_failures,
         "rps": statistics.fmean(rps_values),
         "rps_min": min(rps_values),
         "rps_max": max(rps_values),
