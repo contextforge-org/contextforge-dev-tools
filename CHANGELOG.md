@@ -18,6 +18,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   profile instead of requiring and displaying a hard-coded 4 vCPU / 4 GB
   target.
 
+- Quote inventory-derived backend URLs before composing every FYRE remote shell
+  command.
+
 ## [0.5.0] - 2026-09-16
 
 ### Added

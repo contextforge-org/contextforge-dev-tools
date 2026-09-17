@@ -7,11 +7,8 @@ import csv
 import json
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-from matplotlib.patches import FancyBboxPatch
 
-
-def comparison_report(config: dict, results_root: Path) -> None:
+def comparison_report(config: dict, results_root: Path, *, render: bool = True) -> None:
     result_path = results_root / "comparison" / "result.json"
     if not result_path.is_file():
         raise RuntimeError("comparison result is required")
@@ -51,6 +48,12 @@ def comparison_report(config: dict, results_root: Path) -> None:
         writer = csv.DictWriter(stream, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
+
+    if not render:
+        return
+
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import FancyBboxPatch
 
     helpers = config["active_helper"]
     workload = config["workload"]
@@ -205,6 +208,9 @@ def main() -> None:
     if config.get("benchmark_kind", "scaling") == "comparison":
         comparison_report(config, results_root)
         return
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import FancyBboxPatch
+
     results = {}
     for scenario in config["scenarios"]:
         path = results_root / scenario["id"] / "result.json"

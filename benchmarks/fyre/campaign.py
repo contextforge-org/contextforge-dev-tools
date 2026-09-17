@@ -289,14 +289,17 @@ def prepare_hosts(
     token_file.write_text(token, encoding="utf-8")
     token_file.chmod(0o600)
     try:
+        backend_url = f"http://{inventory['fast_time']['private_ip']}:9080/mcp"
         for target in inventory["dataplanes"]:
             remote.copy_to(target["public_ip"], token_file, "~/cf-fyre/state/token")
             remote.ssh(target["public_ip"], "chmod 600 ~/cf-fyre/state/token")
             remote.ssh(
                 target["public_ip"],
-                'cd ~/cf-fyre && export MCP_CONFORMANCE_TOKEN="$(cat state/token)" && docker compose --env-file benchmark.env -f dataplane.compose.yaml run --rm --no-deps -e MCP_CONFORMANCE_TOKEN config_writer fixture fyre-fast-time http://'
-                + inventory["fast_time"]["private_ip"]
-                + ":9080/mcp 2026-07-28",
+                'cd ~/cf-fyre && export MCP_CONFORMANCE_TOKEN="$(cat state/token)" && '
+                "docker compose --env-file benchmark.env -f dataplane.compose.yaml "
+                "run --rm --no-deps -e MCP_CONFORMANCE_TOKEN config_writer "
+                f"fixture fyre-fast-time {shlex.quote(backend_url)} "
+                f"{shlex.quote(config['workload']['protocol_version'])}",
                 timeout=120,
             )
         locust_env = "\n".join(

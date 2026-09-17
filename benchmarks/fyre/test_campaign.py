@@ -11,8 +11,10 @@ from pathlib import Path
 from unittest import mock
 
 import campaign
+import report
 
 sys.path.insert(0, str(Path(__file__).parent / "deploy"))
+import monitor
 import run_locust
 import smoke
 
@@ -308,6 +310,53 @@ class CapacityTests(unittest.TestCase):
     def test_smoke_uses_valid_convert_time_datetime(self):
         self.assertEqual(smoke.TOOLS["convert_time"]["time"], "2025-06-21T16:00:00Z")
 
+    def test_prepare_hosts_quotes_inventory_backend_url(self):
+        remote = mock.Mock()
+        remote.ssh.return_value = mock.Mock(stdout="test-token\n", returncode=0)
+        private_ip = "10.0.0.2; touch /tmp/unquoted"
+        test_config = {
+            "images": {
+                "dataplane": "dataplane@sha256:test",
+                "fast_time": "fast-time@sha256:test",
+                "helpers": "helpers@sha256:test",
+                "locust": "locust@sha256:test",
+                "redis": "redis@sha256:test",
+            },
+            "workload": {
+                "config_cache_seconds": 60,
+                "protocol_version": "2026-07-28",
+            },
+        }
+        inventory = {
+            "locust": {"public_ip": "192.0.2.10", "private_ip": "10.0.0.10"},
+            "fast_time": {"public_ip": "192.0.2.20", "private_ip": private_ip},
+            "dataplanes": [
+                {"public_ip": "192.0.2.30", "private_ip": "10.0.0.30"}
+            ],
+        }
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(campaign, "bootstrap_hosts"),
+            mock.patch.object(campaign, "compose_up"),
+            mock.patch.object(campaign, "write_remote_file"),
+        ):
+            campaign.prepare_hosts(
+                test_config,
+                inventory,
+                remote,
+                Path("deploy"),
+                Path("bootstrap.yml"),
+                Path("known_hosts"),
+                Path(directory),
+            )
+        command = next(
+            call.args[1]
+            for call in remote.ssh.call_args_list
+            if "config_writer fixture" in call.args[1]
+        )
+        backend_url = f"http://{private_ip}:9080/mcp"
+        self.assertIn(campaign.shlex.quote(backend_url), command)
+
     def test_builtin_verify_protocol_alias_maps_to_fast_time_tool(self):
         self.assertEqual(
             smoke.base_tool_name("fast_time_verify_protocol"), "verify-protocol"
@@ -583,6 +632,53 @@ class CapacityTests(unittest.TestCase):
         self.assertEqual(aggregate["p50_ms"], 2.5)
         self.assertEqual(aggregate["p95_ms"], 4.5)
         self.assertEqual(aggregate["p99_ms"], 6.0)
+
+    def test_comparison_report_writes_machine_readable_lane_results(self):
+        lane = {
+            "users": 125,
+            "requests": 1000,
+            "failures": 0,
+            "rps": 100.0,
+            "p50_ms": 10.0,
+            "p95_ms": 20.0,
+            "p99_ms": 30.0,
+        }
+        result = {
+            "status": "confirmed",
+            "runs": {
+                "builtin": [lane],
+                "rust": [{**lane, "requests": 2500, "rps": 250.0}],
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result_dir = root / "comparison"
+            result_dir.mkdir()
+            (result_dir / "result.json").write_text(json.dumps(result))
+            report.comparison_report(
+                {"workload": {"user_levels": [125]}}, root, render=False
+            )
+            summary = json.loads((root / "summary.json").read_text())
+            with (root / "summary.csv").open(newline="") as stream:
+                csv_rows = list(csv.DictReader(stream))
+        self.assertEqual(summary["rows"][0]["external_vs_built_in"], 2.5)
+        self.assertEqual(csv_rows[0]["external_dataplane_requests"], "2500")
+
+    def test_monitor_calculates_cpu_and_memory_pressure(self):
+        cpu = monitor.cpu_percent(
+            {"cpu": [100, 0, 0, 900, 0, 0, 0, 0]},
+            {"cpu": [150, 0, 0, 950, 0, 0, 0, 10]},
+        )
+        self.assertEqual(cpu["cpu"]["busy_percent"], 54.545)
+        self.assertEqual(cpu["cpu"]["steal_percent"], 9.091)
+        with mock.patch.object(
+            monitor,
+            "read",
+            return_value="MemTotal: 1000 kB\nMemAvailable: 250 kB\nSwapTotal: 100 kB\nSwapFree: 80 kB\n",
+        ):
+            memory = monitor.memory()
+        self.assertEqual(memory["used_percent"], 75.0)
+        self.assertEqual(memory["swap_free_kib"], 80)
 
 
 if __name__ == "__main__":

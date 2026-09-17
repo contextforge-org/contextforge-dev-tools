@@ -36,6 +36,9 @@ jobs:
       - name: Run full test suite
         run: cargo test --all-targets --locked
 
+      - name: Run FYRE campaign tests
+        run: python3 -m unittest discover -s benchmarks/fyre -p 'test_*.py'
+
       - name: Verify standalone lazy runtime state
         shell: bash
         run: |
@@ -61,4 +64,3 @@ jobs:
 
       - name: Validate GitHub Actions workflows
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
-
