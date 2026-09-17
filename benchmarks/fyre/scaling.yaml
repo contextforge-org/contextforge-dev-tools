@@ -1,0 +1,48 @@
+schema_version: 1
+benchmark_kind: comparison
+infrastructure:
+  os: Ubuntu 24.04
+  ssh_user: root
+  ssh_private_key: ~/.ssh/id_ed25519
+  ssh_public_key: ~/.ssh/id_ed25519.pub
+  expiry_hours: 12
+  helper_sizes:
+    - { cpu: 4, memory_gb: 16 }
+    - { cpu: 8, memory_gb: 32 }
+    - { cpu: 16, memory_gb: 32 }
+  initial_helpers:
+    locust: { cpu: 4, memory_gb: 16 }
+    fast_time: { cpu: 8, memory_gb: 32 }
+images:
+  dataplane: ghcr.io/contextforge-org/contextforge-data-plane@sha256:0b3026b21659ce6c494142aee2c5866b44122232e73fcf21102da1f210692a96
+  controlplane: ghcr.io/contextforge-org/cf-integration-fixture@sha256:5b206e6f863cea9f8cabea6451392428fbe67b16bdf10fefd1f7ac8032d95b52
+  fast_time: ghcr.io/ibm/cfex-mcp-fast-time-server@sha256:110e1826f5d763e5afadba770b731dac93e0819c1bbadb68671b0124260603cf
+  helpers: ghcr.io/contextforge-org/cf-integration-helpers@sha256:f7e557e263737328225d827e73b519d0b40facb2698c55ee3d2de0ed82f00fa3
+  locust: mirror.gcr.io/locustio/locust@sha256:fd39232c31971fe7509582717a95592f0fbf9a917b705f355bd7471e03bdd649
+  postgres: postgres@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
+  redis: mirror.gcr.io/library/redis@sha256:a7859ed111db3c1f5404a973a4747505d559fb5ca32d37e447afc0ef845a2103
+workload:
+  protocol_version: 2026-07-28
+  user_levels: [125, 250, 500, 1000]
+  first_users: 125
+  maximum_users: 1000
+  ramp_seconds: 30
+  warmup_seconds: 30
+  measure_seconds: 3600
+  repetitions: 1
+  maximum_campaign_seconds: 36000
+  plateau_improvement_percent: 5.0
+  boundary_percent: 12.5
+  config_cache_seconds: 60
+  helper_cpu_percent: 70.0
+  helper_memory_percent: 80.0
+  worker_core_percent: 85.0
+  tools:
+    - convert_time
+    - echo
+    - get_stats
+    - get_system_time
+    - schema_success
+    - verify-protocol
+scenarios:
+  - { id: comparison, label: Built-in dataplane vs external dataplane, replicas: 1, cpu: 4, memory_gb: 4, multiplier: 1 }

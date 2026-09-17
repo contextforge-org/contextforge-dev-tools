@@ -6,6 +6,12 @@ use super::*;
 
 const COMPOSE_PROTOCOL_VERSION_ENV: &str = "MCP_PROTOCOL_VERSION";
 
+#[derive(Default)]
+pub(super) struct StackRuntimeOverrides<'a> {
+    pub(super) builtin_memory_limit: Option<&'a str>,
+    pub(super) load_target_cpuset: Option<&'a str>,
+}
+
 impl<R: ProcessRunner> RuntimeContext<R> {
     pub(super) async fn execute_stack(&self, action: StackAction) -> AppResult<()> {
         match action {
@@ -16,7 +22,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 standalone,
             } => {
                 if standalone {
-                    self.stack_up_standalone_dataplane(fresh, true).await?;
+                    self.stack_up_standalone_dataplane(fresh, true, None)
+                        .await?;
                 } else {
                     self.stack_up_for_conformance(topology, fresh).await?;
                 }
@@ -151,8 +158,15 @@ impl<R: ProcessRunner> RuntimeContext<R> {
     }
 
     pub(super) async fn stack_up(&self, mode: StackMode, fresh: bool) -> AppResult<()> {
-        self.stack_up_with_project(mode, fresh, self.compose_project(mode), false, true)
-            .await
+        self.stack_up_with_project(
+            mode,
+            fresh,
+            self.compose_project(mode),
+            false,
+            true,
+            StackRuntimeOverrides::default(),
+        )
+        .await
     }
 
     pub(super) async fn stack_up_for_conformance(
@@ -166,6 +180,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             self.conformance_runtime_project(mode),
             false,
             true,
+            StackRuntimeOverrides::default(),
         )
         .await
     }
@@ -174,6 +189,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         &self,
         fresh: bool,
         observability: bool,
+        load_target_cpuset: Option<&str>,
     ) -> AppResult<()> {
         if !self.config.dataplane_ref().value.is_empty() {
             self.ensure_dataplane()?;
@@ -214,7 +230,10 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let command = self
             .standalone_dataplane_project(observability)
             .command(arguments);
-        let command = self.standalone_dataplane_environment(command, true)?;
+        let mut command = self.standalone_dataplane_environment(command, true)?;
+        if let Some(cpuset) = load_target_cpuset {
+            command = command.env(LOAD_TARGET_CPUSET_ENV, cpuset);
+        }
         self.runner.run_async(&command).await?;
         self.wait_for_public_endpoint(StackMode::Dataplane, false)
             .await
@@ -227,6 +246,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         project: ComposeProject,
         report_progress: bool,
         observability: bool,
+        overrides: StackRuntimeOverrides<'_>,
     ) -> AppResult<()> {
         self.ensure_mode_sources(mode)?;
         if mode == StackMode::Dataplane {
@@ -275,7 +295,13 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                 AppFailure::from(anyhow!("CONTROLPLANE_LOCUST_WORKERS must be an integer"))
             })?;
         let command = stack_up_command(project, mode, build, start_locust, locust_workers);
-        let command = self.compose_environment(command, mode, true)?;
+        let mut command = self.compose_environment(command, mode, true)?;
+        if let Some(limit) = overrides.builtin_memory_limit {
+            command = command.env("GATEWAY_MEM_LIMIT", limit);
+        }
+        if let Some(cpuset) = overrides.load_target_cpuset {
+            command = command.env(LOAD_TARGET_CPUSET_ENV, cpuset);
+        }
         let (controlplane_pull_policy, dataplane_pull_policy) = compose_pull_policies(
             mode,
             build,

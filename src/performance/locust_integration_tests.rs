@@ -48,6 +48,7 @@ fn args(smoke: bool) -> LoadRequest {
         users: None,
         spawn_rate: None,
         run_time: None,
+        workers: None,
     }
 }
 
@@ -77,6 +78,7 @@ fn full_load_uses_configured_defaults() {
     assert_eq!(settings.users().get(), 100);
     assert_eq!(settings.spawn_rate(), 10.0);
     assert_eq!(settings.run_time(), "5m");
+    assert_eq!(settings.workers().get(), 1);
 }
 
 #[test]
@@ -91,6 +93,7 @@ fn command_line_values_override_process_environment() {
     cli.users = Some(3);
     cli.spawn_rate = Some(0.5);
     cli.run_time = Some(String::from("15s"));
+    cli.workers = Some(4);
 
     let settings = LoadSettings::resolve(&config(root.path(), &process), &cli)
         .expect("CLI settings should resolve");
@@ -98,6 +101,22 @@ fn command_line_values_override_process_environment() {
     assert_eq!(settings.users().get(), 3);
     assert_eq!(settings.spawn_rate(), 0.5);
     assert_eq!(settings.run_time(), "15s");
+    assert_eq!(settings.workers().get(), 4);
+}
+
+#[test]
+fn load_worker_count_must_be_positive() {
+    let root = repository_root(None);
+    let mut request = args(false);
+    request.workers = Some(0);
+
+    let error = LoadSettings::resolve(&config(root.path(), &Environment::new()), &request)
+        .expect_err("zero load workers should fail");
+
+    assert_eq!(
+        error.to_string(),
+        "load workers must be an integer greater than zero"
+    );
 }
 
 #[test]
@@ -240,6 +259,38 @@ fn dataplane_locust_command_has_exact_compose_shape_and_environment() {
             .environment()
             .contains_key(OsStr::new("COMPOSE_PROGRESS")),
         "Locust Compose runs must retain terminal-aware progress"
+    );
+    assert!(
+        !arguments
+            .iter()
+            .any(|argument| argument.to_string_lossy().starts_with("--processes=")),
+        "the default must preserve Locust's single-process behavior"
+    );
+}
+
+#[test]
+fn multiple_load_workers_enable_locust_processes() {
+    let root = repository_root(None);
+    let config = config(root.path(), &Environment::new());
+    let mut request = args(false);
+    request.workers = Some(4);
+    let settings = LoadSettings::resolve(&config, &request).expect("settings should resolve");
+
+    let run = LocustCommand::new(
+        &config,
+        project(&config, StackMode::Dataplane),
+        StackMode::Dataplane,
+        &settings,
+        "scoped.jwt.value",
+        Some("server-id"),
+        ProtocolVersion::Modern,
+    )
+    .expect("distributed Locust command should build");
+
+    assert!(
+        run.command()
+            .arguments()
+            .contains(&OsString::from("--processes=4"))
     );
 }
 

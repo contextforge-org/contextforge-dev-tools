@@ -15,7 +15,7 @@ use crate::performance::LoadRequest;
 use anyhow::{Result, bail};
 
 use crate::cli::{
-    CiCommand, Cli, CliLane, CliRoutedLane, Command, ConformanceCommand, DebugCommand,
+    CiCommand, Cli, CliLane, CliRoutedLane, Command, ConformanceCommand, DebugCommand, FyreCommand,
     LaneSelection, LiveGroup, LoadCommand, ProtocolVersion, StackCommand, TokenKind,
 };
 const LANE_ENV: &str = "CF_MCP_LANE";
@@ -31,6 +31,7 @@ pub(crate) enum Action {
         protocol_version: ProtocolVersion,
     },
     Load(ResolvedLoadArgs),
+    Fyre(FyreAction),
     Live {
         lane: SemanticLane,
         group: LiveGroup,
@@ -53,6 +54,9 @@ impl Action {
             Self::Stack(StackAction::Config { .. }) => "stack config",
             Self::Probe { .. } => "probe",
             Self::Load(_) => "load test",
+            Self::Fyre(FyreAction::Run { .. }) => "FYRE benchmark campaign",
+            Self::Fyre(FyreAction::Status { .. }) => "FYRE benchmark status",
+            Self::Fyre(FyreAction::Destroy { .. }) => "FYRE benchmark destroy",
             Self::Live { .. } => "live tests",
             Self::Conformance(ConformanceAction::Run { .. }) => "conformance tests",
             Self::Conformance(ConformanceAction::Report { .. }) => "conformance report",
@@ -93,8 +97,15 @@ impl Action {
                 if args.observability {
                     summary.push_str("\nObservability: ClickStack enabled during load");
                 }
+                if let Some(limit) = &args.builtin_memory_limit {
+                    summary.push_str(&format!("\nBuilt-in gateway memory limit: {limit}"));
+                }
+                if args.isolate_cpus {
+                    summary.push_str("\nCPU isolation: target and Locust split evenly");
+                }
                 summary
             }
+            Self::Fyre(action) => action.startup_summary(),
             Self::Live {
                 lane,
                 protocol_version,
@@ -149,6 +160,7 @@ impl Action {
             self,
             Self::Stack(StackAction::Up { .. })
                 | Self::Load(_)
+                | Self::Fyre(FyreAction::Run { .. })
                 | Self::Conformance(ConformanceAction::Run { .. })
         )
     }
@@ -174,6 +186,7 @@ impl Action {
             | Self::Stack(StackAction::Logs { standalone, .. })
             | Self::Stack(StackAction::Config { standalone, .. }) => *standalone,
             Self::Load(args) => args.standalone,
+            Self::Fyre(_) => true,
             Self::Live { .. } => false,
         };
         if standalone {
@@ -181,6 +194,32 @@ impl Action {
         } else {
             ConfigRequirements::Runtime
         }
+    }
+}
+
+/// A resolved operation on one FYRE benchmark run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FyreAction {
+    Run {
+        file: Option<PathBuf>,
+        run_id: Option<String>,
+    },
+    Status {
+        run_id: String,
+    },
+    Destroy {
+        run_id: String,
+    },
+}
+
+impl FyreAction {
+    fn startup_summary(&self) -> String {
+        let (operation, run_id) = match self {
+            Self::Run { run_id, .. } => ("run", run_id.as_deref().unwrap_or("generated")),
+            Self::Status { run_id, .. } => ("status", run_id.as_str()),
+            Self::Destroy { run_id, .. } => ("destroy", run_id.as_str()),
+        };
+        format!("Infrastructure: FYRE\nOperation: {operation}\nRun ID: {run_id}")
     }
 }
 
@@ -310,6 +349,8 @@ pub(crate) struct ResolvedLoadArgs {
     pub(crate) client_era: ProtocolVersion,
     pub(crate) standalone: bool,
     pub(crate) observability: bool,
+    pub(crate) builtin_memory_limit: Option<String>,
+    pub(crate) isolate_cpus: bool,
     pub(crate) request: LoadRequest,
 }
 
@@ -392,23 +433,49 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
                 )?,
             })
         }
-        Command::Load(args) => {
-            let LoadCommand::Run(args) = args.command;
-            let topology = resolve_lane(args.lane, environment)?;
-            validate_standalone_lane(standalone, topology)?;
-            Ok(Action::Load(ResolvedLoadArgs {
-                topology,
-                client_era: args.client_era,
-                standalone,
-                observability: args.observability,
-                request: LoadRequest {
-                    smoke: args.smoke,
-                    users: args.users,
-                    spawn_rate: args.spawn_rate,
-                    run_time: args.run_time,
-                },
-            }))
-        }
+        Command::Load(args) => match args.command {
+            LoadCommand::Run(args) => {
+                let topology = resolve_lane(args.lane, environment)?;
+                validate_standalone_lane(standalone, topology)?;
+                if args.builtin_memory_limit.is_some() && topology != StackMode::Controlplane {
+                    bail!("--builtin-memory-limit requires --lane builtin");
+                }
+                Ok(Action::Load(ResolvedLoadArgs {
+                    topology,
+                    client_era: args.client_era,
+                    standalone,
+                    observability: args.observability,
+                    builtin_memory_limit: args.builtin_memory_limit,
+                    isolate_cpus: args.isolate_cpus,
+                    request: LoadRequest {
+                        smoke: args.smoke,
+                        users: args.users,
+                        spawn_rate: args.spawn_rate,
+                        run_time: args.run_time,
+                        workers: args.workers,
+                    },
+                }))
+            }
+            LoadCommand::Fyre(args) => {
+                if standalone {
+                    bail!(
+                        "--standalone is not used by load fyre; FYRE targets are always isolated"
+                    );
+                }
+                Ok(Action::Fyre(match args.command {
+                    FyreCommand::Run(args) => FyreAction::Run {
+                        file: args.file,
+                        run_id: args.run_id,
+                    },
+                    FyreCommand::Status(args) => FyreAction::Status {
+                        run_id: validated_run_id(args.run_id)?,
+                    },
+                    FyreCommand::Destroy(args) => FyreAction::Destroy {
+                        run_id: validated_run_id(args.run_id)?,
+                    },
+                }))
+            }
+        },
         Command::Live(args) => {
             let lane = resolve_live_lane(args.target.lane, environment)?;
             if standalone {
@@ -523,6 +590,30 @@ pub(crate) fn resolve_action(cli: Cli, environment: &Environment) -> Result<Acti
             }))
         }
     }
+}
+
+fn validated_run_id(run_id: String) -> Result<String> {
+    if is_valid_run_id(&run_id) {
+        Ok(run_id)
+    } else {
+        bail!("--run-id must contain only lowercase letters, digits, and hyphens")
+    }
+}
+
+fn is_valid_run_id(run_id: &str) -> bool {
+    !run_id.is_empty()
+        && run_id.len() <= 48
+        && run_id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && run_id
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && run_id
+            .as_bytes()
+            .last()
+            .is_some_and(u8::is_ascii_alphanumeric)
 }
 
 fn environment_utf8(environment: &Environment, key: &str) -> Option<String> {

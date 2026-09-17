@@ -70,7 +70,7 @@ fn command_tree_contains_only_distinct_public_workflows() {
         subcommands(&["stack"]),
         ["up", "down", "status", "logs", "config"]
     );
-    assert_eq!(subcommands(&["load"]), ["run"]);
+    assert_eq!(subcommands(&["load"]), ["run", "fyre"]);
     assert_eq!(subcommands(&["conformance"]), ["run", "report"]);
     assert_eq!(subcommands(&["debug"]), ["inspect", "token"]);
 }
@@ -88,6 +88,10 @@ fn every_public_command_renders_help() {
         &["probe"],
         &["load"],
         &["load", "run"],
+        &["load", "fyre"],
+        &["load", "fyre", "run"],
+        &["load", "fyre", "status"],
+        &["load", "fyre", "destroy"],
         &["live"],
         &["conformance"],
         &["conformance", "run"],
@@ -218,6 +222,9 @@ fn load_keeps_validated_locust_settings() {
                 users,
                 spawn_rate,
                 run_time,
+                workers,
+                builtin_memory_limit,
+                isolate_cpus,
                 ..
             }),
     }) = parse(&[
@@ -230,6 +237,11 @@ fn load_keeps_validated_locust_settings() {
         "0.5",
         "--run-time",
         "1m30s",
+        "--workers",
+        "4",
+        "--builtin-memory-limit",
+        "16G",
+        "--isolate-cpus",
     ])
     .command
     else {
@@ -241,8 +253,19 @@ fn load_keeps_validated_locust_settings() {
     assert_eq!(users, Some(2));
     assert_eq!(spawn_rate, Some(0.5));
     assert_eq!(run_time.as_deref(), Some("1m30s"));
+    assert_eq!(workers, Some(4));
+    assert_eq!(builtin_memory_limit.as_deref(), Some("16G"));
+    assert!(isolate_cpus);
 
     rejected(&["cf-integration", "load", "run", "--users", "0"]);
+    rejected(&["cf-integration", "load", "run", "--workers", "0"]);
+    rejected(&[
+        "cf-integration",
+        "load",
+        "run",
+        "--builtin-memory-limit",
+        "0G",
+    ]);
     rejected(&["cf-integration", "load", "run", "--run-time", "1ms"]);
     rejected(&["cf-integration", "load", "run", "--run-time", "zero"]);
     rejected(&["cf-integration", "load", "run", "--engine", "locust"]);
@@ -263,7 +286,9 @@ fn load_accepts_standalone_external_dataplane_mode() {
         panic!("expected load")
     };
 
-    let LoadCommand::Run(args) = args.command;
+    let LoadCommand::Run(args) = args.command else {
+        panic!("expected load run")
+    };
     assert_eq!(args.lane, Some(CliRoutedLane::External));
 }
 
@@ -274,7 +299,9 @@ fn load_accepts_explicit_observability() {
         panic!("expected load")
     };
 
-    let LoadCommand::Run(args) = args.command;
+    let LoadCommand::Run(args) = args.command else {
+        panic!("expected load run")
+    };
     assert!(args.observability);
 }
 
@@ -676,7 +703,9 @@ fn load_uses_client_eras_and_rejects_version_or_server_selectors() {
         else {
             panic!("expected load")
         };
-        let LoadCommand::Run(args) = args.command;
+        let LoadCommand::Run(args) = args.command else {
+            panic!("expected load run")
+        };
         assert_eq!(args.client_era, expected);
     }
     for arguments in [
@@ -785,7 +814,7 @@ fn short_commands_and_options_resolve_identically_to_long_forms() {
         (
             &[
                 "l", "r", "-s", "-l", "external", "-c", "modern", "-o", "-S", "-u", "20", "-r",
-                "5", "-t", "2m",
+                "5", "-t", "2m", "-w", "4", "-i",
             ],
             &[
                 "load",
@@ -803,7 +832,41 @@ fn short_commands_and_options_resolve_identically_to_long_forms() {
                 "5",
                 "--run-time",
                 "2m",
+                "--workers",
+                "4",
+                "--isolate-cpus",
             ],
+        ),
+        (
+            &["l", "r", "-l", "builtin", "-m", "16G"],
+            &[
+                "load",
+                "run",
+                "--lane",
+                "builtin",
+                "--builtin-memory-limit",
+                "16G",
+            ],
+        ),
+        (
+            &["l", "f", "r", "-f", "scenario.yaml", "-i", "scale-run"],
+            &[
+                "load",
+                "fyre",
+                "run",
+                "--file",
+                "scenario.yaml",
+                "--run-id",
+                "scale-run",
+            ],
+        ),
+        (
+            &["l", "f", "s", "-i", "scale-run"],
+            &["load", "fyre", "status", "--run-id", "scale-run"],
+        ),
+        (
+            &["l", "f", "d", "-i", "scale-run"],
+            &["load", "fyre", "destroy", "--run-id", "scale-run"],
         ),
         (
             &["v", "-l", "builtin", "-p", "legacy", "-g", "protocol"],

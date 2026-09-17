@@ -1,0 +1,121 @@
+---
+- name: Wait for FYRE benchmark hosts
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Wait for SSH
+      ansible.builtin.wait_for_connection:
+        delay: 5
+        sleep: 5
+        timeout: 600
+
+- name: Bootstrap FYRE benchmark hosts
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Disable automatic APT activity during benchmarks
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/99-contextforge-benchmark
+        mode: "0644"
+        content: |
+          APT::Periodic::Enable "0";
+          APT::Periodic::Update-Package-Lists "0";
+          APT::Periodic::Download-Upgradeable-Packages "0";
+          APT::Periodic::AutocleanInterval "0";
+          APT::Periodic::Unattended-Upgrade "0";
+
+    - name: Stop and mask automatic APT timers
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: stopped
+        enabled: false
+        masked: true
+      loop:
+        - apt-daily.timer
+        - apt-daily-upgrade.timer
+
+    - name: Stop and mask automatic APT services
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: stopped
+        masked: true
+      loop:
+        - apt-daily.service
+        - apt-daily-upgrade.service
+
+    - name: Install Docker repository prerequisites
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+        state: present
+        update_cache: true
+
+    - name: Create the APT keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Install Docker's signing key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+
+    - name: Configure Docker's Ubuntu repository
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/docker.sources
+        mode: "0644"
+        content: |
+          Types: deb
+          URIs: https://download.docker.com/linux/ubuntu
+          Suites: {{ ansible_facts["distribution_release"] }}
+          Components: stable
+          Architectures: amd64
+          Signed-By: /etc/apt/keyrings/docker.asc
+
+    - name: Install Docker Engine, Compose, and telemetry tools
+      ansible.builtin.apt:
+        name:
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-ce
+          - docker-ce-cli
+          - docker-compose-plugin
+          - iproute2
+        state: present
+        update_cache: true
+
+    - name: Enable Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Create benchmark directories
+      ansible.builtin.file:
+        path: "/root/cf-fyre/{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - state/keys
+        - reports
+        - telemetry
+
+    - name: Copy benchmark deployment assets
+      ansible.builtin.copy:
+        src: "{{ fyre_deploy_dir }}/"
+        dest: /root/cf-fyre/
+        mode: preserve
+
+    - name: Copy the Locust workload to the load generator
+      ansible.builtin.copy:
+        src: "{{ fyre_locustfile }}"
+        dest: /root/cf-fyre/locustfile_mcp.py
+        mode: "0644"
+      when: inventory_hostname == fyre_locust_hostname
+
+    - name: Verify Docker and Compose
+      ansible.builtin.command: docker compose version
+      changed_when: false

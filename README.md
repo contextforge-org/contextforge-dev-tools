@@ -47,7 +47,7 @@ Every public command and option has a short form, shown in `--help`.
 | --- | --- | --- |
 | `stack` | `s` | `up` → `u`, `down` → `d`, `status` → `s`, `logs` → `l`, `config` → `c` |
 | `probe` | `p` | — |
-| `load` | `l` | `run` → `r` |
+| `load` | `l` | `run` → `r`, `fyre` → `f` (`run` → `r`, `status` → `s`, `destroy` → `d`) |
 | `live` | `v` | — |
 | `conformance` | `c` | `run` → `r`, `report` → `p` |
 | `debug` | `d` | `inspect` → `i`, `token` → `t` |
@@ -179,12 +179,26 @@ cf-integration load run --lane external --client-era legacy --standalone \
 # Include telemetry when diagnostic value matters more than benchmark purity
 cf-integration load run --lane external --client-era modern --standalone \
   --observability --users 10 --spawn-rate 2 --run-time 2m
+
+# Spread a high-throughput run across eight local Locust workers
+cf-integration load run --lane external --client-era modern --standalone \
+  --workers 8 --isolate-cpus \
+  --users 1000 --spawn-rate 100 --run-time 30s
+
+# Raise the built-in gateway limit for a high-concurrency comparison
+cf-integration load run --lane builtin --client-era legacy \
+  --builtin-memory-limit 16G --workers 8 \
+  --isolate-cpus --users 1000 --spawn-rate 100 --run-time 30s
 ```
 
 `--smoke` selects a short workload. Durations accept ordered positive `h`, `m`,
 and `s` groups such as `2m30s`. Defaults are `100` users, `10` users/s, and
 `5m`, overridable with `LOCUST_USERS`, `LOCUST_SPAWN_RATE`, and
-`LOCUST_RUN_TIME`. Observability is opt-in for load tests to avoid skew.
+`LOCUST_RUN_TIME`. `-w/--workers` starts that many local Locust worker
+processes and defaults to one. `-m/--builtin-memory-limit` overrides the
+built-in gateway container limit for that run. `-i/--isolate-cpus` splits all
+Docker CPUs evenly between the selected target and Locust. Observability is
+opt-in for load tests to avoid skew.
 
 `--client-era` accepts `legacy` or `modern` (default). The harness owns the
 Locust client: legacy uses initialization and the server's negotiated revision;
@@ -195,14 +209,33 @@ Every load lane uses the Fast Time server with the same `CF_FAST_TIME_EXPECTED_I
 override and the same `echo` payload (`{"message":"cf-integration"}`). Pin that
 image to a digest when comparing lanes. The measured workload contains only
 `tools/call`; initialization/discovery and builtin tool-name discovery happen
-once per user. Compare the `MCP tools/call` statistics to exclude setup traffic.
-A missing echo tool fails the run instead of producing an empty benchmark.
+once per user. Virtual users issue calls without client think time. Compare the
+`MCP tools/call` statistics to exclude setup traffic. A missing echo tool fails
+the run instead of producing an empty benchmark.
 
 There is no server-era selector: the backend must support the selected client
 era. `--standalone` runs Fast Time with the external dataplane and a harness
 routing snapshot in Redis, without the control plane. It discovers Fast Time's
 catalog directly; it never starts the conformance fixture or its proxy.
 Conformance, probes, and Inspector retain their protocol fixtures.
+
+### FYRE scaling campaign
+
+Run the reproducible vertical and horizontal Rust dataplane comparison on FYRE:
+
+```bash
+cf-integration load fyre run
+cf-integration load fyre status --run-id scale-candidate
+cf-integration load fyre destroy --run-id scale-candidate
+```
+
+The short forms are `cf-integration l f r`, `l f s`, and `l f d`; configuration
+and run IDs use `-f` and `-i`. The packaged matrix, infrastructure lifecycle,
+capacity-search rules, recovery behavior, and report layout are documented in
+[`benchmarks/fyre/README.md`](benchmarks/fyre/README.md). FYRE credentials stay
+in provider environment variables. All generated Terraform state, inventories,
+raw reports, telemetry, manifests, and the Slack-ready PNG are kept under
+`CF_INTEGRATION_DIR/fyre/<run-id>/`.
 
 ## Live gateway checks
 

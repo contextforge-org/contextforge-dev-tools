@@ -21,6 +21,7 @@ const REQUEST_TIMEOUT_DEFAULT_SECONDS: &str = "60";
 const REQUEST_TIMEOUT_ENV: &str = "LOCUST_REQUEST_TIMEOUT_SECONDS";
 const REQUEST_TIMEOUT_ERROR: &str =
     "LOCUST_REQUEST_TIMEOUT_SECONDS must be a finite number greater than zero";
+const FAILED_PROCESS_MARKER: &[u8] = b"Shutting down (exit code 1)";
 /// Prepared Docker Compose Locust invocation and its host report directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LocustCommand {
@@ -69,7 +70,7 @@ impl LocustCommand {
 
         let volume = volume_argument(&report_dir);
         let adapter_volume = adapter_volume_argument(config.asset_root());
-        let arguments = vec![
+        let mut arguments = vec![
             OsString::from("run"),
             OsString::from("--rm"),
             OsString::from("--no-deps"),
@@ -101,11 +102,19 @@ impl LocustCommand {
             OsString::from(format!("--spawn-rate={}", settings.spawn_rate())),
             OsString::from(format!("--run-time={}", settings.run_time())),
             OsString::from("--headless"),
+        ];
+        if settings.workers().get() > 1 {
+            arguments.push(OsString::from(format!(
+                "--processes={}",
+                settings.workers()
+            )));
+        }
+        arguments.extend([
             OsString::from("--html=/mnt/reports/locust_report.html"),
             OsString::from("--csv=/mnt/reports/locust"),
             OsString::from("--json-file=/mnt/reports/locust"),
             OsString::from("--only-summary"),
-        ];
+        ]);
         let command = project.command(arguments);
 
         let mut command = command
@@ -162,12 +171,19 @@ pub(crate) fn audit_reports(report_dir: &Path, bearer_token: &str) -> Result<()>
     let mut first_inspection_error = None;
     collect_report_files(report_dir, &mut files, &mut first_inspection_error);
     let mut tainted = Vec::new();
+    let mut failed_process = false;
     for path in files {
         match fs::read(&path) {
-            Ok(contents) if contains_bytes(&contents, bearer_token.as_bytes()) => {
-                tainted.push(path);
+            Ok(contents) => {
+                if path.file_name() == Some(OsStr::new("locust.log"))
+                    && contains_bytes(&contents, FAILED_PROCESS_MARKER)
+                {
+                    failed_process = true;
+                }
+                if contains_bytes(&contents, bearer_token.as_bytes()) {
+                    tainted.push(path);
+                }
             }
-            Ok(_) => {}
             Err(error) if first_inspection_error.is_none() => {
                 first_inspection_error = Some((path, error));
             }
@@ -195,6 +211,9 @@ pub(crate) fn audit_reports(report_dir: &Path, bearer_token: &str) -> Result<()>
     }
     if let Some((path, error)) = first_inspection_error {
         return Err(error).with_context(|| format!("failed to inspect Locust report {path:?}"));
+    }
+    if failed_process {
+        bail!("a Locust worker exited with a failure");
     }
     Ok(())
 }
@@ -311,5 +330,20 @@ mod tests {
         assert!(!first.exists());
         assert!(!second.exists());
         assert!(safe.is_file());
+    }
+
+    #[test]
+    fn report_audit_rejects_a_hidden_worker_failure() {
+        let directory = tempfile::tempdir().expect("temporary report directory");
+        fs::write(
+            directory.path().join("locust.log"),
+            "worker: Shutting down (exit code 1)\nmaster: Shutting down (exit code 0)\n",
+        )
+        .expect("Locust log should be written");
+
+        let error = audit_reports(directory.path(), "absent-token")
+            .expect_err("a failed worker must fail the report audit");
+
+        assert_eq!(error.to_string(), "a Locust worker exited with a failure");
     }
 }

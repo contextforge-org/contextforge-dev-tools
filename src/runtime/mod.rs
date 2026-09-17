@@ -60,9 +60,12 @@ const STACK_READY_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const STACK_READY_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 const CONFORMANCE_SERVER_ERA_ENV: &str = "CF_CONFORMANCE_SERVER_ERA";
 const DEFAULT_CONFORMANCE_SERVER_ERA: ConformanceServerEra = ConformanceServerEra::Modern;
+const LOAD_LOCUST_CPUSET_ENV: &str = "CF_LOAD_LOCUST_CPUSET";
+const LOAD_TARGET_CPUSET_ENV: &str = "CF_LOAD_TARGET_CPUSET";
 mod ci;
 mod conformance;
 mod control_plane;
+mod fyre;
 mod inspect;
 mod live;
 mod performance;
@@ -108,6 +111,7 @@ impl<R: ProcessRunner> RuntimeContext<R> {
                     .await
             }
             Action::Load(args) => self.run_load(args).await,
+            Action::Fyre(action) => self.execute_fyre(action).await,
             Action::Live {
                 lane,
                 group,

@@ -1,0 +1,142 @@
+services:
+  network:
+    image: ${HELPERS_IMAGE:?Set HELPERS_IMAGE to a pinned digest}
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["exec sleep infinity"]
+    ports: ["${TARGET_BIND_IP:?Set TARGET_BIND_IP to the target private IP}:4444:4444"]
+
+  postgres:
+    image: ${POSTGRES_IMAGE:?Set POSTGRES_IMAGE to a pinned digest}
+    restart: unless-stopped
+    shm_size: 256m
+    command:
+      - postgres
+      - -c
+      - max_connections=300
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - synchronous_commit=off
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: mcp
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mcp"]
+      interval: 2s
+      timeout: 3s
+      retries: 90
+    volumes: ["builtin-postgres:/var/lib/postgresql"]
+
+  redis:
+    image: ${REDIS_IMAGE:?Set REDIS_IMAGE to a pinned digest}
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "512mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+  migration:
+    image: ${CONTROLPLANE_IMAGE:?Set CONTROLPLANE_IMAGE to a pinned digest}
+    restart: "no"
+    entrypoint: ["python3", "-m", "mcpgateway.bootstrap_db"]
+    environment: &builtin-environment
+      DATABASE_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD}@postgres:5432/mcp
+      REDIS_URL: redis://redis:6379/0
+      CACHE_TYPE: redis
+      JWT_ALGORITHM: HS256
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY}
+      JWT_AUDIENCE: mcpgateway-api
+      JWT_ISSUER: mcpgateway
+      AUTH_ENCRYPTION_SECRET: ${AUTH_ENCRYPTION_SECRET:?Set AUTH_ENCRYPTION_SECRET}
+      DEFAULT_USER_PASSWORD: ${DEFAULT_USER_PASSWORD:?Set DEFAULT_USER_PASSWORD}
+      PLATFORM_ADMIN_EMAIL: admin@example.com
+      PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:?Set PLATFORM_ADMIN_PASSWORD}
+      PASSWORD_CHANGE_ENFORCEMENT_ENABLED: "false"
+      AUTH_REQUIRED: "true"
+      MCP_CLIENT_AUTH_ENABLED: "true"
+      MCP_REQUIRE_AUTH: "true"
+      REQUIRE_USER_IN_DB: "false"
+      LOG_LEVEL: WARNING
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  gateway:
+    image: ${CONTROLPLANE_IMAGE:?Set CONTROLPLANE_IMAGE to a pinned digest}
+    restart: unless-stopped
+    network_mode: service:network
+    read_only: true
+    tmpfs:
+      - /tmp:size=128M,mode=1777
+      - /var/tmp:size=32M,mode=1777
+      - /run:size=8M,mode=0755
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    environment:
+      <<: *builtin-environment
+      HOST: 0.0.0.0
+      PORT: "4444"
+      TRANSPORT_TYPE: streamablehttp
+      RUST_MCP_MODE: "off"
+      MCPGATEWAY_SKIP_MIGRATIONS: "true"
+      GATEWAY_TOOL_NAME_SEPARATOR: _
+      SSRF_ALLOW_LOCALHOST: "true"
+      SSRF_ALLOW_PRIVATE_NETWORKS: "true"
+      SSRF_DNS_FAIL_CLOSED: "false"
+      PLUGINS_ENABLED: "false"
+      MCPGATEWAY_CATALOG_ENABLED: "false"
+      MCPGATEWAY_UI_ENABLED: "false"
+      MCPGATEWAY_ADMIN_API_ENABLED: "true"
+      ENABLE_METRICS: "false"
+      DB_METRICS_RECORDING_ENABLED: "false"
+      STRUCTURED_LOGGING_DATABASE_ENABLED: "false"
+      AUDIT_TRAIL_ENABLED: "false"
+      SECURITY_LOGGING_ENABLED: "false"
+      DISABLE_ACCESS_LOG: "true"
+      COMPRESSION_ENABLED: "false"
+      VALIDATION_MIDDLEWARE_ENABLED: "false"
+      CORRELATION_ID_ENABLED: "false"
+      OBSERVABILITY_ENABLED: "false"
+      RATE_LIMITING_ENABLED: "false"
+      GUNICORN_WORKERS: "4"
+      GUNICORN_KEEP_ALIVE: "30"
+      GUNICORN_BACKLOG: "4096"
+      DB_POOL_CLASS: queue
+      DB_POOL_SIZE: "15"
+      DB_MAX_OVERFLOW: "10"
+      DB_POOL_PRE_PING: "true"
+      HTTPX_MAX_CONNECTIONS: "1000"
+      HTTPX_MAX_KEEPALIVE_CONNECTIONS: "500"
+      MCP_SESSION_POOL_ENABLED: "true"
+      MCP_SESSION_POOL_MAX_PER_KEY: "1000"
+      TOOL_RATE_LIMIT: "600000"
+      TOOL_CONCURRENT_LIMIT: "5000"
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4444/health', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 100
+
+  admin:
+    profiles: ["helpers"]
+    image: ${CONTROLPLANE_IMAGE:?Set CONTROLPLANE_IMAGE to a pinned digest}
+    network_mode: service:network
+    entrypoint: ["python3", "/work/register_builtin.py"]
+    volumes: ["./register_builtin.py:/work/register_builtin.py:ro"]
+    environment:
+      <<: *builtin-environment
+      GATEWAY_URL: http://127.0.0.1:4444
+
+volumes:
+  builtin-postgres:

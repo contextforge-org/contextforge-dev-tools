@@ -44,6 +44,8 @@ pub(super) struct ManagedTargetOptions {
     observability: bool,
     load: bool,
     backend: StandaloneBackend,
+    builtin_memory_limit: Option<String>,
+    load_target_cpuset: Option<String>,
 }
 
 impl ManagedTargetOptions {
@@ -57,6 +59,8 @@ impl ManagedTargetOptions {
             observability,
             load: false,
             backend: StandaloneBackend::Conformance(protocol_version),
+            builtin_memory_limit: None,
+            load_target_cpuset: None,
         }
     }
 
@@ -64,12 +68,16 @@ impl ManagedTargetOptions {
         standalone: bool,
         observability: bool,
         protocol_version: ProtocolVersion,
+        builtin_memory_limit: Option<String>,
+        load_target_cpuset: Option<String>,
     ) -> Self {
         Self {
             standalone,
             observability,
             load: true,
             backend: StandaloneBackend::FastTime(protocol_version),
+            builtin_memory_limit,
+            load_target_cpuset,
         }
     }
 }
@@ -127,14 +135,42 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             STANDALONE_USER_ID,
         ]);
         let command = self.standalone_dataplane_environment(command, true)?;
-        let output = self.runner.capture_stdout(&command)?;
+        self.capture_harness_token(&command)
+    }
+
+    pub(super) fn client_conformance_token(
+        &self,
+        standalone: bool,
+    ) -> AppResult<ManagedBearerToken> {
+        let subject = format!("cf-integration-client-{}", uuid::Uuid::new_v4().simple());
+        let project = if standalone {
+            self.standalone_conformance_compose_project(true)
+        } else {
+            self.conformance_runtime_project(StackMode::Dataplane)
+        };
+        let command = project.command([
+            "run",
+            "--quiet-build",
+            "--rm",
+            "--no-deps",
+            "config_writer",
+            "token",
+            STANDALONE_TENANT_ID,
+            &subject,
+        ]);
+        let command = self.target_environment(command, StackMode::Dataplane, standalone)?;
+        self.capture_harness_token(&command)
+    }
+
+    fn capture_harness_token(&self, command: &CommandSpec) -> AppResult<ManagedBearerToken> {
+        let output = self.runner.capture_stdout(command)?;
         let token = std::str::from_utf8(&output)
-            .context("standalone dataplane token helper returned non-UTF-8 output")
+            .context("dataplane token helper returned non-UTF-8 output")
             .map_err(AppFailure::from)?
             .trim();
         if token.split('.').count() != 3 {
             return Err(AppFailure::from(anyhow!(
-                "standalone dataplane token helper returned an invalid JWT"
+                "dataplane token helper returned an invalid JWT"
             )));
         }
         Ok(ManagedBearerToken::unmanaged(token.to_owned()))
@@ -179,8 +215,12 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let mut scope = ManagedSessionScope::new(self, topology, options.standalone);
         let primary = async {
             let token = if options.standalone {
-                self.stack_up_standalone_dataplane(false, options.observability)
-                    .await?;
+                self.stack_up_standalone_dataplane(
+                    false,
+                    options.observability,
+                    options.load_target_cpuset.as_deref(),
+                )
+                .await?;
                 match options.backend {
                     StandaloneBackend::Conformance(version) => {
                         self.start_standalone_fixture(&version, options.observability)
@@ -195,8 +235,18 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             } else {
                 let project =
                     self.performance_compose_project(topology, options.observability, options.load);
-                self.stack_up_with_project(topology, false, project, false, options.observability)
-                    .await?;
+                self.stack_up_with_project(
+                    topology,
+                    false,
+                    project,
+                    false,
+                    options.observability,
+                    stack::StackRuntimeOverrides {
+                        builtin_memory_limit: options.builtin_memory_limit.as_deref(),
+                        load_target_cpuset: options.load_target_cpuset.as_deref(),
+                    },
+                )
+                .await?;
                 self.prepare_test_target(topology, server_id).await?;
                 self.managed_bearer_token(topology, server_id).await?
             };

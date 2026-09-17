@@ -9,9 +9,19 @@ on:
       tag:
         type: string
         default: ''
+      publish_sdk_gateway:
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      publish_sdk_gateway:
+        description: Publish the pinned MCP SDK v2 gateway used by FYRE comparisons
+        type: boolean
+        default: false
 
 jobs:
   build:
+    if: ${{ !inputs.publish_sdk_gateway }}
     name: Images (${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -108,7 +118,7 @@ jobs:
 
   publish:
     name: Publish image manifests
-    if: inputs.publish
+    if: inputs.publish && !inputs.publish_sdk_gateway
     needs: build
     runs-on: ubuntu-24.04
     permissions:
@@ -149,3 +159,96 @@ jobs:
               exit 1
             fi
           done
+
+  sdk-gateway:
+    name: SDK v2 gateway (${{ matrix.arch }})
+    if: inputs.publish_sdk_gateway
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GATEWAY_REVISION: 33e2dd93a53a9cc2c5088b731822dfec4852fa2e
+      GATEWAY_TAG: sdk-v2-33e2dd93a
+    steps:
+      - name: Checkout benchmark repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: benchmark
+          persist-credentials: false
+
+      - name: Checkout pinned gateway source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: IBM/mcp-context-forge
+          ref: ${{ env.GATEWAY_REVISION }}
+          path: gateway
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push pinned gateway
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: gateway
+          file: gateway/Containerfile
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          tags: ghcr.io/contextforge-org/cf-integration-fixture:gateway-${{ env.GATEWAY_TAG }}-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.revision=${{ env.GATEWAY_REVISION }}
+            org.opencontainers.image.source=https://github.com/contextforge-org/contextforge-dev-tools
+          cache-from: type=gha,scope=sdk-gateway-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=sdk-gateway-${{ matrix.arch }}
+          provenance: false
+
+  publish-sdk-gateway:
+    name: Publish SDK v2 gateway manifest
+    if: inputs.publish_sdk_gateway
+    needs: sdk-gateway
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GATEWAY_TAG: sdk-v2-33e2dd93a
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish multi-platform manifest
+        run: |
+          ref=ghcr.io/contextforge-org/cf-integration-fixture
+          docker buildx imagetools create \
+            --tag "$ref:gateway-$GATEWAY_TAG" \
+            "$ref:gateway-$GATEWAY_TAG-amd64" \
+            "$ref:gateway-$GATEWAY_TAG-arm64"
+
+      - name: Verify anonymous image access
+        run: |
+          docker logout ghcr.io
+          docker buildx imagetools inspect \
+            "ghcr.io/contextforge-org/cf-integration-fixture:gateway-$GATEWAY_TAG"

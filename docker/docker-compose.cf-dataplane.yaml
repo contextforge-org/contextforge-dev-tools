@@ -54,6 +54,10 @@ services:
       retries: 30
       start_period: 2s
 
+  config_writer:
+    volumes:
+      - integration_auth:/keys:ro
+
   dataplane:
     image: ${CF_DATAPLANE_IMAGE:?Set CF_DATAPLANE_IMAGE to the cf-dataplane image tag}
     pull_policy: ${CF_DATAPLANE_PULL_POLICY:-always}
@@ -61,6 +65,11 @@ services:
     labels:
       name: cf-dataplane
     restart: unless-stopped
+    cpuset: "${CF_LOAD_TARGET_CPUSET:-}"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     networks:
       mcpnet:
         aliases:
@@ -77,19 +86,12 @@ services:
       CONTEXTFORGE_DATA_PLANE_REDIS_CONNECTION_MODE: plain-text
       CONTEXTFORGE_DATA_PLANE_JWKS_URL: http://127.0.0.1:4446/.well-known/jwks.json
       CONTEXTFORGE_DATA_PLANE_UPSTREAM_CONNECTION_MODE: plain-text-or-tls
-      # These two MCP transport settings intentionally retain the historical
-      # prefix in the current dataplane configuration contract.
-      CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS: ${CF_DATAPLANE_MCP_ALLOWED_HOSTS:-127.0.0.1:${NGINX_PORT:-8080},localhost:${NGINX_PORT:-8080},nginx}
-      CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_ORIGINS: ${CF_DATAPLANE_MCP_ALLOWED_ORIGINS:-http://127.0.0.1:${NGINX_PORT:-8080},http://localhost:${NGINX_PORT:-8080}}
-      # Disable the per-subject config cache for functional runs: its sliding
-      # TTL freezes stale configs under steady traffic (retry loops renew it
-      # forever), hiding servers created after first contact. Set to 60 to
-      # restore the image default for load benchmarks.
-      CONTEXTFORGE_DATA_PLANE_USER_CONFIG_CACHE_EXPIRY_SECONDS: ${CF_DATAPLANE_USER_CONFIG_CACHE_EXPIRY_SECONDS:-0}
       RUST_LOG: ${CF_DATAPLANE_LOG:-info}
     depends_on:
       redis:
         condition: service_started
+      global_config_writer:
+        condition: service_completed_successfully
     deploy:
       replicas: 1
 

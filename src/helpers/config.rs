@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use url::Url;
 
@@ -13,6 +13,24 @@ use crate::mcp::gateway::{MCP_PROTOCOL_VERSION, MCP_SESSION_ID};
 use crate::mcp::protocol::{self, is_stateless_protocol, jsonrpc_with_id, with_request_metadata};
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+
+#[derive(Serialize)]
+struct GlobalConfigKey;
+
+#[derive(Debug, Serialize)]
+struct Authority {
+    hostname: String,
+    port: u16,
+}
+
+#[derive(Serialize)]
+struct GlobalConfig {
+    mcp_standard_header_max_count: Option<usize>,
+    mcp_standard_header_max_value_bytes: Option<usize>,
+    mcp_standard_header_max_total_bytes: Option<usize>,
+    mcp_allowed_origins: Option<Vec<String>>,
+    mcp_allowed_hosts: Option<Vec<Authority>>,
+}
 
 #[derive(Deserialize)]
 struct Tool {
@@ -101,6 +119,96 @@ pub(super) async fn publish(redis_url: &str, subject: &str, body: &Value) -> Res
         .query_async::<()>(&mut connection)
         .await
         .context("failed to publish dataplane config")
+}
+
+pub(super) async fn publish_global(
+    redis_url: &str,
+    allowed_hosts: &str,
+    allowed_origins: &str,
+) -> Result<()> {
+    let (key, body) = encode_global_config(allowed_hosts, allowed_origins)?;
+    let client = redis::Client::open(redis_url).context("invalid config Redis URL")?;
+    let options = redis::AsyncConnectionConfig::new()
+        .set_connection_timeout(Some(TIMEOUT))
+        .set_response_timeout(Some(TIMEOUT));
+    let mut connection = client
+        .get_multiplexed_async_connection_with_config(&options)
+        .await
+        .context("failed to connect to config Redis")?;
+    redis::cmd("SET")
+        .arg(key)
+        .arg(body)
+        .query_async::<()>(&mut connection)
+        .await
+        .context("failed to publish dataplane global config")
+}
+
+pub(super) fn encode_global_config(
+    allowed_hosts: &str,
+    allowed_origins: &str,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    let allowed_hosts = comma_separated(allowed_hosts)
+        .map(parse_authority)
+        .collect::<Result<Vec<_>>>()?;
+    let allowed_origins = comma_separated(allowed_origins)
+        .map(|origin| {
+            let url = Url::parse(origin).context("invalid MCP allowed origin")?;
+            ensure!(
+                matches!(url.scheme(), "http" | "https")
+                    && url.host().is_some()
+                    && url.path() == "/"
+                    && url.query().is_none()
+                    && url.fragment().is_none()
+                    && url.username().is_empty()
+                    && url.password().is_none(),
+                "MCP allowed origin must contain only an HTTP(S) scheme and authority"
+            );
+            Ok(url.to_string())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ensure!(
+        !allowed_hosts.is_empty() && !allowed_origins.is_empty(),
+        "MCP allowed hosts and origins must not be empty"
+    );
+    let body = GlobalConfig {
+        mcp_standard_header_max_count: None,
+        mcp_standard_header_max_value_bytes: None,
+        mcp_standard_header_max_total_bytes: None,
+        mcp_allowed_origins: Some(allowed_origins),
+        mcp_allowed_hosts: Some(allowed_hosts),
+    };
+    Ok((
+        rmp_serde::to_vec(&GlobalConfigKey)?,
+        rmp_serde::to_vec_named(&body)?,
+    ))
+}
+
+fn comma_separated(value: &str) -> impl Iterator<Item = &str> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn parse_authority(value: &str) -> Result<Authority> {
+    let url = Url::parse(&format!("http://{value}"))
+        .with_context(|| format!("invalid MCP allowed host {value:?}"))?;
+    if url.path() != "/"
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        bail!("MCP allowed host must contain only a hostname and optional port");
+    }
+    let hostname = url
+        .host_str()
+        .context("MCP allowed host has no hostname")?
+        .to_owned();
+    let port = url
+        .port_or_known_default()
+        .context("MCP allowed host has no port")?;
+    Ok(Authority { hostname, port })
 }
 
 pub(super) async fn fixture_catalog(url: Url, version: &str) -> Result<Catalog> {

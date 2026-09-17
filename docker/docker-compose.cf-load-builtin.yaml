@@ -1,5 +1,15 @@
 # Route builtin load directly to the active gateway listener with pooled connections.
 services:
+  gateway:
+    cpuset: "${CF_LOAD_TARGET_CPUSET:-}"
+
+  locust:
+    cpuset: "${CF_LOAD_LOCUST_CPUSET:-}"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
   nginx:
     volumes:
       - ${CF_INTEGRATION_ROOT:?Set CF_INTEGRATION_ROOT}/docker/nginx.cf-load-builtin.conf:/etc/nginx/nginx.conf:ro

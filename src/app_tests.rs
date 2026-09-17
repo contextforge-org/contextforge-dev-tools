@@ -2,7 +2,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use cf_integration::app::{
-    Action, CiAction, ConformanceAction, DebugAction, ResolvedLoadArgs, StackAction, resolve_action,
+    Action, CiAction, ConformanceAction, DebugAction, FyreAction, ResolvedLoadArgs, StackAction,
+    resolve_action,
 };
 use cf_integration::cli::{Cli, LaneSelection, LiveGroup, ProtocolVersion, TokenKind};
 use cf_integration::conformance::results::{ConformanceServerEra, SemanticLane};
@@ -30,6 +31,32 @@ fn every_subcommand_has_a_stable_progress_description() {
         (&["cf-integration", "stack", "config"], "stack config"),
         (&["cf-integration", "probe"], "probe"),
         (&["cf-integration", "load", "run"], "load test"),
+        (
+            &["cf-integration", "load", "fyre", "run"],
+            "FYRE benchmark campaign",
+        ),
+        (
+            &[
+                "cf-integration",
+                "load",
+                "fyre",
+                "status",
+                "--run-id",
+                "scale-run",
+            ],
+            "FYRE benchmark status",
+        ),
+        (
+            &[
+                "cf-integration",
+                "load",
+                "fyre",
+                "destroy",
+                "--run-id",
+                "scale-run",
+            ],
+            "FYRE benchmark destroy",
+        ),
         (&["cf-integration", "live"], "live tests"),
         (
             &["cf-integration", "conformance", "run"],
@@ -201,9 +228,52 @@ fn conformance_startup_labels_both_legacy_era_selections() {
 fn multi_phase_commands_own_detailed_progress_while_simple_commands_use_global_progress() {
     assert!(!action(&["cf-integration", "stack", "up"], &[]).uses_global_activity());
     assert!(!action(&["cf-integration", "load", "run"], &[]).uses_global_activity());
+    assert!(!action(&["cf-integration", "load", "fyre", "run"], &[]).uses_global_activity());
     assert!(!action(&["cf-integration", "conformance", "run"], &[]).uses_global_activity());
     assert!(action(&["cf-integration", "stack", "down"], &[]).uses_global_activity());
     assert!(action(&["cf-integration", "probe"], &[]).uses_global_activity());
+}
+
+#[test]
+fn fyre_actions_are_isolated_runtime_operations() {
+    assert_eq!(
+        action(
+            &[
+                "cf-integration",
+                "load",
+                "fyre",
+                "run",
+                "--file",
+                "matrix.yaml",
+                "--run-id",
+                "scale-run",
+            ],
+            &[],
+        ),
+        Action::Fyre(FyreAction::Run {
+            file: Some(PathBuf::from("matrix.yaml")),
+            run_id: Some("scale-run".to_owned()),
+        })
+    );
+    let status = action(
+        &[
+            "cf-integration",
+            "load",
+            "fyre",
+            "status",
+            "--run-id",
+            "scale-run",
+        ],
+        &[],
+    );
+    assert_eq!(
+        status.config_requirements(),
+        ConfigRequirements::StandaloneRuntime
+    );
+    assert_eq!(
+        status.startup_summary(),
+        "Infrastructure: FYRE\nOperation: status\nRun ID: scale-run"
+    );
 }
 
 #[test]
@@ -350,6 +420,11 @@ fn load_preserves_explicit_locust_settings() {
                 "0.5",
                 "--run-time",
                 "10s",
+                "--workers",
+                "4",
+                "--builtin-memory-limit",
+                "16G",
+                "--isolate-cpus",
             ],
             &[],
         ),
@@ -358,11 +433,14 @@ fn load_preserves_explicit_locust_settings() {
             client_era: ProtocolVersion::Legacy,
             standalone: false,
             observability: false,
+            builtin_memory_limit: Some("16G".to_owned()),
+            isolate_cpus: true,
             request: LoadRequest {
                 smoke: true,
                 users: Some(2),
                 spawn_rate: Some(0.5),
                 run_time: Some("10s".to_owned()),
+                workers: Some(4),
             },
         })
     );
@@ -388,11 +466,14 @@ fn standalone_load_is_external_only() {
             client_era: ProtocolVersion::default(),
             standalone: true,
             observability: false,
+            builtin_memory_limit: None,
+            isolate_cpus: false,
             request: LoadRequest {
                 smoke: false,
                 users: None,
                 spawn_rate: None,
                 run_time: None,
+                workers: None,
             },
         })
     );
@@ -413,6 +494,23 @@ fn standalone_load_is_external_only() {
     let error = resolve_action(cli, &Environment::new())
         .expect_err("standalone mode must reject the built-in lane");
     assert_eq!(error.to_string(), "--standalone requires --lane external");
+
+    let cli = Cli::try_parse_from([
+        "cf-integration",
+        "load",
+        "run",
+        "--lane",
+        "external",
+        "--builtin-memory-limit",
+        "16G",
+    ])
+    .expect("CLI syntax should parse before lane validation");
+    let error = resolve_action(cli, &Environment::new())
+        .expect_err("the built-in memory limit must reject the external lane");
+    assert_eq!(
+        error.to_string(),
+        "--builtin-memory-limit requires --lane builtin"
+    );
 }
 
 #[test]

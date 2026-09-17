@@ -1,0 +1,72 @@
+services:
+  network:
+    image: ${HELPERS_IMAGE:?Set HELPERS_IMAGE to a pinned digest}
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["exec sleep infinity"]
+    ports: ["${TARGET_BIND_IP:?Set TARGET_BIND_IP to the target private IP}:4445:4445"]
+
+  redis:
+    image: ${REDIS_IMAGE:?Set REDIS_IMAGE to a pinned digest}
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+  dataplane:
+    image: ${DATAPLANE_IMAGE:?Set DATAPLANE_IMAGE to a pinned digest}
+    restart: unless-stopped
+    network_mode: service:network
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    environment:
+      CONTEXTFORGE_DATA_PLANE_ADDRESS: 0.0.0.0:4445
+      CONTEXTFORGE_DATA_PLANE_REDIS_HOSTNAME: redis
+      CONTEXTFORGE_DATA_PLANE_REDIS_PORT: "6379"
+      CONTEXTFORGE_DATA_PLANE_REDIS_CONNECTION_MODE: plain-text
+      CONTEXTFORGE_DATA_PLANE_JWKS_URL: http://127.0.0.1:4446/.well-known/jwks.json
+      CONTEXTFORGE_DATA_PLANE_UPSTREAM_CONNECTION_MODE: plain-text-or-tls
+      CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS: ${DATAPLANE_ALLOWED_HOSTS:?Set DATAPLANE_ALLOWED_HOSTS}
+      CONTEXTFORGE_DATA_PLANE_USER_CONFIG_CACHE_EXPIRY_SECONDS: ${CONFIG_CACHE_SECONDS:-60}
+      RUST_LOG: warn
+    depends_on:
+      network:
+        condition: service_started
+      redis:
+        condition: service_healthy
+
+  auth:
+    image: ${HELPERS_IMAGE:?Set HELPERS_IMAGE to a pinned digest}
+    restart: unless-stopped
+    network_mode: service:network
+    volumes: ["./state/keys:/keys"]
+    command: ["__helper", "auth"]
+    healthcheck:
+      test: ["CMD", "cf-integration", "__helper", "health"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    depends_on:
+      network:
+        condition: service_started
+      dataplane:
+        condition: service_started
+
+  config_writer:
+    profiles: ["helpers"]
+    image: ${HELPERS_IMAGE:?Set HELPERS_IMAGE to a pinned digest}
+    network_mode: service:network
+    volumes: ["./state/keys:/keys"]
+    environment:
+      CF_CONFIG_REDIS_URL: redis://redis:6379
+    entrypoint: ["cf-integration", "__helper"]
+    depends_on:
+      network:
+        condition: service_started
+      redis:
+        condition: service_healthy

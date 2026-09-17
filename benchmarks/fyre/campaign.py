@@ -1,0 +1,1300 @@
+"""Bootstrap FYRE hosts and run a fixed comparison or capacity search."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import secrets
+import shlex
+import statistics
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+
+HELPER_SATURATED = 42
+ANSIBLE_CORE_VERSION = "2.21.4"
+
+
+def run(
+    arguments: list[str],
+    *,
+    check: bool = True,
+    capture: bool = False,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        arguments,
+        check=check,
+        text=True,
+        timeout=timeout,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+    )
+
+
+class Remote:
+    def __init__(self, user: str, key: Path, known_hosts: Path):
+        self.user = user
+        self.options = [
+            "-i",
+            str(key),
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            f"UserKnownHostsFile={known_hosts}",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            "ConnectTimeout=10",
+        ]
+
+    def ssh(
+        self,
+        host: str,
+        command: str,
+        *,
+        check: bool = True,
+        capture: bool = False,
+        timeout: float | None = None,
+    ):
+        return run(
+            ["ssh", *self.options, f"{self.user}@{host}", command],
+            check=check,
+            capture=capture,
+            timeout=timeout,
+        )
+
+    def copy_to(self, host: str, source: Path, destination: str) -> None:
+        destination = destination.removeprefix("~/")
+        run(["scp", *self.options, str(source), f"{self.user}@{host}:{destination}"])
+
+    def copy_from(
+        self,
+        host: str,
+        source: str,
+        destination: Path,
+        *,
+        recursive: bool = False,
+        check: bool = True,
+    ) -> None:
+        if recursive:
+            destination.mkdir(parents=True, exist_ok=True)
+        else:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+        source = source.removeprefix("~/")
+        arguments = ["scp", *self.options]
+        if recursive:
+            arguments.append("-r")
+        run([*arguments, f"{self.user}@{host}:{source}", str(destination)], check=check)
+
+
+def bootstrap_hosts(
+    config: dict,
+    inventory: dict,
+    deploy: Path,
+    playbook: Path,
+    known_hosts: Path,
+    output: Path,
+) -> None:
+    hosts = [inventory["locust"], inventory["fast_time"], *inventory["dataplanes"]]
+    ansible_inventory = {
+        "all": {
+            "hosts": {
+                host["name"]: {
+                    "ansible_host": host["public_ip"],
+                    "ansible_user": config["infrastructure"]["ssh_user"],
+                    "ansible_python_interpreter": "/usr/bin/python3",
+                }
+                for host in hosts
+            },
+            "vars": {
+                "ansible_ssh_private_key_file": config["resolved_ssh_private_key"],
+                "ansible_ssh_common_args": " ".join(
+                    [
+                        "-o BatchMode=yes",
+                        "-o IdentitiesOnly=yes",
+                        f"-o UserKnownHostsFile={known_hosts}",
+                        "-o StrictHostKeyChecking=accept-new",
+                        "-o ConnectTimeout=10",
+                    ]
+                ),
+            },
+        }
+    }
+    inventory_path = output / "ansible-inventory.json"
+    inventory_path.write_text(
+        json.dumps(ansible_inventory, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    run(
+        [
+            "uv",
+            "tool",
+            "run",
+            "--from",
+            f"ansible-core=={ANSIBLE_CORE_VERSION}",
+            "ansible-playbook",
+            "--inventory",
+            str(inventory_path),
+            str(playbook),
+            "--extra-vars",
+            json.dumps(
+                {
+                    "fyre_deploy_dir": str(deploy.resolve()),
+                    "fyre_locustfile": str(
+                        (deploy.parents[2] / "scripts/locustfile_mcp.py").resolve()
+                    ),
+                    "fyre_locust_hostname": inventory["locust"]["name"],
+                }
+            ),
+        ],
+        timeout=1_200,
+    )
+
+
+def write_remote_file(
+    remote: Remote, host: str, contents: str, destination: str, mode: int = 0o600
+) -> None:
+    destination = destination.removeprefix("~/")
+    with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as stream:
+        stream.write(contents)
+        temporary = Path(stream.name)
+    try:
+        temporary.chmod(mode)
+        remote.copy_to(host, temporary, destination)
+        remote.ssh(host, f"chmod {mode:o} {shlex.quote(destination)}")
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def compose_up(
+    remote: Remote, host: str, compose: str, project: str | None = None
+) -> None:
+    prefix = (
+        "cd ~/cf-fyre && docker compose "
+        + (f"-p {shlex.quote(project)} " if project else "")
+        + "--env-file benchmark.env "
+        f"-f {shlex.quote(compose)}"
+    )
+    pull = f"{prefix} pull"
+    retry_delays = (5, 15, 30)
+    for attempt in range(len(retry_delays) + 1):
+        result = remote.ssh(host, pull, check=False, timeout=900)
+        if result.returncode == 0:
+            break
+        if attempt == len(retry_delays):
+            result.check_returncode()
+        delay = retry_delays[attempt]
+        print(
+            f"container pull failed on {host}; retrying in {delay} seconds",
+            flush=True,
+        )
+        time.sleep(delay)
+    remote.ssh(
+        host,
+        f"{prefix} up -d --wait",
+        timeout=900,
+    )
+
+
+def compose_down(remote: Remote, host: str, compose: str, project: str) -> None:
+    remote.ssh(
+        host,
+        "cd ~/cf-fyre && docker compose "
+        f"-p {shlex.quote(project)} --env-file benchmark.env "
+        f"-f {shlex.quote(compose)} down --volumes --remove-orphans",
+        check=False,
+        timeout=300,
+    )
+
+
+def prepare_hosts(
+    config: dict,
+    inventory: dict,
+    remote: Remote,
+    deploy: Path,
+    playbook: Path,
+    known_hosts: Path,
+    output: Path,
+) -> tuple[str, list[str]]:
+    bootstrap_hosts(config, inventory, deploy, playbook, known_hosts, output)
+
+    images = config["images"]
+    fast_env = "\n".join(
+        [
+            f"FAST_TIME_IMAGE={images['fast_time']}",
+            f"FAST_TIME_BIND_IP={inventory['fast_time']['private_ip']}",
+            "",
+        ]
+    )
+    write_remote_file(
+        remote, inventory["fast_time"]["public_ip"], fast_env, "~/cf-fyre/benchmark.env"
+    )
+    compose_up(remote, inventory["fast_time"]["public_ip"], "fast-time.compose.yaml")
+
+    first = inventory["dataplanes"][0]
+    for index, target in enumerate(inventory["dataplanes"]):
+        allowed = ",".join(
+            [
+                f"{target['private_ip']}:4445",
+                f"{target['public_ip']}:4445",
+                "127.0.0.1:4445",
+                "localhost:4445",
+            ]
+        )
+        target_env = "\n".join(
+            [
+                f"DATAPLANE_IMAGE={images['dataplane']}",
+                f"HELPERS_IMAGE={images['helpers']}",
+                f"REDIS_IMAGE={images['redis']}",
+                f"TARGET_BIND_IP={target['private_ip']}",
+                f"DATAPLANE_ALLOWED_HOSTS={allowed}",
+                f"CONFIG_CACHE_SECONDS={config['workload']['config_cache_seconds']}",
+                "",
+            ]
+        )
+        write_remote_file(
+            remote, target["public_ip"], target_env, "~/cf-fyre/benchmark.env"
+        )
+        if index > 0:
+            with tempfile.TemporaryDirectory() as temporary:
+                key = Path(temporary) / "jwt.key"
+                remote.copy_from(
+                    first["public_ip"], "~/cf-fyre/state/keys/jwt.key", key
+                )
+                remote.copy_to(target["public_ip"], key, "~/cf-fyre/state/keys/jwt.key")
+                remote.ssh(
+                    target["public_ip"], "chmod 600 ~/cf-fyre/state/keys/jwt.key"
+                )
+        compose_up(remote, target["public_ip"], "dataplane.compose.yaml")
+        if index == 0:
+            # The first auth container creates the campaign key; subsequent replicas receive it.
+            remote.ssh(
+                first["public_ip"],
+                "test -s ~/cf-fyre/state/keys/jwt.key && chown root:root ~/cf-fyre/state/keys/jwt.key && chmod 600 ~/cf-fyre/state/keys/jwt.key",
+            )
+
+    token = remote.ssh(
+        first["public_ip"],
+        "cd ~/cf-fyre && docker compose --env-file benchmark.env -f dataplane.compose.yaml run --rm --no-deps config_writer token fyre-benchmark fyre-user",
+        capture=True,
+    ).stdout.strip()
+    if not token or "\n" in token:
+        raise RuntimeError("config helper did not return one bearer token")
+    token_file = output / ".token"
+    token_file.write_text(token, encoding="utf-8")
+    token_file.chmod(0o600)
+    try:
+        backend_url = f"http://{inventory['fast_time']['private_ip']}:9080/mcp"
+        for target in inventory["dataplanes"]:
+            remote.copy_to(target["public_ip"], token_file, "~/cf-fyre/state/token")
+            remote.ssh(target["public_ip"], "chmod 600 ~/cf-fyre/state/token")
+            remote.ssh(
+                target["public_ip"],
+                'cd ~/cf-fyre && export MCP_CONFORMANCE_TOKEN="$(cat state/token)" && '
+                "docker compose --env-file benchmark.env -f dataplane.compose.yaml "
+                "run --rm --no-deps -e MCP_CONFORMANCE_TOKEN config_writer "
+                f"fixture fyre-fast-time {shlex.quote(backend_url)} "
+                f"{shlex.quote(config['workload']['protocol_version'])}",
+                timeout=120,
+            )
+        locust_env = "\n".join(
+            [
+                f"MCPGATEWAY_BEARER_TOKEN={token}",
+                "MCP_PROTOCOL_VERSION=2026-07-28",
+                "MCP_STACK_MODE=dataplane",
+                "MCP_SERVER_ID=fyre-fast-time",
+                "MCP_DIRECT_DATAPLANE=true",
+                "MCP_SKIP_TOOL_LIST=true",
+                "MCP_EXPLICIT_ZERO_DELAY=true",
+                "MCP_FYRE_WORKLOAD=true",
+                "MCP_TOOL_NAMES=convert_time,echo,get_stats,get_system_time,schema_success,verify-protocol",
+                "LOCUST_REQUEST_TIMEOUT_SECONDS=30",
+                "MCP_BASE_URLS="
+                + ",".join(
+                    f"http://{target['private_ip']}:4445"
+                    for target in inventory["dataplanes"]
+                ),
+                "",
+            ]
+        )
+        write_remote_file(
+            remote,
+            inventory["locust"]["public_ip"],
+            locust_env,
+            "~/cf-fyre/benchmark.secret.env",
+        )
+        direct_env = "\n".join(
+            [
+                f"MCPGATEWAY_BEARER_TOKEN={token}",
+                "MCP_PROTOCOL_VERSION=2026-07-28",
+                "MCP_STACK_MODE=controlplane",
+                "MCP_FYRE_WORKLOAD=true",
+                "MCP_SKIP_TOOL_LIST=true",
+                "MCP_EXPLICIT_ZERO_DELAY=true",
+                "MCP_TOOL_NAMES=convert_time,echo,get_stats,get_system_time,schema_success,verify-protocol",
+                "LOCUST_REQUEST_TIMEOUT_SECONDS=30",
+                f"MCP_BASE_URLS=http://{inventory['fast_time']['private_ip']}:9080",
+                "",
+            ]
+        )
+        write_remote_file(
+            remote,
+            inventory["locust"]["public_ip"],
+            direct_env,
+            "~/cf-fyre/direct.secret.env",
+        )
+        remote.copy_to(
+            inventory["locust"]["public_ip"], token_file, "~/cf-fyre/state/token"
+        )
+        remote.ssh(inventory["locust"]["public_ip"], "chmod 600 ~/cf-fyre/state/token")
+    finally:
+        token_file.unlink(missing_ok=True)
+    urls = [
+        f"http://{target['private_ip']}:4445/contextforge-rs/servers/fyre-fast-time/mcp"
+        for target in inventory["dataplanes"]
+    ]
+    return token, urls
+
+
+def start_monitor(remote: Remote, host: str, role: str, name: str) -> int:
+    command = (
+        "nohup python3 cf-fyre/monitor.py"
+        f" --role {shlex.quote(role)}"
+        f" --output cf-fyre/telemetry/{shlex.quote(name)}.jsonl"
+        " </dev/null"
+        f" >cf-fyre/telemetry/{shlex.quote(name)}.log 2>&1 & echo $!"
+    )
+    return int(remote.ssh(host, command, capture=True).stdout.strip())
+
+
+def stop_monitor(remote: Remote, host: str, pid: int) -> None:
+    remote.ssh(
+        host,
+        f"kill -TERM {pid} 2>/dev/null || true; wait {pid} 2>/dev/null || true",
+        check=False,
+    )
+
+
+def smoke(
+    remote: Remote,
+    locust: dict,
+    urls: list[str],
+    locust_image: str,
+    tool_names: list[str] | None = None,
+) -> None:
+    command = " ".join(
+        [
+            "cd ~/cf-fyre && docker run --rm --user 0:0 --network host --entrypoint python",
+            "-v $HOME/cf-fyre:/work -w /work",
+            shlex.quote(locust_image),
+            "smoke.py --urls",
+            shlex.quote(",".join(urls)),
+            "--token-file state/token",
+            "--tool-names",
+            shlex.quote(",".join(tool_names) if tool_names else ",".join(configured_tools())),
+        ]
+    )
+    remote.ssh(locust["public_ip"], command, timeout=120)
+
+
+def configured_tools() -> list[str]:
+    return [
+        "convert_time",
+        "echo",
+        "get_stats",
+        "get_system_time",
+        "schema_success",
+        "verify-protocol",
+    ]
+
+
+def read_stats(path: Path, use_aggregate: bool = False) -> dict:
+    with path.open(newline="", encoding="utf-8") as stream:
+        rows = list(csv.DictReader(stream))
+    tool_rows = [
+        row for row in rows if row.get("Name", "").startswith("MCP tools/call")
+    ]
+    if not tool_rows:
+        raise RuntimeError(f"Locust report {path} contains no measured tool traffic")
+    aggregate = next((row for row in rows if row.get("Name") == "Aggregated"), None)
+    selected = [aggregate] if use_aggregate and aggregate is not None else tool_rows
+    failures = sum(int(float(row.get("Failure Count") or 0)) for row in selected)
+    requests = sum(int(float(row.get("Request Count") or 0)) for row in selected)
+    rps = sum(float(row.get("Requests/s") or 0) for row in selected)
+    per_replica = {row["Name"]: float(row.get("Requests/s") or 0) for row in tool_rows}
+
+    def weighted(column: str) -> float:
+        return (
+            sum(
+                float(row.get(column) or 0) * int(float(row.get("Request Count") or 0))
+                for row in selected
+            )
+            / requests
+            if requests
+            else 0.0
+        )
+
+    return {
+        "requests": requests,
+        "failures": failures,
+        "rps": rps,
+        "p50_ms": weighted("50%"),
+        "p95_ms": weighted("95%"),
+        "p99_ms": weighted("99%"),
+        "per_replica_rps": per_replica,
+    }
+
+
+def kernel_counter(text: str, name: str) -> int:
+    lines = text.splitlines()
+    for header, values in zip(lines[0::2], lines[1::2]):
+        header_fields = header.split()
+        value_fields = values.split()
+        if not header_fields or not value_fields or header_fields[0] != value_fields[0]:
+            continue
+        try:
+            return int(value_fields[header_fields.index(name)])
+        except (ValueError, IndexError):
+            continue
+    return 0
+
+
+def docker_pressure(text: str) -> bool:
+    for line in text.splitlines():
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            continue
+        states = parsed if isinstance(parsed, list) else [parsed]
+        for state in states:
+            if not isinstance(state, dict):
+                continue
+            health = state.get("Health") or {}
+            if (
+                state.get("OOMKilled") is True
+                or state.get("Status") == "dead"
+                or (state.get("Status") == "exited" and state.get("ExitCode") != 0)
+                or health.get("Status") == "unhealthy"
+            ):
+                return True
+    return False
+
+
+def pressure(path: Path, after: float | None = None) -> dict[str, float | bool]:
+    samples = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        item = json.loads(line)
+        if item.get("kind") == "sample" and (
+            after is None or item.get("time", 0) >= after
+        ):
+            samples.append(item)
+    busy = [
+        item["cpu"]["cpu"]["busy_percent"]
+        for item in samples
+        if "cpu" in item.get("cpu", {})
+    ]
+    memory = [item["memory"]["used_percent"] for item in samples]
+    core_names = {
+        key for item in samples for key in item.get("cpu", {}) if key != "cpu"
+    }
+    core_means = [
+        statistics.fmean(
+            item["cpu"][key]["busy_percent"]
+            for item in samples
+            if key in item.get("cpu", {})
+        )
+        for key in core_names
+    ]
+    steal = [
+        item["cpu"]["cpu"]["steal_percent"]
+        for item in samples
+        if "cpu" in item.get("cpu", {})
+    ]
+    network_counters = [
+        sum(
+            kernel_counter(item.get("netstat", ""), counter)
+            for counter in ("ListenOverflows", "ListenDrops", "TCPBacklogDrop")
+        )
+        for item in samples
+    ]
+    docker_unhealthy = any(
+        docker_pressure(item.get("docker_state", "")) for item in samples
+    )
+    return {
+        "mean_cpu_percent": statistics.fmean(busy) if busy else 0.0,
+        "max_memory_percent": max(memory, default=0.0),
+        "max_mean_core_percent": max(core_means, default=0.0),
+        "mean_steal_percent": statistics.fmean(steal) if steal else 0.0,
+        "worker_or_network_pressure": docker_unhealthy
+        or (len(network_counters) > 1 and network_counters[-1] > network_counters[0]),
+    }
+
+
+def one_phase(
+    remote: Remote,
+    config: dict,
+    inventory: dict,
+    urls: list[str],
+    output: Path,
+    users: int,
+    seconds: int,
+    label: str,
+    env_file: str = "benchmark.secret.env",
+    target_role_prefix: str = "dataplane",
+) -> dict:
+    locust = inventory["locust"]
+    workers = max(2, int(config["active_helper"]["locust_cpu"]) - 1)
+    spawn_rate = max(1.0, users / config["workload"]["ramp_seconds"])
+    total_seconds = (
+        seconds
+        + config["workload"]["ramp_seconds"]
+        + config["workload"]["warmup_seconds"]
+    )
+    remote_output = f"reports/{label}"
+    monitors: list[tuple[str, int]] = []
+    monitor_hosts = [
+        (locust, "locust"),
+        (inventory["fast_time"], "fast-time"),
+        *[
+            (target, f"{target_role_prefix}-{index + 1}")
+            for index, target in enumerate(inventory["dataplanes"])
+        ],
+    ]
+    for host, role in monitor_hosts:
+        monitors.append(
+            (host["public_ip"], start_monitor(remote, host["public_ip"], role, label))
+        )
+    try:
+        command = " ".join(
+            [
+                "cd ~/cf-fyre && python3 run_locust.py",
+                "--image",
+                shlex.quote(config["images"]["locust"]),
+                "--users",
+                str(users),
+                "--spawn-rate",
+                str(spawn_rate),
+                "--seconds",
+                str(total_seconds),
+                "--workers",
+                str(workers),
+                "--output",
+                shlex.quote(remote_output),
+                "--env-file",
+                shlex.quote(env_file),
+                "--reset-stats",
+                "--measurement-seconds",
+                str(seconds),
+                "--warmup-seconds",
+                str(config["workload"]["warmup_seconds"]),
+            ]
+        )
+        result = remote.ssh(
+            locust["public_ip"], command, check=False, timeout=total_seconds + 180
+        )
+    finally:
+        for host, pid in monitors:
+            stop_monitor(remote, host, pid)
+    local = output / label
+    local.mkdir(parents=True, exist_ok=True)
+    remote.copy_from(
+        locust["public_ip"],
+        f"~/cf-fyre/{remote_output}/.",
+        local,
+        recursive=True,
+        check=False,
+    )
+    pressures = {}
+    marker = local / "measurement-start.txt"
+    measurement_start = (
+        float(marker.read_text(encoding="utf-8").strip())
+        if marker.is_file()
+        else None
+    )
+    for host, role in monitor_hosts:
+        path = local / f"{role}.jsonl"
+        remote.copy_from(
+            host["public_ip"], f"~/cf-fyre/telemetry/{label}.jsonl", path, check=False
+        )
+        if path.exists():
+            pressures[role] = pressure(path, after=measurement_start)
+    if measurement_start is None:
+        return {
+            "passed": False,
+            "reason": "Locust did not record the measurement-window start",
+            "pressure": pressures,
+        }
+    if result.returncode != 0:
+        return {
+            "passed": False,
+            "reason": f"Locust exited {result.returncode}",
+            "pressure": pressures,
+        }
+    stats = read_stats(local / "locust_stats.csv", use_aggregate=True)
+    stats.update(
+        {"passed": stats["failures"] == 0, "pressure": pressures, "users": users}
+    )
+    return stats
+
+
+def helper_saturation(config: dict, result: dict) -> str | None:
+    workload = config["workload"]
+    for role in ("locust", "fast-time"):
+        values = result.get("pressure", {}).get(role, {})
+        if values.get("mean_cpu_percent", 0) > workload["helper_cpu_percent"]:
+            return role
+        if values.get("max_memory_percent", 0) > workload["helper_memory_percent"]:
+            return role
+        if values.get("max_mean_core_percent", 0) > workload["worker_core_percent"]:
+            return role
+        if values.get("worker_or_network_pressure", False):
+            return role
+    return None
+
+
+def measured_step(
+    remote: Remote,
+    config: dict,
+    inventory: dict,
+    urls: list[str],
+    output: Path,
+    users: int,
+    name: str,
+) -> dict:
+    smoke(remote, inventory["locust"], urls, config["images"]["locust"])
+    result = one_phase(
+        remote,
+        config,
+        inventory,
+        urls,
+        output,
+        users,
+        config["workload"]["measure_seconds"],
+        name,
+    )
+    saturated = helper_saturation(config, result)
+    if saturated:
+        (output / "helper-request.json").write_text(
+            json.dumps({"role": saturated}, indent=2) + "\n", encoding="utf-8"
+        )
+        raise SystemExit(HELPER_SATURATED)
+    return result
+
+
+def capacity_search(
+    remote: Remote, config: dict, inventory: dict, urls: list[str], output: Path
+) -> dict:
+    workload = config["workload"]
+    started = time.monotonic()
+    passing: list[dict] = []
+    failing: dict | None = None
+    plateau: tuple[dict, dict] | None = None
+    improvements: list[float] = []
+    users = workload["first_users"]
+    step = 0
+    while (
+        users <= workload["maximum_users"]
+        and time.monotonic() - started < workload["maximum_campaign_seconds"]
+    ):
+        step += 1
+        result = measured_step(
+            remote, config, inventory, urls, output, users, f"search-{step}-{users}"
+        )
+        if not result.get("passed"):
+            failing = {"users": users, **result}
+            break
+        if passing:
+            improvements.append(100.0 * (result["rps"] / passing[-1]["rps"] - 1.0))
+        passing.append(result)
+        if len(improvements) >= 2 and all(
+            value < workload["plateau_improvement_percent"]
+            for value in improvements[-2:]
+        ):
+            plateau = (passing[-3], passing[-2])
+            break
+        if users == workload["maximum_users"]:
+            break
+        users = min(workload["maximum_users"], users * 2)
+
+    if not passing:
+        return {
+            "status": "failed",
+            "reason": "no zero-error concurrency passed",
+            "failing": failing,
+        }
+
+    def refine_below(high: int, label: str) -> dict | None:
+        nonlocal failing
+        eligible = [item for item in passing if item["users"] < high]
+        if not eligible:
+            return None
+        low_result = max(eligible, key=lambda item: item["users"])
+        low = low_result["users"]
+        while (high - low) / high > workload["boundary_percent"] / 100.0:
+            users = (low + high) // 2
+            result = measured_step(
+                remote, config, inventory, urls, output, users, f"{label}-{users}"
+            )
+            if result.get("passed"):
+                passing.append(result)
+                low = users
+                low_result = result
+            else:
+                failing = {"users": users, **result}
+                high = users
+        return low_result
+
+    def refine_plateau(low_result: dict, high_result: dict) -> tuple[dict, dict]:
+        nonlocal failing
+        low = low_result["users"]
+        high = high_result["users"]
+        while (high - low) / high > workload["boundary_percent"] / 100.0:
+            refined_users = (low + high) // 2
+            result = measured_step(
+                remote,
+                config,
+                inventory,
+                urls,
+                output,
+                refined_users,
+                f"plateau-refine-{refined_users}",
+            )
+            if not result.get("passed"):
+                failing = {"users": refined_users, **result}
+                refined = refine_below(refined_users, "plateau-failure-refine")
+                if refined is None:
+                    return low_result, {
+                        "below": low_result,
+                        "at_or_above": failing,
+                    }
+                return refined, {
+                    "below": refined,
+                    "at_or_above": failing,
+                }
+            passing.append(result)
+            improvement = 100.0 * (result["rps"] / low_result["rps"] - 1.0)
+            if improvement >= workload["plateau_improvement_percent"]:
+                low = refined_users
+                low_result = result
+            else:
+                high = refined_users
+                high_result = result
+        return high_result, {
+            "below": low_result,
+            "at_or_above": high_result,
+            "width_percent": 100.0 * (high - low) / high,
+        }
+
+    plateau_boundary = None
+    if failing:
+        candidate = refine_below(failing["users"], "refine")
+        if candidate is None:
+            return {
+                "status": "failed",
+                "reason": "no zero-error concurrency passed below the failing bound",
+                "failing": failing,
+            }
+    elif plateau:
+        candidate, plateau_boundary = refine_plateau(*plateau)
+    else:
+        candidate = max(passing, key=lambda item: item["users"])
+
+    confirmation_failures = []
+    while True:
+        confirmations = []
+        failure = None
+        for repetition in range(workload["repetitions"]):
+            result = measured_step(
+                remote,
+                config,
+                inventory,
+                urls,
+                output,
+                candidate["users"],
+                f"confirm-{repetition + 1}-{candidate['users']}",
+            )
+            if not result.get("passed"):
+                failure = result
+                break
+            confirmations.append(result)
+        if failure is None:
+            break
+        failing = {"users": candidate["users"], **failure}
+        confirmation_failures.append(
+            {"candidate": candidate, "confirmations": confirmations, "failure": failure}
+        )
+        refined = refine_below(
+            candidate["users"], f"confirm-refine-{len(confirmation_failures)}"
+        )
+        if refined is None:
+            return {
+                "status": "failed-confirmation",
+                "candidate": candidate,
+                "confirmations": confirmations,
+                "confirmation_failures": confirmation_failures,
+                "failure": failure,
+            }
+        candidate = refined
+    direct_url = f"http://{inventory['fast_time']['private_ip']}:9080/mcp"
+    smoke(remote, inventory["locust"], [direct_url], config["images"]["locust"])
+    calibration = one_phase(
+        remote,
+        config,
+        inventory,
+        [direct_url],
+        output,
+        candidate["users"],
+        workload["measure_seconds"],
+        "calibration",
+        "direct.secret.env",
+    )
+    saturated = helper_saturation(config, calibration)
+    if saturated:
+        (output / "helper-request.json").write_text(
+            json.dumps({"role": saturated}, indent=2) + "\n", encoding="utf-8"
+        )
+        raise SystemExit(HELPER_SATURATED)
+    if (
+        not calibration.get("passed")
+        or calibration.get("rps", 0) < min(item["rps"] for item in confirmations) * 1.05
+    ):
+        return {
+            "status": "inconclusive",
+            "reason": "direct Fast Time calibration did not demonstrate five percent upstream headroom",
+            "calibration": calibration,
+        }
+    rps_values = [result["rps"] for result in confirmations]
+    imbalances = []
+    for result in confirmations:
+        replicas = list(result["per_replica_rps"].values())
+        mean = statistics.fmean(replicas) if replicas else 0.0
+        imbalances.append(
+            100.0 * (max(replicas) - min(replicas)) / mean
+            if mean and len(replicas) > 1
+            else 0.0
+        )
+    best = min(confirmations, key=lambda item: item["rps"])
+    return {
+        "status": "confirmed",
+        "users": candidate["users"],
+        "search": passing,
+        "failing": failing,
+        "confirmations": confirmations,
+        "confirmation_failures": confirmation_failures,
+        "plateau_boundary": plateau_boundary,
+        "rps": statistics.fmean(rps_values),
+        "rps_min": min(rps_values),
+        "rps_max": max(rps_values),
+        "rps_cv_percent": 100.0
+        * statistics.pstdev(rps_values)
+        / statistics.fmean(rps_values)
+        if len(rps_values) > 1
+        else 0.0,
+        "replica_imbalance_percent": statistics.fmean(imbalances),
+        "p50_ms": statistics.fmean(item["p50_ms"] for item in confirmations),
+        "p95_ms": statistics.fmean(item["p95_ms"] for item in confirmations),
+        "p99_ms": statistics.fmean(item["p99_ms"] for item in confirmations),
+        "lower_bound": candidate["users"] == workload["maximum_users"]
+        and failing is None,
+        "conservative_confirmation": best,
+        "direct_backend_calibration": calibration,
+    }
+
+
+def write_lane_environment(
+    remote: Remote,
+    locust: dict,
+    token: str,
+    protocol_version: str,
+    stack_mode: str,
+    base_url: str,
+    tool_names: list[str],
+    destination: str,
+) -> None:
+    values = [
+        f"MCPGATEWAY_BEARER_TOKEN={token}",
+        f"MCP_PROTOCOL_VERSION={protocol_version}",
+        f"MCP_STACK_MODE={stack_mode}",
+        "MCP_SERVER_ID=fyre-fast-time",
+        "MCP_DIRECT_DATAPLANE=true" if stack_mode == "dataplane" else "MCP_DIRECT_DATAPLANE=false",
+        "MCP_SKIP_TOOL_LIST=true",
+        "MCP_EXPLICIT_ZERO_DELAY=true",
+        "MCP_FYRE_WORKLOAD=true",
+        f"MCP_TOOL_NAMES={','.join(tool_names)}",
+        "LOCUST_REQUEST_TIMEOUT_SECONDS=30",
+        f"MCP_BASE_URLS={base_url}",
+        "",
+    ]
+    write_remote_file(
+        remote,
+        locust["public_ip"],
+        "\n".join(values),
+        f"~/cf-fyre/{destination}",
+    )
+    write_remote_file(
+        remote,
+        locust["public_ip"],
+        token,
+        "~/cf-fyre/state/token",
+    )
+
+
+def prepare_comparison_shared(
+    config: dict,
+    inventory: dict,
+    remote: Remote,
+    deploy: Path,
+    playbook: Path,
+    known_hosts: Path,
+    output: Path,
+) -> None:
+    bootstrap_hosts(config, inventory, deploy, playbook, known_hosts, output)
+    write_remote_file(
+        remote,
+        inventory["fast_time"]["public_ip"],
+        "\n".join(
+            [
+                f"FAST_TIME_IMAGE={config['images']['fast_time']}",
+                f"FAST_TIME_BIND_IP={inventory['fast_time']['private_ip']}",
+                "",
+            ]
+        ),
+        "~/cf-fyre/benchmark.env",
+    )
+    compose_up(remote, inventory["fast_time"]["public_ip"], "fast-time.compose.yaml")
+
+
+def reset_comparison_target(remote: Remote, target: dict) -> None:
+    for compose, project in (
+        ("dataplane.compose.yaml", "cf-fyre-rust"),
+        ("builtin.compose.yaml", "cf-fyre-builtin"),
+    ):
+        compose_down(remote, target["public_ip"], compose, project)
+    remote.ssh(
+        target["public_ip"],
+        "rm -rf ~/cf-fyre/state/keys ~/cf-fyre/state/token && mkdir -p ~/cf-fyre/state/keys",
+    )
+
+
+def prepare_rust_comparison(
+    config: dict, inventory: dict, remote: Remote
+) -> tuple[list[str], list[str], str]:
+    target = inventory["dataplanes"][0]
+    reset_comparison_target(remote, target)
+    allowed = ",".join(
+        [
+            f"{target['private_ip']}:4445",
+            f"{target['public_ip']}:4445",
+            "127.0.0.1:4445",
+            "localhost:4445",
+        ]
+    )
+    images = config["images"]
+    write_remote_file(
+        remote,
+        target["public_ip"],
+        "\n".join(
+            [
+                f"DATAPLANE_IMAGE={images['dataplane']}",
+                f"HELPERS_IMAGE={images['helpers']}",
+                f"REDIS_IMAGE={images['redis']}",
+                f"TARGET_BIND_IP={target['private_ip']}",
+                f"DATAPLANE_ALLOWED_HOSTS={allowed}",
+                f"CONFIG_CACHE_SECONDS={config['workload']['config_cache_seconds']}",
+                "",
+            ]
+        ),
+        "~/cf-fyre/benchmark.env",
+    )
+    compose_up(
+        remote,
+        target["public_ip"],
+        "dataplane.compose.yaml",
+        "cf-fyre-rust",
+    )
+    prefix = (
+        "cd ~/cf-fyre && docker compose -p cf-fyre-rust "
+        "--env-file benchmark.env -f dataplane.compose.yaml run --rm --no-deps config_writer"
+    )
+    token = remote.ssh(
+        target["public_ip"],
+        f"{prefix} token fyre-benchmark fyre-user",
+        capture=True,
+        timeout=120,
+    ).stdout.strip()
+    if not token or "\n" in token:
+        raise RuntimeError("config helper did not return one bearer token")
+    write_remote_file(
+        remote,
+        target["public_ip"],
+        token,
+        "~/cf-fyre/state/token",
+    )
+    backend_url = f"http://{inventory['fast_time']['private_ip']}:9080/mcp"
+    remote.ssh(
+        target["public_ip"],
+        'cd ~/cf-fyre && export MCP_CONFORMANCE_TOKEN="$(cat state/token)" && '
+        f"docker compose -p cf-fyre-rust --env-file benchmark.env "
+        f"-f dataplane.compose.yaml run --rm --no-deps -e MCP_CONFORMANCE_TOKEN "
+        f"config_writer fixture fyre-fast-time "
+        f"{shlex.quote(backend_url)} "
+        f"{config['workload']['protocol_version']}",
+        timeout=120,
+    )
+    tools = list(config["workload"]["tools"])
+    write_lane_environment(
+        remote,
+        inventory["locust"],
+        token,
+        config["workload"]["protocol_version"],
+        "dataplane",
+        f"http://{target['private_ip']}:4445",
+        tools,
+        "rust.secret.env",
+    )
+    return (
+        [f"http://{target['private_ip']}:4445/contextforge-rs/servers/fyre-fast-time/mcp"],
+        tools,
+        "rust.secret.env",
+    )
+
+
+def prepare_builtin_comparison(
+    config: dict, inventory: dict, remote: Remote
+) -> tuple[list[str], list[str], str]:
+    target = inventory["dataplanes"][0]
+    reset_comparison_target(remote, target)
+    images = config["images"]
+    password = secrets.token_hex(24)
+    target_env = "\n".join(
+        [
+            f"CONTROLPLANE_IMAGE={images['controlplane']}",
+            f"HELPERS_IMAGE={images['helpers']}",
+            f"POSTGRES_IMAGE={images['postgres']}",
+            f"REDIS_IMAGE={images['redis']}",
+            f"TARGET_BIND_IP={target['private_ip']}",
+            f"POSTGRES_PASSWORD={secrets.token_hex(24)}",
+            f"JWT_SECRET_KEY={secrets.token_hex(32)}",
+            f"AUTH_ENCRYPTION_SECRET={secrets.token_hex(32)}",
+            f"DEFAULT_USER_PASSWORD={password}",
+            f"PLATFORM_ADMIN_PASSWORD={password}",
+            "",
+        ]
+    )
+    write_remote_file(
+        remote, target["public_ip"], target_env, "~/cf-fyre/benchmark.env"
+    )
+    compose_up(
+        remote,
+        target["public_ip"],
+        "builtin.compose.yaml",
+        "cf-fyre-builtin",
+    )
+    backend_url = f"http://{inventory['fast_time']['private_ip']}:9080/mcp"
+    command = (
+        "cd ~/cf-fyre && docker compose -p cf-fyre-builtin "
+        "--env-file benchmark.env -f builtin.compose.yaml run --rm --no-deps admin "
+        f"--backend {shlex.quote(backend_url)}"
+    )
+    output = remote.ssh(
+        target["public_ip"], command, capture=True, timeout=300
+    ).stdout.splitlines()
+    if not output:
+        raise RuntimeError("built-in registration returned no result")
+    registration = json.loads(output[-1])
+    tools = registration["tool_names"]
+    if len(tools) != 6:
+        raise RuntimeError("built-in registration did not select six benchmark tools")
+    write_lane_environment(
+        remote,
+        inventory["locust"],
+        registration["token"],
+        config["workload"]["protocol_version"],
+        "controlplane",
+        f"http://{target['private_ip']}:4444",
+        tools,
+        "builtin.secret.env",
+    )
+    return (
+        [f"http://{target['private_ip']}:4444/mcp"],
+        tools,
+        "builtin.secret.env",
+    )
+
+
+def fixed_comparison(
+    remote: Remote, config: dict, inventory: dict, output: Path
+) -> dict:
+    result = {
+        "status": "running",
+        "scenario": config["scenarios"][0],
+        "inventory": inventory,
+        "protocol_version": config["workload"]["protocol_version"],
+        "user_levels": config["workload"]["user_levels"],
+        "runs": {"rust": [], "builtin": []},
+    }
+    result_path = output / "result.json"
+
+    def save() -> None:
+        result_path.write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+    save()
+    target = inventory["dataplanes"][0]
+    try:
+        for lane, prepare in (
+            ("rust", prepare_rust_comparison),
+            ("builtin", prepare_builtin_comparison),
+        ):
+            urls, tools, env_file = prepare(config, inventory, remote)
+            for users in config["workload"]["user_levels"]:
+                smoke(
+                    remote,
+                    inventory["locust"],
+                    urls,
+                    config["images"]["locust"],
+                    tools,
+                )
+                phase = one_phase(
+                    remote,
+                    config,
+                    inventory,
+                    urls,
+                    output,
+                    users,
+                    config["workload"]["measure_seconds"],
+                    f"{lane}-{users}",
+                    env_file,
+                    "target",
+                )
+                phase["lane"] = lane
+                result["runs"][lane].append(phase)
+                save()
+                saturated = helper_saturation(config, phase)
+                if saturated:
+                    result.update(
+                        {
+                            "status": "inconclusive",
+                            "reason": f"{saturated} helper saturated at {users} users",
+                        }
+                    )
+                    save()
+                    (output / "helper-request.json").write_text(
+                        json.dumps({"role": saturated}, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                    raise SystemExit(HELPER_SATURATED)
+                if not phase.get("passed"):
+                    result.update(
+                        {
+                            "status": "failed",
+                            "reason": phase.get("reason", f"{lane} failed at {users} users"),
+                        }
+                    )
+                    save()
+                    return result
+            reset_comparison_target(remote, target)
+        result["status"] = "confirmed"
+        save()
+        return result
+    except BaseException as error:
+        if isinstance(error, SystemExit) and error.code == HELPER_SATURATED:
+            raise
+        result.update({"status": "failed", "reason": str(error)})
+        save()
+        raise
+    finally:
+        reset_comparison_target(remote, target)
+
+
+def collect_recovery(remote: Remote, inventory: dict, output: Path) -> None:
+    recovery = output / "recovery"
+    recovery.mkdir(parents=True, exist_ok=True)
+    for host in [inventory["locust"], inventory["fast_time"], *inventory["dataplanes"]]:
+        remote.ssh(
+            host["public_ip"],
+            "pkill -TERM -f 'python3 monitor.py' 2>/dev/null || true; docker ps --filter name=cf-fyre --format '{{.ID}}' | xargs -r docker rm -f >/dev/null 2>&1 || true",
+            check=False,
+        )
+        destination = recovery / host["name"]
+        destination.mkdir(exist_ok=True)
+        remote.copy_from(
+            host["public_ip"],
+            "cf-fyre/reports/.",
+            destination / "reports",
+            recursive=True,
+            check=False,
+        )
+        remote.copy_from(
+            host["public_ip"],
+            "cf-fyre/telemetry/.",
+            destination / "telemetry",
+            recursive=True,
+            check=False,
+        )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--inventory", required=True)
+    parser.add_argument("--scenario", required=True)
+    parser.add_argument("--deploy", required=True)
+    parser.add_argument("--ansible", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--collect-only", action="store_true")
+    args = parser.parse_args()
+    config = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    inventory = json.loads(Path(args.inventory).read_text(encoding="utf-8"))
+    scenario = next(item for item in config["scenarios"] if item["id"] == args.scenario)
+    output = Path(args.output)
+    output.mkdir(parents=True, exist_ok=True)
+    known_hosts = output.parent.parent / "known_hosts"
+    known_hosts.touch(exist_ok=True)
+    remote = Remote(
+        config["infrastructure"]["ssh_user"],
+        Path(config["resolved_ssh_private_key"]),
+        known_hosts,
+    )
+    if args.collect_only:
+        collect_recovery(remote, inventory, output)
+        return
+    if config.get("benchmark_kind", "scaling") == "comparison":
+        prepare_comparison_shared(
+            config,
+            inventory,
+            remote,
+            Path(args.deploy),
+            Path(args.ansible),
+            known_hosts,
+            output,
+        )
+        result = fixed_comparison(remote, config, inventory, output)
+    else:
+        _, urls = prepare_hosts(
+            config,
+            inventory,
+            remote,
+            Path(args.deploy),
+            Path(args.ansible),
+            known_hosts,
+            output,
+        )
+        result = capacity_search(remote, config, inventory, urls, output)
+        result["scenario"] = scenario
+        result["inventory"] = inventory
+        (output / "result.json").write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    if result["status"] != "confirmed":
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

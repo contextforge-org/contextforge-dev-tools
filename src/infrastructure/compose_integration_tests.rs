@@ -273,9 +273,6 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
         "CONTEXTFORGE_DATA_PLANE_REDIS_CONNECTION_MODE",
         "CONTEXTFORGE_DATA_PLANE_JWKS_URL",
         "CONTEXTFORGE_DATA_PLANE_UPSTREAM_CONNECTION_MODE",
-        "CONTEXTFORGE_DATA_PLANE_USER_CONFIG_CACHE_EXPIRY_SECONDS",
-        "CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS",
-        "CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_ORIGINS",
     ] {
         assert!(
             environment.contains_key(yaml_serde::Value::String(key.to_owned())),
@@ -288,24 +285,38 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
     ] {
         assert!(!environment.contains_key(yaml_serde::Value::String(key.to_owned())));
     }
-    assert!(
-        environment
-            [yaml_serde::Value::String("CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS".to_owned())]
-        .as_str()
-        .expect("MCP Host allowlist must be text")
-        .contains(",nginx}"),
-        "the default MCP Host allowlist must accept containerized Locust through nginx"
+    assert_eq!(
+        compose["services"]["dataplane"]["depends_on"]["global_config_writer"]["condition"]
+            .as_str(),
+        Some("service_completed_successfully")
+    );
+    assert_eq!(
+        compose["services"]["config_writer"]["volumes"][0].as_str(),
+        Some("integration_auth:/keys:ro")
     );
     assert_eq!(
         compose["services"]["dataplane"]["pull_policy"].as_str(),
         Some("${CF_DATAPLANE_PULL_POLICY:-always}")
     );
+    assert_eq!(
+        compose["services"]["dataplane"]["cpuset"].as_str(),
+        Some("${CF_LOAD_TARGET_CPUSET:-}")
+    );
+    for key in ["soft", "hard"] {
+        assert_eq!(
+            compose["services"]["dataplane"]["ulimits"]["nofile"][key].as_u64(),
+            Some(65536)
+        );
+    }
     for obsolete in [
         "CONTEXTFORGE_GATEWAY_RS_ADDRESS",
         "CONTEXTFORGE_GATEWAY_RS_REDIS_HOSTNAME",
         "CONTEXTFORGE_GATEWAY_RS_TOKEN_SECRET",
         "CONTEXTFORGE_GATEWAY_RS_UPSTREAM_CONNECTION_MODE",
         "CONTEXTFORGE_GATEWAY_RS_USER_CONFIG_CACHE_EXPIRY_SECONDS",
+        "CONTEXTFORGE_DATA_PLANE_USER_CONFIG_CACHE_EXPIRY_SECONDS",
+        "CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS",
+        "CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_ORIGINS",
     ] {
         assert!(
             !environment.contains_key(yaml_serde::Value::String(obsolete.to_owned())),
@@ -325,6 +336,30 @@ fn dataplane_overlays_track_the_current_image_build_and_environment_contract() {
     let load_proxy = fs::read_to_string(root.join("docker/nginx.cf-load-builtin.conf"))
         .expect("read builtin load proxy configuration");
     assert!(load_proxy.contains("worker_rlimit_nofile 65535;"));
+}
+
+#[test]
+fn load_generator_overlays_raise_the_open_file_limit() {
+    for file in [
+        "docker/docker-compose.cf-integration.yaml",
+        "docker/docker-compose.cf-dataplane-standalone.yaml",
+    ] {
+        let compose = fs::read_to_string(workspace_root().join(file))
+            .expect("read load-generator Compose overlay");
+        let compose: yaml_serde::Value =
+            yaml_serde::from_str(&compose).expect("parse load-generator Compose overlay");
+        assert_eq!(
+            compose["services"]["locust"]["cpuset"].as_str(),
+            Some("${CF_LOAD_LOCUST_CPUSET:-}")
+        );
+        for key in ["soft", "hard"] {
+            assert_eq!(
+                compose["services"]["locust"]["ulimits"]["nofile"][key].as_u64(),
+                Some(65536),
+                "{file} must raise Locust's {key} open-file limit"
+            );
+        }
+    }
 }
 
 #[test]
@@ -414,6 +449,40 @@ fn both_external_projects_provide_the_client_conformance_config_writer() {
         assert_eq!(helpers[0]["profiles"][0].as_str(), Some("helpers"));
         assert_eq!(helpers[0]["networks"][0].as_str(), Some("mcpnet"));
         assert_eq!(helpers[0]["entrypoint"][1].as_str(), Some("__helper"));
+
+        let global_helpers: Vec<_> = project
+            .files()
+            .iter()
+            .filter_map(|file| {
+                let source = fs::read_to_string(file).ok()?;
+                let compose: yaml_serde::Value =
+                    yaml_serde::from_str(&source).expect("Compose YAML");
+                let service = &compose["services"]["global_config_writer"];
+                (!service["command"].is_null()).then(|| service.clone())
+            })
+            .collect();
+        assert_eq!(
+            global_helpers.len(),
+            1,
+            "each external project needs exactly one global config initializer"
+        );
+        let command = global_helpers[0]["command"]
+            .as_sequence()
+            .expect("global config command");
+        assert!(
+            command
+                .iter()
+                .any(|value| value.as_str() == Some("global-config"))
+        );
+        assert!(command.iter().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|value| value.contains("nginx:80"))
+        }));
+        assert_eq!(
+            global_helpers[0]["depends_on"]["redis"]["condition"].as_str(),
+            Some("service_healthy")
+        );
     }
 }
 
@@ -458,6 +527,10 @@ fn standalone_harness_owns_auth_without_dataplane_tools() {
             .as_str(),
         Some("http://127.0.0.1:4446/.well-known/jwks.json")
     );
+    assert_eq!(
+        compose["services"]["dataplane"]["cpuset"].as_str(),
+        Some("${CF_LOAD_TARGET_CPUSET:-}")
+    );
     assert!(compose["services"]["dataplane"]["command"].is_null());
     assert!(compose["services"]["dataplane"]["volumes"].is_null());
     assert_eq!(
@@ -467,6 +540,11 @@ fn standalone_harness_owns_auth_without_dataplane_tools() {
     assert_eq!(
         compose["services"]["config_writer"]["volumes"][0].as_str(),
         Some("standalone_auth:/keys:ro")
+    );
+    assert_eq!(
+        compose["services"]["dataplane"]["depends_on"]["global_config_writer"]["condition"]
+            .as_str(),
+        Some("service_completed_successfully")
     );
     assert!(
         compose["services"]["dataplane"]["environment"]["CONTEXTFORGE_DATA_PLANE_TOKEN_SECRET"]
@@ -489,7 +567,48 @@ fn standalone_harness_owns_auth_without_dataplane_tools() {
         compose["services"]["locust"]["image"].as_str(),
         Some("locustio/locust:2.46.2")
     );
+    for service in ["dataplane", "locust"] {
+        for key in ["soft", "hard"] {
+            assert_eq!(
+                compose["services"][service]["ulimits"]["nofile"][key].as_u64(),
+                Some(65536)
+            );
+        }
+    }
     assert!(compose["services"]["locust"]["environment"]["JWT_SECRET_KEY"].is_null());
+
+    for file in [
+        "docker/nginx.cf-dataplane.conf",
+        "docker/nginx.cf-dataplane-standalone.conf.template",
+    ] {
+        let nginx = fs::read_to_string(root.join(file)).expect("read dataplane nginx config");
+        assert!(nginx.contains("\"nginx\" \"nginx:80\";"));
+        assert!(nginx.contains("proxy_set_header Host $dataplane_host;"));
+    }
+}
+
+#[test]
+fn builtin_load_overlay_accepts_isolated_cpus_and_raises_locust_nofile() {
+    let compose =
+        fs::read_to_string(workspace_root().join("docker/docker-compose.cf-load-builtin.yaml"))
+            .expect("read built-in load overlay");
+    let compose: yaml_serde::Value =
+        yaml_serde::from_str(&compose).expect("parse built-in load overlay");
+
+    assert_eq!(
+        compose["services"]["gateway"]["cpuset"].as_str(),
+        Some("${CF_LOAD_TARGET_CPUSET:-}")
+    );
+    assert_eq!(
+        compose["services"]["locust"]["cpuset"].as_str(),
+        Some("${CF_LOAD_LOCUST_CPUSET:-}")
+    );
+    for key in ["soft", "hard"] {
+        assert_eq!(
+            compose["services"]["locust"]["ulimits"]["nofile"][key].as_u64(),
+            Some(65536)
+        );
+    }
 }
 
 #[test]

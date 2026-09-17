@@ -76,6 +76,20 @@ fn parse_run_time(value: &str) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
+fn parse_memory_limit(value: &str) -> Result<String, String> {
+    let digits = value.bytes().take_while(u8::is_ascii_digit).count();
+    let (amount, unit) = value.split_at(digits);
+    let valid_amount = amount.parse::<u64>().is_ok_and(|amount| amount > 0);
+    let valid_unit = matches!(unit.to_ascii_lowercase().as_str(), "b" | "k" | "m" | "g");
+    if valid_amount && valid_unit {
+        Ok(value.to_owned())
+    } else {
+        Err(String::from(
+            "must be a positive Docker memory limit such as 16G",
+        ))
+    }
+}
+
 /// Orchestrates built-in and external dataplane integration workflows.
 #[derive(Debug, Clone, PartialEq, Parser)]
 #[command(name = "cf-integration", version, arg_required_else_help = true)]
@@ -309,6 +323,51 @@ pub(crate) enum LoadCommand {
     /// Run Locust through the selected public MCP route.
     #[command(visible_alias = "r")]
     Run(LoadRunArgs),
+    /// Run repeatable comparison and scaling benchmarks on FYRE VMs.
+    #[command(visible_alias = "f")]
+    Fyre(FyreArgs),
+}
+
+/// FYRE benchmark command selection.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub(crate) struct FyreArgs {
+    /// FYRE benchmark operation to run.
+    #[command(subcommand)]
+    pub(crate) command: FyreCommand,
+}
+
+/// Operations on one FYRE benchmark run.
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub(crate) enum FyreCommand {
+    /// Provision, benchmark, download reports, and destroy run-owned VMs.
+    #[command(visible_alias = "r")]
+    Run(FyreRunArgs),
+    /// Show durable state for a benchmark run.
+    #[command(visible_alias = "s")]
+    Status(FyreExistingRunArgs),
+    /// Destroy only the VMs owned by a benchmark run.
+    #[command(visible_alias = "d")]
+    Destroy(FyreExistingRunArgs),
+}
+
+/// Common FYRE benchmark options.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub(crate) struct FyreRunArgs {
+    /// Configuration file; defaults to the eight-run built-in/external dataplane comparison.
+    #[arg(short = 'f', long, value_name = "FILE")]
+    pub(crate) file: Option<PathBuf>,
+
+    /// Run identifier; generated when omitted.
+    #[arg(short = 'i', long, value_name = "RUN_ID")]
+    pub(crate) run_id: Option<String>,
+}
+
+/// Options for an existing FYRE benchmark run.
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub(crate) struct FyreExistingRunArgs {
+    /// Existing run identifier.
+    #[arg(short = 'i', long, value_name = "RUN_ID", required = true)]
+    pub(crate) run_id: String,
 }
 
 /// Load-test options.
@@ -341,6 +400,18 @@ pub(crate) struct LoadRunArgs {
     /// Locust duration using positive h, m, and s groups, such as 1h30m.
     #[arg(short = 't', long, value_parser = parse_run_time)]
     pub(crate) run_time: Option<String>,
+
+    /// Local Locust worker processes; must be greater than zero.
+    #[arg(short = 'w', long, value_parser = parse_positive_usize)]
+    pub(crate) workers: Option<usize>,
+
+    /// Built-in gateway container memory limit, such as 16G.
+    #[arg(short = 'm', long, value_parser = parse_memory_limit)]
+    pub(crate) builtin_memory_limit: Option<String>,
+
+    /// Split Docker CPUs evenly between the target and Locust.
+    #[arg(short = 'i', long)]
+    pub(crate) isolate_cpus: bool,
 }
 
 /// Upstream live-test options.
