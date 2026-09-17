@@ -7,20 +7,6 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
-### Added
-
-- Add a reusable 2 vCPU / 2 GB FYRE profile for the complete eight-run built-in
-  dataplane versus external dataplane comparison.
-
-### Fixed
-
-- Derive FYRE comparison report labels and target resources from the selected
-  profile instead of requiring and displaying a hard-coded 4 vCPU / 4 GB
-  target.
-
-- Quote inventory-derived backend URLs before composing every FYRE remote shell
-  command.
-
 ## [0.5.0] - 2026-09-16
 
 ### Added
@@ -42,6 +28,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   configuration's baseline resources. Allow profiles to start Locust and Fast
   Time at independently validated helper sizes.
 
+- Add a reusable 2 vCPU / 2 GB FYRE profile for the complete eight-run built-in
+  dataplane versus external dataplane comparison.
+
 - Add `-w/--workers` to distribute load across local Locust processes,
   `-i/--isolate-cpus` to split Docker CPUs between the target and load
   generator, and `-m/--builtin-memory-limit` to tune the built-in gateway
@@ -57,6 +46,13 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   helpers when telemetry shows helper saturation.
 
 ### Fixed
+
+- Derive FYRE comparison report labels and target resources from the selected
+  profile instead of requiring and displaying a hard-coded 4 vCPU / 4 GB
+  target.
+
+- Quote inventory-derived backend URLs before composing every FYRE remote shell
+  command.
 
 - Pin the built-in comparison lane to the MCP SDK v2 gateway revision that
   supports the same `2026-07-28` client as Rust, balance replicas across
