@@ -29,19 +29,19 @@ def comparison_report(config: dict, results_root: Path) -> None:
         rows.append(
             {
                 "users": users,
-                "builtin_requests": builtin["requests"],
-                "builtin_errors": builtin["failures"],
-                "builtin_rps": builtin["rps"],
-                "builtin_p50_ms": builtin["p50_ms"],
-                "builtin_p95_ms": builtin["p95_ms"],
-                "builtin_p99_ms": builtin["p99_ms"],
-                "rust_requests": rust["requests"],
-                "rust_errors": rust["failures"],
-                "rust_rps": rust["rps"],
-                "rust_p50_ms": rust["p50_ms"],
-                "rust_p95_ms": rust["p95_ms"],
-                "rust_p99_ms": rust["p99_ms"],
-                "rust_vs_builtin": rust["rps"] / builtin["rps"],
+                "built_in_dataplane_requests": builtin["requests"],
+                "built_in_dataplane_errors": builtin["failures"],
+                "built_in_dataplane_rps": builtin["rps"],
+                "built_in_dataplane_p50_ms": builtin["p50_ms"],
+                "built_in_dataplane_p95_ms": builtin["p95_ms"],
+                "built_in_dataplane_p99_ms": builtin["p99_ms"],
+                "external_dataplane_requests": rust["requests"],
+                "external_dataplane_errors": rust["failures"],
+                "external_dataplane_rps": rust["rps"],
+                "external_dataplane_p50_ms": rust["p50_ms"],
+                "external_dataplane_p95_ms": rust["p95_ms"],
+                "external_dataplane_p99_ms": rust["p99_ms"],
+                "external_vs_built_in": rust["rps"] / builtin["rps"],
             }
         )
     (results_root / "summary.json").write_text(
@@ -54,13 +54,14 @@ def comparison_report(config: dict, results_root: Path) -> None:
 
     helpers = config["active_helper"]
     workload = config["workload"]
+    target = config["scenarios"][0]
     figure = plt.figure(figsize=(18, 10), dpi=160, facecolor="#0b1020")
     axis = figure.add_axes([0, 0, 1, 1])
     axis.set_axis_off()
     figure.text(
         0.035,
         0.95,
-        "FYRE built-in vs Rust — one-hour load comparison",
+        "FYRE built-in dataplane vs external dataplane — one-hour load comparison",
         color="white",
         fontsize=25,
         fontweight="bold",
@@ -83,7 +84,9 @@ def comparison_report(config: dict, results_root: Path) -> None:
         (
             0.355,
             "TARGET — SAME VM, SEQUENTIAL",
-            "4 vCPU / 4 GB\nBuilt-in: Python gateway + Postgres + Redis\nRust: dataplane + Redis + loopback JWKS",
+            f"{target['cpu']} vCPU / {target['memory_gb']} GB\n"
+            "Built-in dataplane: Python gateway + Postgres + Redis\n"
+            "External dataplane: Rust + Redis + loopback JWKS",
         ),
         (
             0.71,
@@ -118,28 +121,28 @@ def comparison_report(config: dict, results_root: Path) -> None:
     table_axis.axis("off")
     headers = [
         "Users",
-        "Built-in\nrequests",
-        "Built-in\nerrors",
-        "Built-in\nRPS",
-        "Built-in p50 /\np95 / p99",
-        "Rust\nrequests",
-        "Rust\nerrors",
-        "Rust\nRPS",
-        "Rust p50 /\np95 / p99",
-        "Rust vs\nbuilt-in",
+        "Built-in DP\nrequests",
+        "Built-in DP\nerrors",
+        "Built-in DP\nRPS",
+        "Built-in DP p50 /\np95 / p99",
+        "External DP\nrequests",
+        "External DP\nerrors",
+        "External DP\nRPS",
+        "External DP p50 /\np95 / p99",
+        "External vs\nbuilt-in",
     ]
     cells = [
         [
             f"{row['users']:,}",
-            f"{row['builtin_requests']:,}",
-            str(row["builtin_errors"]),
-            f"{row['builtin_rps']:,.2f}",
-            f"{row['builtin_p50_ms']:.0f} / {row['builtin_p95_ms']:.0f} / {row['builtin_p99_ms']:.0f} ms",
-            f"{row['rust_requests']:,}",
-            str(row["rust_errors"]),
-            f"{row['rust_rps']:,.2f}",
-            f"{row['rust_p50_ms']:.0f} / {row['rust_p95_ms']:.0f} / {row['rust_p99_ms']:.0f} ms",
-            f"{row['rust_vs_builtin']:.2f}×",
+            f"{row['built_in_dataplane_requests']:,}",
+            str(row["built_in_dataplane_errors"]),
+            f"{row['built_in_dataplane_rps']:,.2f}",
+            f"{row['built_in_dataplane_p50_ms']:.0f} / {row['built_in_dataplane_p95_ms']:.0f} / {row['built_in_dataplane_p99_ms']:.0f} ms",
+            f"{row['external_dataplane_requests']:,}",
+            str(row["external_dataplane_errors"]),
+            f"{row['external_dataplane_rps']:,.2f}",
+            f"{row['external_dataplane_p50_ms']:.0f} / {row['external_dataplane_p95_ms']:.0f} / {row['external_dataplane_p99_ms']:.0f} ms",
+            f"{row['external_vs_built_in']:.2f}×",
         ]
         for row in rows
     ]
@@ -179,7 +182,7 @@ def comparison_report(config: dict, results_root: Path) -> None:
     figure.text(
         0.035,
         0.095,
-        "Rust vs built-in = Rust RPS ÷ built-in RPS at the same user count.",
+        "External vs built-in = external dataplane RPS ÷ built-in dataplane RPS at the same user count.",
         color="#45d6a0",
         fontsize=13,
         fontweight="bold",

@@ -45,4 +45,4 @@ workload:
     - schema_success
     - verify-protocol
 scenarios:
-  - { id: comparison, label: Built-in dataplane vs external dataplane, replicas: 1, cpu: 4, memory_gb: 4, multiplier: 1 }
+  - { id: comparison-2v2, label: Built-in dataplane vs external dataplane — 2 vCPU / 2 GB, replicas: 1, cpu: 2, memory_gb: 2, multiplier: 1 }

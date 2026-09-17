@@ -7,6 +7,17 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- Add a reusable 2 vCPU / 2 GB FYRE profile for the complete eight-run built-in
+  dataplane versus external dataplane comparison.
+
+### Fixed
+
+- Derive FYRE comparison report labels and target resources from the selected
+  profile instead of requiring and displaying a hard-coded 4 vCPU / 4 GB
+  target.
+
 ## [0.5.0] - 2026-09-16
 
 ### Added

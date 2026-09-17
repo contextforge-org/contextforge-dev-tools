@@ -749,11 +749,8 @@ fn validate_config(config: &FyreConfig) -> Result<()> {
                 "each default comparison benchmark must measure for one hour"
             );
             ensure!(
-                config.scenarios.len() == 1
-                    && config.scenarios[0].replicas == 1
-                    && config.scenarios[0].cpu == 4
-                    && config.scenarios[0].memory_gb == 4,
-                "the comparison target must be one 4 vCPU / 4 GB VM"
+                config.scenarios.len() == 1 && config.scenarios[0].replicas == 1,
+                "the comparison target must be exactly one VM"
             );
             ensure!(
                 config.images.controlplane.is_some() && config.images.postgres.is_some(),
@@ -1092,6 +1089,20 @@ mod tests {
         assert_eq!(config.workload.measure_seconds, 3_600);
         assert_eq!(config.workload.protocol_version, "2026-07-28");
         assert_eq!(config.scenarios.len(), 1);
+    }
+
+    #[test]
+    fn comparison_accepts_a_configured_two_vcpu_two_gb_target() {
+        let mut config = read_config(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("benchmarks/fyre/scaling.yaml")
+                .as_path(),
+        )
+        .expect("packaged FYRE config");
+        config.scenarios[0].cpu = 2;
+        config.scenarios[0].memory_gb = 2;
+
+        validate_config(&config).expect("valid 2 vCPU / 2 GB comparison target");
     }
 
     #[test]

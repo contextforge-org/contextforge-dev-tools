@@ -1,30 +1,30 @@
-# FYRE built-in versus Rust benchmark
+# FYRE built-in dataplane versus external dataplane benchmark
 
 The default FYRE workflow runs the same modern MCP client against the built-in
-Python gateway and the external Rust dataplane on the same target VM. It
+dataplane and the external dataplane on the same target VM. It
 provisions three standalone Ubuntu 24.04 VMs and runs the two target stacks
 sequentially so the target hardware is identical.
 
 | Role | Default allocation | Purpose |
 | --- | ---: | --- |
 | Locust | 4 vCPU / 16 GB | Three distributed `FastHttpUser` workers with zero wait |
-| Target | 4 vCPU / 4 GB | Built-in gateway or Rust dataplane, one lane at a time |
+| Target | 4 vCPU / 4 GB | Built-in dataplane or external dataplane, one lane at a time |
 | Fast Time | 8 vCPU / 32 GB | Six nonfailure tools with explicit zero backend delay |
 
-The eight default measurements are built-in and Rust at 125, 250, 500, and
+The eight default measurements are built-in dataplane and external dataplane at 125, 250, 500, and
 1,000 users. Every measurement ramps for 30 seconds, warms up for 30 seconds,
 resets statistics, and records one hour. Both lanes send the same stateless
 `2026-07-28` requests from the same Locust file. The built-in gateway owns any
 session or backend protocol translation.
 
-The built-in target includes the Python gateway, PostgreSQL, and Redis. The
-Rust target includes the dataplane, Redis, and loopback JWKS helper. Both use
+The built-in dataplane target includes the Python gateway, PostgreSQL, and Redis. The
+external dataplane target includes Rust, Redis, and the loopback JWKS helper. Both use
 the same remote Fast Time VM and private FYRE network.
 
 The built-in image is pinned by digest and built from
 `IBM/mcp-context-forge` commit
 `33e2dd93a53a9cc2c5088b731822dfec4852fa2e` on the MCP SDK v2 branch. That
-revision accepts the same `2026-07-28` stateless client used by the Rust lane.
+revision accepts the same `2026-07-28` stateless client used by the external dataplane lane.
 
 ## Prerequisites
 
@@ -94,8 +94,8 @@ for the eight-hour measured campaign.
 
 The client implementation, protocol revision, six-tool mix, request arguments,
 zero delay, ramp, warmup, measurement window, request timeout, and target VM
-allocation are identical between lanes. The report calculates `Rust RPS ÷
-built-in RPS` at each matching user count and includes request totals, errors,
+allocation are identical between lanes. The report calculates `external
+dataplane RPS ÷ built-in dataplane RPS` at each matching user count and includes request totals, errors,
 and p50/p95/p99 latency.
 
 Telemetry covers CPU, per-core utilization, memory, swap and scheduling
@@ -123,5 +123,17 @@ cf-integration load fyre run \
 
 That custom profile starts at 125 users, detects errors or a throughput plateau,
 refines the boundary, and confirms the selected zero-error capacity three
-times. It is separate from the default eight-run built-in-versus-Rust CI
+times. It is separate from the default eight-run built-in-dataplane-versus-external-dataplane CI
 comparison.
+
+Use the packaged two-core comparison profile to run the same eight measurements
+on one 2 vCPU / 2 GB target VM:
+
+```bash
+cf-integration load fyre run \
+  --file benchmarks/fyre/comparison-2v2.yaml \
+  --run-id builtin-external-2v2
+```
+
+Comparison reports derive the target allocation from the selected profile; both
+lanes always run sequentially on that same VM.

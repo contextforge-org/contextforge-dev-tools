@@ -353,7 +353,7 @@ pub(crate) enum FyreCommand {
 /// Common FYRE benchmark options.
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub(crate) struct FyreRunArgs {
-    /// Configuration file; defaults to the eight-run built-in/Rust comparison.
+    /// Configuration file; defaults to the eight-run built-in/external dataplane comparison.
     #[arg(short = 'f', long, value_name = "FILE")]
     pub(crate) file: Option<PathBuf>,
 
