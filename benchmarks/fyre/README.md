@@ -44,6 +44,11 @@ disk and expose no create-time root-disk setting. The default three-VM run
 therefore needs 750 GB of FYRE disk quota. The CLI checks CPU, memory, disk, and
 public-IP quota before it creates any benchmark VM.
 
+The OpenShift profile requires `FYRE_PRODUCT_GROUP_ID`, Docker on the
+orchestration host, and access to the FYRE OpenShift API and cluster DNS. The
+CLI runs a digest-pinned OpenShift client container, so a host `oc` installation
+is not required.
+
 ## Run the complete comparison
 
 The bare command is the CI entrypoint for the complete eight-run comparison:
@@ -137,3 +142,55 @@ cf-integration load fyre run \
 
 Comparison reports derive the target allocation from the selected profile; both
 lanes always run sequentially on that same VM.
+
+## Parallel OpenShift profile with 40 GB disks
+
+`openshift.yaml` runs the same eight comparison measurements on a FYRE
+OpenShift cluster while reducing every master and worker root disk to 40 GB.
+The built-in and external lanes run concurrently and remain isolated on six
+dedicated workers:
+
+| Lane role | Workers | Pod allocation on each worker |
+| --- | ---: | ---: |
+| Built-in and external Locust | 2 | 4 vCPU / 16 GiB each |
+| Built-in and external target | 2 | 4 vCPU / 4 GiB each |
+| Built-in and external Fast Time | 2 | 8 vCPU / 32 GiB each |
+
+Each Locust pod contains one master and three workers. Each target allocation
+includes its supporting PostgreSQL/Redis or Redis/JWKS containers. Each lane
+has a separate zero-delay Fast Time service. No measured target, load generator,
+or backend shares a worker node with the other lane.
+
+Run the complete parallel comparison with:
+
+```bash
+cf-integration load fyre run \
+  --file benchmarks/fyre/openshift.yaml \
+  --run-id openshift-builtin-external
+```
+
+The short form is:
+
+```bash
+cf-integration l f r -f benchmarks/fyre/openshift.yaml -i openshift-builtin-external
+```
+
+The command creates the cluster through the FYRE OpenShift API, authenticates
+with the generated kubeadmin credential, assigns the six workers by their
+configured CPU and memory, runs both lanes in parallel at 125, 250, 500, and
+1,000 users, downloads every phase before deleting its pods, writes the final
+report, deletes the benchmark namespace, and deletes only the run-owned
+cluster. A failed or interrupted campaign retains its local run state and
+retries cluster cleanup three times.
+
+OpenShift artifacts use the same
+`$CF_INTEGRATION_DIR/fyre/<run-id>/results/` layout and add `report.md`, a
+self-contained report with the result table, memory averages and peaks,
+request mix, pinned images, and Mermaid architecture. The cluster record and
+manifest recursively omit passwords, tokens, pull secrets, API keys, and
+kubeconfig data.
+
+The built-in lane remains pinned to the MCP SDK v2 fixture image until that SDK
+change is available in the main gateway image. The profile must not be changed
+back to the main image before that merge because both lanes use the same modern
+`2026-07-28` client.

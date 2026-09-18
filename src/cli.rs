@@ -323,7 +323,7 @@ pub(crate) enum LoadCommand {
     /// Run Locust through the selected public MCP route.
     #[command(visible_alias = "r")]
     Run(LoadRunArgs),
-    /// Run repeatable comparison and scaling benchmarks on FYRE VMs.
+    /// Run repeatable comparison and scaling benchmarks on FYRE infrastructure.
     #[command(visible_alias = "f")]
     Fyre(FyreArgs),
 }
@@ -339,13 +339,13 @@ pub(crate) struct FyreArgs {
 /// Operations on one FYRE benchmark run.
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub(crate) enum FyreCommand {
-    /// Provision, benchmark, download reports, and destroy run-owned VMs.
+    /// Provision, benchmark, download reports, and destroy run-owned infrastructure.
     #[command(visible_alias = "r")]
     Run(FyreRunArgs),
     /// Show durable state for a benchmark run.
     #[command(visible_alias = "s")]
     Status(FyreExistingRunArgs),
-    /// Destroy only the VMs owned by a benchmark run.
+    /// Destroy only the infrastructure owned by a benchmark run.
     #[command(visible_alias = "d")]
     Destroy(FyreExistingRunArgs),
 }
