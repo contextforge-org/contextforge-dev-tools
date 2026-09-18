@@ -5,7 +5,7 @@ infrastructure:
   os: Red Hat CoreOS
   expiry_hours: 12
   openshift:
-    version: "4.21"
+    version: "4.21.27"
     base_disk_gb: 40
     oc_image: quay.io/openshift/origin-cli@sha256:f3fc63fc3d2fd1c3a2c3311bf517b776f6596244e697dad32d62ca9fd6482fe5
     master: { cpu: 4, memory_gb: 16 }

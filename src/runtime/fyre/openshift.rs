@@ -111,7 +111,7 @@ impl FyreOpenShiftApi {
         );
         for attempt in 0..10 {
             let response = self
-                .request(reqwest::Method::POST, "/ocp/")
+                .request(reqwest::Method::POST, "/ocp/x")
                 .json(&payload)
                 .send()
                 .await
@@ -399,7 +399,6 @@ fn cluster_payload(
     json!({
         "name": cluster,
         "description": "ContextForge parallel built-in/external dataplane benchmark",
-        "platform": "x",
         "quota_type": "product_group",
         "site": site,
         "product_group_id": product_group,
@@ -408,14 +407,15 @@ fn cluster_payload(
         "ipv6_test": false,
         "fips": "no",
         "master": {
+            "count": 3,
             "cpu": openshift.master.cpu,
             "memory": openshift.master.memory_gb,
             "base_disk_size": disk,
         },
-        "api": {
-            "count": 1,
+        "infra": {
             "cpu": openshift.api.cpu,
             "memory": openshift.api.memory_gb,
+            "disk": openshift.base_disk_gb,
         },
         "worker": worker_pools.into_iter().map(|((cpu, memory), count)| json!({
             "count": count,
@@ -445,10 +445,19 @@ async fn decode_response(response: Response, operation: &str) -> Result<(StatusC
 }
 
 fn ensure_success(status: StatusCode, value: &Value, operation: &str) -> Result<()> {
+    let details = value
+        .get("details")
+        .filter(|details| !details.is_null())
+        .map(|details| {
+            details
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| details.to_string())
+        })
+        .unwrap_or_else(|| value.to_string());
     ensure!(
         status.is_success(),
-        "{operation} failed with HTTP {status}: {}",
-        value["details"].as_str().unwrap_or("no details")
+        "{operation} failed with HTTP {status}: {details}"
     );
     Ok(())
 }
@@ -569,7 +578,7 @@ mod tests {
     }
 
     #[test]
-    fn parallel_2v2_profile_fits_three_40_gb_workers() {
+    fn parallel_2v2_profile_fits_four_40_gb_workers() {
         let config = super::super::read_config(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("benchmarks/fyre/openshift-2v2-parallel.yaml")
@@ -584,8 +593,55 @@ mod tests {
             .expect("OpenShift settings");
         let payload = cluster_payload("cf-test", &config, openshift, "808", "svl");
         let workers = payload["worker"].as_array().expect("worker pools");
-        assert_eq!(workers.len(), 3);
-        assert!(workers.iter().all(|pool| pool["count"] == 1));
+        assert_eq!(payload["master"]["count"], 3);
+        assert_eq!(payload["infra"]["disk"], 40);
+        assert_eq!(workers.len(), 2);
+        assert_eq!(
+            workers
+                .iter()
+                .map(|pool| pool["count"].as_u64().expect("worker count"))
+                .sum::<u64>(),
+            4
+        );
         assert!(workers.iter().all(|pool| pool["base_disk_size"] == "40"));
+        let worker_cpu: u64 = workers
+            .iter()
+            .map(|pool| {
+                pool["count"].as_u64().expect("worker count")
+                    * pool["cpu"].as_u64().expect("worker cpu")
+            })
+            .sum();
+        let worker_memory: u64 = workers
+            .iter()
+            .map(|pool| {
+                pool["count"].as_u64().expect("worker count")
+                    * pool["memory"].as_u64().expect("worker memory")
+            })
+            .sum();
+        let worker_disk: u64 = workers
+            .iter()
+            .map(|pool| {
+                pool["count"].as_u64().expect("worker count")
+                    * pool["base_disk_size"]
+                        .as_str()
+                        .expect("worker disk")
+                        .parse::<u64>()
+                        .expect("numeric worker disk")
+            })
+            .sum();
+        assert_eq!(worker_cpu + 3 * 4 + 4, 64);
+        assert_eq!(worker_memory + 3 * 16 + 8, 100);
+        assert_eq!(worker_disk + 3 * 40 + 40, 320);
+    }
+
+    #[test]
+    fn nested_api_errors_remain_actionable() {
+        let error = ensure_success(
+            StatusCode::BAD_REQUEST,
+            &json!({"status": "error", "details": {"errors": ["disk quota exceeded"]}}),
+            "create cluster",
+        )
+        .expect_err("bad request must fail");
+        assert!(error.to_string().contains("disk quota exceeded"));
     }
 }

@@ -204,9 +204,9 @@ requests and limits. Pods share only with pods serving the same role.
 
 | Dedicated worker role | Worker size | Pods | Reserved per measurement |
 | --- | ---: | ---: | ---: |
-| Target | 18 vCPU / 18 GiB | 8 | 2 vCPU / 2 GiB |
+| Target | 2 × 10 vCPU / 10 GiB | 8 | 2 vCPU / 2 GiB |
 | Locust | 14 vCPU / 12 GiB | 8 | 1.5 vCPU / 1.25 GiB |
-| Fast Time | 14 vCPU / 13 GiB | 8 | 1.5 vCPU / 1.375 GiB |
+| Fast Time | 14 vCPU / 12 GiB | 8 | 1.5 vCPU / 1.375 GiB |
 
 Each target reservation includes its supporting PostgreSQL and Redis
 containers for the built-in dataplane, or Redis and loopback JWKS containers
@@ -228,7 +228,8 @@ The short form is:
 cf-integration l f r -f benchmarks/fyre/openshift-2v2-parallel.yaml -i openshift-2v2-parallel
 ```
 
-The OpenShift control plane and all three workers use 40 GB root disks. The
+The three OpenShift masters, infrastructure node, and all four workers use
+40 GB root disks. The
 orchestration command may run on a persistent VM or CI worker; the benchmark
 continues if the developer laptop sleeps. Artifacts are downloaded to
 `$CF_INTEGRATION_DIR/fyre/<run-id>/results/` before the run-owned cluster is
