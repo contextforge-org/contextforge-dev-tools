@@ -7,6 +7,19 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- Add a FYRE OpenShift comparison profile that provisions 40 GB nodes and runs
+  the built-in and external dataplane lanes concurrently on separate target,
+  Locust, and Fast Time workers. Package the pinned `oc` runtime, collect
+  gateway-side memory, and produce a self-contained Markdown report alongside
+  the existing CSV, JSON, and Slack-ready PNG artifacts.
+
+### Changed
+
+- Generalize `load fyre run|status|destroy` ownership and cleanup to support
+  run-owned OpenShift clusters as well as standalone Terraform VMs.
+
 ## [0.5.0] - 2026-09-16
 
 ### Added
