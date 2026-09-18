@@ -18,13 +18,15 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   built-in/external and 125/250/500/1,000-user measurements concurrently with
   exact pod limits on three dedicated-role workers. Reserve 1.75 vCPU / 1.75
   GiB per 2 vCPU / 2 GiB target so all eight targets schedule with host
-  headroom, set every cluster disk explicitly, and preserve structured FYRE
-  API validation errors.
+  headroom, set 40 GB master and worker root disks, disable FYRE's automatic
+  worker data disks, and preserve structured FYRE API validation errors.
 
 ### Changed
 
 - Generalize `load fyre run|status|destroy` ownership and cleanup to support
   run-owned OpenShift clusters as well as standalone Terraform VMs.
+- Resume an interrupted OpenShift campaign when `load fyre run` is invoked
+  again with the same run ID and saved configuration.
 
 ## [0.5.0] - 2026-09-16
 
