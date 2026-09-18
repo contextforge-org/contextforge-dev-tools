@@ -14,11 +14,17 @@ use uuid::Uuid;
 use super::{AppFailure, AppResult, CommandSpec, ProcessRunner, RuntimeContext};
 use crate::app::FyreAction;
 
+mod openshift;
+
 const OWNERSHIP_FILE: &str = "run.json";
 const TERRAFORM_DIRECTORY: &str = "terraform";
 const TERRAFORM_VARIABLES: &str = "scenario.tfvars.json";
 const HELPER_SATURATION_EXIT: i32 = 42;
 const FYRE_STANDALONE_UBUNTU_OS_DISK_GB: u32 = 250;
+
+fn default_infrastructure_kind() -> String {
+    "standalone".to_owned()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct FyreConfig {
@@ -37,14 +43,49 @@ struct FyreConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct InfrastructureConfig {
+    #[serde(default = "default_infrastructure_kind")]
+    kind: String,
     os: String,
-    ssh_user: String,
-    ssh_private_key: PathBuf,
-    ssh_public_key: PathBuf,
+    #[serde(default)]
+    ssh_user: Option<String>,
+    #[serde(default)]
+    ssh_private_key: Option<PathBuf>,
+    #[serde(default)]
+    ssh_public_key: Option<PathBuf>,
     expiry_hours: u32,
+    #[serde(default)]
+    openshift: Option<OpenShiftConfig>,
+    #[serde(default)]
     helper_sizes: Vec<MachineSize>,
     #[serde(default)]
     initial_helpers: Option<InitialHelpers>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OpenShiftConfig {
+    version: String,
+    base_disk_gb: u32,
+    oc_image: String,
+    master: MachineSize,
+    api: MachineSize,
+    target_pod: PodSize,
+    load_pod: PodSize,
+    backend_pod: PodSize,
+    worker_pools: Vec<OpenShiftWorkerPool>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct PodSize {
+    cpu_millicores: u32,
+    memory_mib: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OpenShiftWorkerPool {
+    role: String,
+    count: u32,
+    cpu: u32,
+    memory_gb: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +139,10 @@ struct WorkloadConfig {
     helper_cpu_percent: f64,
     helper_memory_percent: f64,
     worker_core_percent: f64,
+    #[serde(default)]
+    parallel_lanes: bool,
+    #[serde(default)]
+    parallel_user_levels: bool,
     tools: Vec<String>,
 }
 
@@ -137,6 +182,10 @@ struct RequiredCapacity {
 struct RunState {
     schema_version: u32,
     run_id: String,
+    #[serde(default = "default_infrastructure_kind")]
+    infrastructure_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cluster_name: Option<String>,
     phase: String,
     config_file: PathBuf,
     current_scenario: Option<String>,
@@ -164,10 +213,25 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let mut config = read_config(&source).map_err(AppFailure::from)?;
         validate_config(&config).map_err(AppFailure::from)?;
         self.require_fyre_credentials()?;
-        let private_key =
-            expand_home(&config.infrastructure.ssh_private_key).map_err(AppFailure::from)?;
-        let public_key =
-            expand_home(&config.infrastructure.ssh_public_key).map_err(AppFailure::from)?;
+        if config.infrastructure.kind == "openshift" {
+            return self.run_fyre_openshift(source, config, run_id).await;
+        }
+        let private_key = expand_home(
+            config
+                .infrastructure
+                .ssh_private_key
+                .as_ref()
+                .expect("validated standalone FYRE configuration has an SSH private key"),
+        )
+        .map_err(AppFailure::from)?;
+        let public_key = expand_home(
+            config
+                .infrastructure
+                .ssh_public_key
+                .as_ref()
+                .expect("validated standalone FYRE configuration has an SSH public key"),
+        )
+        .map_err(AppFailure::from)?;
         ensure_file(&private_key, "SSH private key").map_err(AppFailure::from)?;
         ensure_file(&public_key, "SSH public key").map_err(AppFailure::from)?;
         config.resolved_ssh_private_key = Some(private_key);
@@ -197,6 +261,8 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let mut state = RunState {
             schema_version: 1,
             run_id: run_id.clone(),
+            infrastructure_kind: "standalone".to_owned(),
+            cluster_name: None,
             phase: "initializing".to_owned(),
             config_file: source,
             current_scenario: None,
@@ -575,6 +641,11 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         validate_run_id(run_id).map_err(AppFailure::from)?;
         let root = self.config.integration_dir().join("fyre").join(run_id);
         let mut state = read_owned_state(&root, run_id).map_err(AppFailure::from)?;
+        if state.infrastructure_kind == "openshift" {
+            state.phase = "destroying".to_owned();
+            write_state(&root, &state).map_err(AppFailure::from)?;
+            return self.destroy_fyre_openshift(&root, &mut state).await;
+        }
         let terraform = terraform_binary().map_err(AppFailure::from)?;
         state.phase = "destroying".to_owned();
         write_state(&root, &state).map_err(AppFailure::from)?;
@@ -707,9 +778,30 @@ fn validate_config(config: &FyreConfig) -> Result<()> {
         "unsupported FYRE configuration schema"
     );
     ensure!(
-        config.infrastructure.os == "Ubuntu 24.04",
-        "FYRE benchmark OS must be Ubuntu 24.04"
+        matches!(
+            config.infrastructure.kind.as_str(),
+            "standalone" | "openshift"
+        ),
+        "FYRE infrastructure kind must be standalone or openshift"
     );
+    if config.infrastructure.kind == "standalone" {
+        ensure!(
+            config.infrastructure.os == "Ubuntu 24.04",
+            "standalone FYRE benchmark OS must be Ubuntu 24.04"
+        );
+        ensure!(
+            config
+                .infrastructure
+                .ssh_user
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+                && config.infrastructure.ssh_private_key.is_some()
+                && config.infrastructure.ssh_public_key.is_some(),
+            "standalone FYRE infrastructure requires SSH user and key paths"
+        );
+    } else {
+        validate_openshift_config(config)?;
+    }
     ensure!(
         (8..=24).contains(&config.infrastructure.expiry_hours),
         "FYRE expiry must be between eight and 24 hours"
@@ -750,7 +842,7 @@ fn validate_config(config: &FyreConfig) -> Result<()> {
             );
             ensure!(
                 config.scenarios.len() == 1 && config.scenarios[0].replicas == 1,
-                "the comparison target must be exactly one VM"
+                "the comparison target must be exactly one isolated allocation"
             );
             ensure!(
                 config.images.controlplane.is_some() && config.images.postgres.is_some(),
@@ -777,20 +869,22 @@ fn validate_config(config: &FyreConfig) -> Result<()> {
         actual_tools == expected_tools,
         "FYRE workload must contain the six nonfailure Fast Time tools"
     );
-    ensure!(
-        !config.infrastructure.helper_sizes.is_empty(),
-        "at least one helper size is required"
-    );
-    initial_helper_indices(config)?;
-    let maximum = config
-        .infrastructure
-        .helper_sizes
-        .last()
-        .expect("nonempty helper sizes");
-    ensure!(
-        maximum.cpu <= 16 && maximum.memory_gb <= 32,
-        "helper resources exceed 16 vCPU / 32 GB"
-    );
+    if config.infrastructure.kind == "standalone" {
+        ensure!(
+            !config.infrastructure.helper_sizes.is_empty(),
+            "at least one helper size is required"
+        );
+        initial_helper_indices(config)?;
+        let maximum = config
+            .infrastructure
+            .helper_sizes
+            .last()
+            .expect("nonempty helper sizes");
+        ensure!(
+            maximum.cpu <= 16 && maximum.memory_gb <= 32,
+            "helper resources exceed 16 vCPU / 32 GB"
+        );
+    }
     let mut ids = BTreeSet::<&str>::new();
     let baseline = config
         .scenarios
@@ -840,10 +934,122 @@ fn validate_config(config: &FyreConfig) -> Result<()> {
     ];
     images.extend(config.images.controlplane.iter());
     images.extend(config.images.postgres.iter());
+    if let Some(openshift) = &config.infrastructure.openshift {
+        images.push(&openshift.oc_image);
+    }
     for image in images {
         ensure!(
             image.contains("@sha256:"),
             "all benchmark images must be pinned by digest"
+        );
+    }
+    Ok(())
+}
+
+fn validate_openshift_config(config: &FyreConfig) -> Result<()> {
+    let openshift = config
+        .infrastructure
+        .openshift
+        .as_ref()
+        .context("OpenShift infrastructure settings are required")?;
+    ensure!(
+        config.benchmark_kind == "comparison",
+        "OpenShift currently supports only the built-in/external comparison"
+    );
+    ensure!(
+        config.workload.parallel_lanes,
+        "OpenShift must run the built-in and external lanes in parallel"
+    );
+    ensure!(
+        openshift.base_disk_gb == 40,
+        "OpenShift benchmark nodes must use the 40 GB FYRE minimum disk"
+    );
+    ensure!(
+        !openshift.version.trim().is_empty(),
+        "OpenShift version must not be empty"
+    );
+    ensure!(
+        openshift.master.cpu > 0
+            && openshift.master.memory_gb > 0
+            && openshift.api.cpu > 0
+            && openshift.api.memory_gb > 0,
+        "OpenShift control-plane resources must be positive"
+    );
+    let expected = if config.workload.parallel_user_levels {
+        BTreeSet::from(["target", "locust", "fast-time"])
+    } else {
+        BTreeSet::from([
+            "target-builtin",
+            "target-external",
+            "locust-builtin",
+            "locust-external",
+            "fast-time-builtin",
+            "fast-time-external",
+        ])
+    };
+    let mut roles = BTreeSet::new();
+    for pool in &openshift.worker_pools {
+        ensure!(
+            pool.count > 0 && pool.cpu > 0 && pool.cpu <= 16 && pool.memory_gb > 0,
+            "OpenShift worker pool {} must contain positive-sized workers with at most 16 vCPU each",
+            pool.role
+        );
+        ensure!(
+            roles.insert(pool.role.as_str()),
+            "duplicate OpenShift worker role {}",
+            pool.role
+        );
+    }
+    ensure!(
+        roles == expected,
+        "OpenShift worker roles do not match the selected parallel topology"
+    );
+    ensure!(
+        openshift.load_pod.cpu_millicores > 0
+            && openshift.load_pod.memory_mib > 0
+            && openshift.target_pod.cpu_millicores > 0
+            && openshift.target_pod.memory_mib > 0
+            && openshift.backend_pod.cpu_millicores > 0
+            && openshift.backend_pod.memory_mib > 0,
+        "OpenShift helper pod resources must be positive"
+    );
+    if config.workload.parallel_user_levels {
+        let measurements = (config.workload.user_levels.len() * 2) as u32;
+        let pool = |role: &str| {
+            openshift
+                .worker_pools
+                .iter()
+                .find(|pool| pool.role == role)
+                .expect("validated OpenShift worker role")
+        };
+        let target = pool("target");
+        let scenario = &config.scenarios[0];
+        ensure!(
+            openshift.target_pod.cpu_millicores <= scenario.cpu * 1_000
+                && openshift.target_pod.memory_mib <= scenario.memory_gb * 1_024,
+            "OpenShift target requests cannot exceed the target limits"
+        );
+        ensure!(
+            openshift.target_pod.cpu_millicores * measurements <= target.cpu * target.count * 1_000
+                && openshift.target_pod.memory_mib * measurements
+                    <= target.memory_gb * target.count * 1_024,
+            "shared OpenShift target workers cannot reserve every parallel target"
+        );
+        for (role, pod) in [
+            ("locust", openshift.load_pod),
+            ("fast-time", openshift.backend_pod),
+        ] {
+            let worker = pool(role);
+            ensure!(
+                pod.cpu_millicores * measurements <= worker.cpu * worker.count * 1_000
+                    && pod.memory_mib * measurements <= worker.memory_gb * worker.count * 1_024,
+                "shared OpenShift {role} worker cannot reserve every parallel benchmark pod"
+            );
+        }
+    } else {
+        ensure!(
+            openshift.worker_pools.iter().all(|pool| pool.count == 1),
+            "isolated OpenShift lane worker pools must contain exactly one worker"
         );
     }
     Ok(())
@@ -1064,10 +1270,17 @@ fn read_owned_state(root: &Path, expected_run_id: &str) -> Result<RunState> {
         state.run_id == expected_run_id,
         "FYRE run ownership mismatch; refusing cleanup"
     );
-    ensure!(
-        root.join(TERRAFORM_DIRECTORY).is_dir(),
-        "FYRE Terraform state directory is missing; refusing cleanup"
-    );
+    if state.infrastructure_kind == "standalone" {
+        ensure!(
+            root.join(TERRAFORM_DIRECTORY).is_dir(),
+            "FYRE Terraform state directory is missing; refusing cleanup"
+        );
+    } else {
+        ensure!(
+            state.infrastructure_kind == "openshift" && state.cluster_name.is_some(),
+            "FYRE OpenShift ownership metadata is missing; refusing cleanup"
+        );
+    }
     Ok(state)
 }
 
@@ -1137,6 +1350,8 @@ mod tests {
         let state = RunState {
             schema_version: 1,
             run_id: "owned-run".to_owned(),
+            infrastructure_kind: "standalone".to_owned(),
+            cluster_name: None,
             phase: "failed".to_owned(),
             config_file: PathBuf::from("config.yaml"),
             current_scenario: None,

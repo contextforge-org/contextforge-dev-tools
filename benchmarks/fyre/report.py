@@ -8,6 +8,147 @@ import json
 from pathlib import Path
 
 
+def comparison_markdown(config: dict, rows: list[dict]) -> str:
+    infrastructure = config.get("infrastructure", {})
+    openshift = infrastructure.get("kind") == "openshift"
+    openshift_config = infrastructure.get("openshift", {})
+    workload = config.get("workload", {})
+    all_parallel = openshift and bool(workload.get("parallel_user_levels"))
+    target = (config.get("scenarios") or [{}])[0]
+    images = config.get("images", {})
+    tools = workload.get("tools", [])
+    duration = int(workload.get("measure_seconds", 0))
+    helpers = config.get("active_helper", {})
+    locust_cpu = (
+        openshift_config.get("load_pod", {}).get("cpu_millicores", 0) / 1_000
+        if openshift
+        else helpers.get("locust_cpu", "n/a")
+    )
+    locust_memory = (
+        openshift_config.get("load_pod", {}).get("memory_mib", 0) / 1_024
+        if openshift
+        else helpers.get("locust_memory_gb", "n/a")
+    )
+    fast_time_cpu = (
+        openshift_config.get("backend_pod", {}).get("cpu_millicores", 0) / 1_000
+        if openshift
+        else helpers.get("fast_time_cpu", "n/a")
+    )
+    fast_time_memory = (
+        openshift_config.get("backend_pod", {}).get("memory_mib", 0) / 1_024
+        if openshift
+        else helpers.get("fast_time_memory_gb", "n/a")
+    )
+    disk = (
+        f"{infrastructure.get('openshift', {}).get('base_disk_gb', 'n/a')} GB"
+        if openshift
+        else "250 GB (standalone FYRE default)"
+    )
+    lines = [
+        "# FYRE built-in dataplane and external dataplane comparison",
+        "",
+        "## Architecture",
+        "",
+        "```mermaid",
+        "flowchart LR",
+        "  subgraph BI[Built-in dataplane lane]",
+        f"    LBI[Locust: {locust_cpu} vCPU / {locust_memory} GiB] --> TBI[Gateway + PostgreSQL + Redis: {target.get('cpu', 'n/a')} vCPU / {target.get('memory_gb', 'n/a')} GiB]",
+        f"    TBI --> FBI[Fast Time: {fast_time_cpu} vCPU / {fast_time_memory} GiB]",
+        "  end",
+        "  subgraph EX[External dataplane lane]",
+        f"    LEX[Locust: {locust_cpu} vCPU / {locust_memory} GiB] --> TEX[Rust + Redis + JWKS: {target.get('cpu', 'n/a')} vCPU / {target.get('memory_gb', 'n/a')} GiB]",
+        f"    TEX --> FEX[Fast Time: {fast_time_cpu} vCPU / {fast_time_memory} GiB]",
+        "  end",
+        "```",
+        "",
+        (
+            (
+                "All eight lane/user measurements ran concurrently. Each measurement had "
+                "its own reserved Locust, target, and Fast Time pods. Pods of the same role "
+                "shared a dedicated worker pool, with requests and limits equal to the stated "
+                "per-measurement allocation."
+                if all_parallel
+                else "The two lanes ran concurrently on six dedicated OpenShift worker nodes. "
+                "Each lane had its own load generator, target, and backend, so the measured "
+                "targets and helpers shared no worker node."
+            )
+            if openshift
+            else "The two lanes ran sequentially on the same standalone target VM."
+        ),
+        "",
+        "| Setting | Value |",
+        "| --- | --- |",
+        f"| Infrastructure | {'FYRE OpenShift ' + str(infrastructure.get('openshift', {}).get('version', '')) if openshift else 'FYRE standalone VMs'} |",
+        f"| Worker root disk | {disk} |",
+        f"| Target allocation per lane | {target.get('cpu', 'n/a')} vCPU / {target.get('memory_gb', 'n/a')} GiB |",
+        f"| Locust allocation per measurement | {locust_cpu} vCPU / {locust_memory} GiB; "
+        + ("one master and three workers |" if openshift else "distributed workers |"),
+        f"| Fast Time allocation per measurement | {fast_time_cpu} vCPU / {fast_time_memory} GiB |",
+        f"| MCP protocol | {workload.get('protocol_version', 'n/a')} |",
+        f"| Timing per measurement | {workload.get('ramp_seconds', 0)} s ramp, {workload.get('warmup_seconds', 0)} s warmup, {duration // 60} min measured |",
+        "| Client | Locust FastHttpUser, zero wait |",
+        "| Failure policy | Stop all concurrent measurements on the first request or worker error |"
+        if all_parallel
+        else "| Failure policy | Stop the current pair on the first request or worker error; do not advance |",
+        "",
+        "## Requests",
+        "",
+        "Each virtual user calls `server/discover` once during startup. Statistics reset after warmup, so measured traffic consists only of repeated `tools/call` requests with uniform random selection across these six Fast Time tools:",
+        "",
+        ", ".join(f"`{tool}`" for tool in tools) + ".",
+        "",
+        "The backend has explicit zero delay. The workload makes no `resources/read` requests and no fan-out calls.",
+        "",
+        "## Results",
+        "",
+        "| Users | Built-in requests | Built-in errors | Built-in RPS | Built-in p50/p95/p99 | Built-in memory avg/peak | External requests | External errors | External RPS | External p50/p95/p99 | External memory avg/peak | External vs built-in |",
+        "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for row in rows:
+        builtin_memory = memory_pair(
+            row["built_in_dataplane_memory_average_mib"],
+            row["built_in_dataplane_memory_peak_mib"],
+        )
+        external_memory = memory_pair(
+            row["external_dataplane_memory_average_mib"],
+            row["external_dataplane_memory_peak_mib"],
+        )
+        lines.append(
+            f"| {row['users']:,} | {row['built_in_dataplane_requests']:,} | "
+            f"{row['built_in_dataplane_errors']} | {row['built_in_dataplane_rps']:,.2f} | "
+            f"{row['built_in_dataplane_p50_ms']:.0f}/{row['built_in_dataplane_p95_ms']:.0f}/{row['built_in_dataplane_p99_ms']:.0f} ms | "
+            f"{builtin_memory} | "
+            f"{row['external_dataplane_requests']:,} | {row['external_dataplane_errors']} | "
+            f"{row['external_dataplane_rps']:,.2f} | "
+            f"{row['external_dataplane_p50_ms']:.0f}/{row['external_dataplane_p95_ms']:.0f}/{row['external_dataplane_p99_ms']:.0f} ms | "
+            f"{external_memory} | "
+            f"{row['external_vs_built_in']:.2f}× |"
+        )
+    lines.extend(
+        [
+            "",
+            "Gateway memory is sampled every 10 seconds during the measured window and includes all gateway-side containers: Python, PostgreSQL, and Redis for the built-in lane; Rust, Redis, and loopback JWKS for the external lane.",
+            "",
+            "## Software",
+            "",
+            "| Component | Pinned image |",
+            "| --- | --- |",
+            *[
+                f"| {name.replace('_', ' ').title()} | `{image}` |"
+                for name, image in sorted(images.items())
+            ],
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def memory_pair(average: float | None, peak: float | None) -> str:
+    if average is None or peak is None:
+        return "n/a"
+    return f"{average:.0f}/{peak:.0f} MiB"
+
+
 def comparison_report(config: dict, results_root: Path, *, render: bool = True) -> None:
     result_path = results_root / "comparison" / "result.json"
     if not result_path.is_file():
@@ -32,12 +173,16 @@ def comparison_report(config: dict, results_root: Path, *, render: bool = True) 
                 "built_in_dataplane_p50_ms": builtin["p50_ms"],
                 "built_in_dataplane_p95_ms": builtin["p95_ms"],
                 "built_in_dataplane_p99_ms": builtin["p99_ms"],
+                "built_in_dataplane_memory_average_mib": builtin.get("memory", {}).get("average_mib"),
+                "built_in_dataplane_memory_peak_mib": builtin.get("memory", {}).get("peak_mib"),
                 "external_dataplane_requests": rust["requests"],
                 "external_dataplane_errors": rust["failures"],
                 "external_dataplane_rps": rust["rps"],
                 "external_dataplane_p50_ms": rust["p50_ms"],
                 "external_dataplane_p95_ms": rust["p95_ms"],
                 "external_dataplane_p99_ms": rust["p99_ms"],
+                "external_dataplane_memory_average_mib": rust.get("memory", {}).get("average_mib"),
+                "external_dataplane_memory_peak_mib": rust.get("memory", {}).get("peak_mib"),
                 "external_vs_built_in": rust["rps"] / builtin["rps"],
             }
         )
@@ -48,6 +193,9 @@ def comparison_report(config: dict, results_root: Path, *, render: bool = True) 
         writer = csv.DictWriter(stream, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
+    (results_root / "report.md").write_text(
+        comparison_markdown(config, rows), encoding="utf-8"
+    )
 
     if not render:
         return
@@ -55,16 +203,27 @@ def comparison_report(config: dict, results_root: Path, *, render: bool = True) 
     import matplotlib.pyplot as plt
     from matplotlib.patches import FancyBboxPatch
 
-    helpers = config["active_helper"]
+    openshift = config.get("infrastructure", {}).get("kind") == "openshift"
+    openshift_config = config.get("infrastructure", {}).get("openshift", {})
+    helpers = config.get("active_helper", {})
     workload = config["workload"]
+    all_parallel = openshift and bool(workload.get("parallel_user_levels"))
     target = config["scenarios"][0]
+    load_cpu = openshift_config.get("load_pod", {}).get("cpu_millicores", 0) / 1_000
+    load_memory = openshift_config.get("load_pod", {}).get("memory_mib", 0) / 1_024
+    backend_cpu = openshift_config.get("backend_pod", {}).get("cpu_millicores", 0) / 1_000
+    backend_memory = openshift_config.get("backend_pod", {}).get("memory_mib", 0) / 1_024
     figure = plt.figure(figsize=(18, 10), dpi=160, facecolor="#0b1020")
     axis = figure.add_axes([0, 0, 1, 1])
     axis.set_axis_off()
     figure.text(
         0.035,
         0.95,
-        "FYRE built-in dataplane vs external dataplane — one-hour load comparison",
+        "FYRE OpenShift built-in vs external dataplane — eight parallel one-hour measurements"
+        if all_parallel
+        else "FYRE OpenShift built-in vs external dataplane — parallel one-hour load comparison"
+        if openshift
+        else "FYRE built-in dataplane vs external dataplane — one-hour load comparison",
         color="white",
         fontsize=25,
         fontweight="bold",
@@ -72,7 +231,11 @@ def comparison_report(config: dict, results_root: Path, *, render: bool = True) 
     figure.text(
         0.035,
         0.91,
-        "Eight zero-error benchmarks • same modern client and same target VM allocation • private FYRE network",
+        "Eight benchmarks run together • reserved 2 vCPU / 2 GB targets • 40 GB OpenShift nodes"
+        if all_parallel
+        else "Eight zero-error benchmarks • isolated equal-size lane allocations • 40 GB OpenShift nodes"
+        if openshift
+        else "Eight zero-error benchmarks • same modern client and same target VM allocation • private FYRE network",
         color="#a7b0c0",
         fontsize=12,
     )
@@ -81,20 +244,38 @@ def comparison_report(config: dict, results_root: Path, *, render: bool = True) 
         (
             0.035,
             "LOAD GENERATOR",
-            f"Locust VM • {helpers['locust_cpu']} vCPU / {helpers['locust_memory_gb']} GB\n"
+            f"Per measurement: {load_cpu:g} vCPU / {load_memory:g} GB pod\n"
+            "3 distributed workers • zero wait\nShared dedicated-role OpenShift worker"
+            if all_parallel
+            else "Per lane: 4 vCPU / 16 GB pod\n3 distributed workers • zero wait\nDedicated OpenShift worker"
+            if openshift
+            else f"Locust VM • {helpers['locust_cpu']} vCPU / {helpers['locust_memory_gb']} GB\n"
             f"{max(2, int(helpers['locust_cpu']) - 1)} distributed workers • zero wait",
         ),
         (
             0.355,
-            "TARGET — SAME VM, SEQUENTIAL",
-            f"{target['cpu']} vCPU / {target['memory_gb']} GB\n"
+            "TARGETS — 8 RESERVED PODS"
+            if all_parallel
+            else "TARGETS — ISOLATED, PARALLEL"
+            if openshift
+            else "TARGET — SAME VM, SEQUENTIAL",
+            f"Per measurement: {target['cpu']} vCPU / {target['memory_gb']} GB pod allocation\n"
+            "Built-in: Python + Postgres + Redis\nExternal: Rust + Redis + loopback JWKS\n"
+            "Shared dedicated target worker"
+            if openshift
+            else f"{target['cpu']} vCPU / {target['memory_gb']} GB\n"
             "Built-in dataplane: Python gateway + Postgres + Redis\n"
             "External dataplane: Rust + Redis + loopback JWKS",
         ),
         (
             0.71,
             "BACKEND",
-            f"Fast Time VM • {helpers['fast_time_cpu']} vCPU / {helpers['fast_time_memory_gb']} GB\n6 tools • explicit zero delay",
+            f"Per measurement: {backend_cpu:g} vCPU / {backend_memory:g} GB pod\n"
+            "6 tools • explicit zero delay\nShared dedicated-role OpenShift worker"
+            if all_parallel
+            else "Per lane: 8 vCPU / 32 GB pod\n6 tools • explicit zero delay\nDedicated OpenShift worker"
+            if openshift
+            else f"Fast Time VM • {helpers['fast_time_cpu']} vCPU / {helpers['fast_time_memory_gb']} GB\n6 tools • explicit zero delay",
         ),
     ]
     widths = [0.27, 0.31, 0.255]
@@ -132,6 +313,8 @@ def comparison_report(config: dict, results_root: Path, *, render: bool = True) 
         "External DP\nerrors",
         "External DP\nRPS",
         "External DP p50 /\np95 / p99",
+        "Built-in memory\navg / peak MiB",
+        "External memory\navg / peak MiB",
         "External vs\nbuilt-in",
     ]
     cells = [
@@ -145,6 +328,14 @@ def comparison_report(config: dict, results_root: Path, *, render: bool = True) 
             str(row["external_dataplane_errors"]),
             f"{row['external_dataplane_rps']:,.2f}",
             f"{row['external_dataplane_p50_ms']:.0f} / {row['external_dataplane_p95_ms']:.0f} / {row['external_dataplane_p99_ms']:.0f} ms",
+            memory_pair(
+                row["built_in_dataplane_memory_average_mib"],
+                row["built_in_dataplane_memory_peak_mib"],
+            ).removesuffix(" MiB").replace("/", " / "),
+            memory_pair(
+                row["external_dataplane_memory_average_mib"],
+                row["external_dataplane_memory_peak_mib"],
+            ).removesuffix(" MiB").replace("/", " / "),
             f"{row['external_vs_built_in']:.2f}×",
         ]
         for row in rows
@@ -154,10 +345,10 @@ def comparison_report(config: dict, results_root: Path, *, render: bool = True) 
         colLabels=headers,
         cellLoc="center",
         loc="center",
-        colWidths=[0.06, 0.105, 0.065, 0.09, 0.15, 0.105, 0.065, 0.09, 0.15, 0.10],
+        colWidths=[0.05, 0.09, 0.055, 0.075, 0.115, 0.09, 0.055, 0.075, 0.115, 0.09, 0.09, 0.08],
     )
     table.auto_set_font_size(False)
-    table.set_fontsize(9.5)
+    table.set_fontsize(8.0)
     table.scale(1, 2.3)
     for (row, _column), cell in table.get_celld().items():
         cell.set_edgecolor("#34415f")

@@ -7,6 +7,27 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Added
+
+- Add a FYRE OpenShift comparison profile that provisions 40 GB nodes and runs
+  the built-in and external dataplane lanes concurrently on separate target,
+  Locust, and Fast Time workers. Package the pinned `oc` runtime, collect
+  gateway-side memory, and produce a self-contained Markdown report alongside
+  the existing CSV, JSON, and Slack-ready PNG artifacts.
+- Add a quota-sized 2 vCPU / 2 GiB OpenShift profile that runs all eight
+  built-in/external and 125/250/500/1,000-user measurements concurrently with
+  exact pod limits on three dedicated-role workers. Reserve 1.75 vCPU / 1.75
+  GiB per 2 vCPU / 2 GiB target so all eight targets schedule with host
+  headroom, set 40 GB master and worker root disks, disable FYRE's automatic
+  worker data disks, and preserve structured FYRE API validation errors.
+
+### Changed
+
+- Generalize `load fyre run|status|destroy` ownership and cleanup to support
+  run-owned OpenShift clusters as well as standalone Terraform VMs.
+- Resume an interrupted OpenShift campaign when `load fyre run` is invoked
+  again with the same run ID and saved configuration.
+
 ## [0.5.0] - 2026-09-16
 
 ### Added

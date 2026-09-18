@@ -44,6 +44,11 @@ disk and expose no create-time root-disk setting. The default three-VM run
 therefore needs 750 GB of FYRE disk quota. The CLI checks CPU, memory, disk, and
 public-IP quota before it creates any benchmark VM.
 
+The OpenShift profile requires `FYRE_PRODUCT_GROUP_ID`, Docker on the
+orchestration host, and access to the FYRE OpenShift API and cluster DNS. The
+CLI runs a digest-pinned OpenShift client container, so a host `oc` installation
+is not required.
+
 ## Run the complete comparison
 
 The bare command is the CI entrypoint for the complete eight-run comparison:
@@ -137,3 +142,98 @@ cf-integration load fyre run \
 
 Comparison reports derive the target allocation from the selected profile; both
 lanes always run sequentially on that same VM.
+
+## Parallel OpenShift profile with 40 GB disks
+
+`openshift.yaml` runs the same eight comparison measurements on a FYRE
+OpenShift cluster while reducing every master and worker root disk to 40 GB
+and explicitly disabling FYRE's default worker data disks.
+The built-in and external lanes run concurrently and remain isolated on six
+dedicated workers:
+
+| Lane role | Workers | Pod allocation on each worker |
+| --- | ---: | ---: |
+| Built-in and external Locust | 2 | 4 vCPU / 16 GiB each |
+| Built-in and external target | 2 | 4 vCPU / 4 GiB each |
+| Built-in and external Fast Time | 2 | 8 vCPU / 32 GiB each |
+
+Each Locust pod contains one master and three workers. Each target allocation
+includes its supporting PostgreSQL/Redis or Redis/JWKS containers. Each lane
+has a separate zero-delay Fast Time service. No measured target, load generator,
+or backend shares a worker node with the other lane.
+
+Run the complete parallel comparison with:
+
+```bash
+cf-integration load fyre run \
+  --file benchmarks/fyre/openshift.yaml \
+  --run-id openshift-builtin-external
+```
+
+The short form is:
+
+```bash
+cf-integration l f r -f benchmarks/fyre/openshift.yaml -i openshift-builtin-external
+```
+
+The command creates the cluster through the FYRE OpenShift API, authenticates
+with the generated kubeadmin credential, assigns the six workers by their
+configured CPU and memory, runs both lanes in parallel at 125, 250, 500, and
+1,000 users, downloads every phase before deleting its pods, writes the final
+report, deletes the benchmark namespace, and deletes only the run-owned
+cluster. A failed or interrupted campaign retains its local run state and
+retries cluster cleanup three times. Run the same command with the same run ID
+to resume an interrupted OpenShift campaign from its saved manifest.
+
+OpenShift artifacts use the same
+`$CF_INTEGRATION_DIR/fyre/<run-id>/results/` layout and add `report.md`, a
+self-contained report with the result table, memory averages and peaks,
+request mix, pinned images, and Mermaid architecture. The cluster record and
+manifest recursively omit passwords, tokens, pull secrets, API keys, and
+kubeconfig data.
+
+The built-in lane remains pinned to the MCP SDK v2 fixture image until that SDK
+change is available in the main gateway image. The profile must not be changed
+back to the main image before that merge because both lanes use the same modern
+`2026-07-28` client.
+
+### Fully parallel 2 vCPU / 2 GiB comparison
+
+`openshift-2v2-parallel.yaml` runs all eight measurements at the same time:
+built-in and external dataplane lanes at 125, 250, 500, and 1,000 users. Each
+measurement gets its own target, Locust, and Fast Time pods with identical
+requests and limits. Pods share only with pods serving the same role.
+
+| Dedicated worker role | Worker size | Pods | Reserved per measurement |
+| --- | ---: | ---: | ---: |
+| Target | 16 vCPU / 16 GiB | 8 | 2 vCPU / 2 GiB limits; 1.75 vCPU / 1.75 GiB requests |
+| Locust | 14 vCPU / 12 GiB | 8 | 1.5 vCPU / 1.25 GiB |
+| Fast Time | 14 vCPU / 12 GiB | 8 | 1.5 vCPU / 1.375 GiB |
+
+Each target reservation includes its supporting PostgreSQL and Redis
+containers for the built-in dataplane, or Redis and loopback JWKS containers
+for the external dataplane. Each Locust pod has one master and three workers.
+The helper pressure gate rejects the campaign if the shared helper workers or
+individual helper pods become the bottleneck.
+
+Run the full comparison with one command:
+
+```bash
+cf-integration load fyre run \
+  --file benchmarks/fyre/openshift-2v2-parallel.yaml \
+  --run-id openshift-2v2-parallel
+```
+
+The short form is:
+
+```bash
+cf-integration l f r -f benchmarks/fyre/openshift-2v2-parallel.yaml -i openshift-2v2-parallel
+```
+
+The three OpenShift masters and all three workers use 40 GB root disks, the
+FYRE API VM uses its fixed 500 GB root disk, and workers have no additional
+data disks. The cluster therefore requests 740 GB of disk in total. The
+orchestration command may run on a persistent VM or CI worker; the benchmark
+continues if the developer laptop sleeps. Artifacts are downloaded to
+`$CF_INTEGRATION_DIR/fyre/<run-id>/results/` before the run-owned cluster is
+deleted.
