@@ -10,10 +10,11 @@ infrastructure:
     oc_image: quay.io/openshift/origin-cli@sha256:f3fc63fc3d2fd1c3a2c3311bf517b776f6596244e697dad32d62ca9fd6482fe5
     master: { cpu: 4, memory_gb: 16 }
     api: { cpu: 4, memory_gb: 8 }
+    target_pod: { cpu_millicores: 1750, memory_mib: 1792 }
     load_pod: { cpu_millicores: 1500, memory_mib: 1280 }
     backend_pod: { cpu_millicores: 1500, memory_mib: 1408 }
     worker_pools:
-      - { role: target, cpu: 10, memory_gb: 10, count: 2 }
+      - { role: target, cpu: 16, memory_gb: 16, count: 1 }
       - { role: locust, cpu: 14, memory_gb: 12, count: 1 }
       - { role: fast-time, cpu: 14, memory_gb: 12, count: 1 }
 images:

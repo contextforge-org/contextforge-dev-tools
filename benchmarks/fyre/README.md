@@ -204,7 +204,7 @@ requests and limits. Pods share only with pods serving the same role.
 
 | Dedicated worker role | Worker size | Pods | Reserved per measurement |
 | --- | ---: | ---: | ---: |
-| Target | 2 × 10 vCPU / 10 GiB | 8 | 2 vCPU / 2 GiB |
+| Target | 16 vCPU / 16 GiB | 8 | 2 vCPU / 2 GiB limits; 1.75 vCPU / 1.75 GiB requests |
 | Locust | 14 vCPU / 12 GiB | 8 | 1.5 vCPU / 1.25 GiB |
 | Fast Time | 14 vCPU / 12 GiB | 8 | 1.5 vCPU / 1.375 GiB |
 
@@ -228,7 +228,7 @@ The short form is:
 cf-integration l f r -f benchmarks/fyre/openshift-2v2-parallel.yaml -i openshift-2v2-parallel
 ```
 
-The three OpenShift masters, infrastructure node, and all four workers use
+The three OpenShift masters, infrastructure node, and all three workers use
 40 GB root disks. The
 orchestration command may run on a persistent VM or CI worker; the benchmark
 continues if the developer laptop sleeps. Artifacts are downloaded to
