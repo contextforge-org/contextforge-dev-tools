@@ -146,7 +146,8 @@ lanes always run sequentially on that same VM.
 ## Parallel OpenShift profile with 40 GB disks
 
 `openshift.yaml` runs the same eight comparison measurements on a FYRE
-OpenShift cluster while reducing every master and worker root disk to 40 GB.
+OpenShift cluster while reducing every master and worker root disk to 40 GB
+and explicitly disabling FYRE's default worker data disks.
 The built-in and external lanes run concurrently and remain isolated on six
 dedicated workers:
 
@@ -181,7 +182,8 @@ configured CPU and memory, runs both lanes in parallel at 125, 250, 500, and
 1,000 users, downloads every phase before deleting its pods, writes the final
 report, deletes the benchmark namespace, and deletes only the run-owned
 cluster. A failed or interrupted campaign retains its local run state and
-retries cluster cleanup three times.
+retries cluster cleanup three times. Run the same command with the same run ID
+to resume an interrupted OpenShift campaign from its saved manifest.
 
 OpenShift artifacts use the same
 `$CF_INTEGRATION_DIR/fyre/<run-id>/results/` layout and add `report.md`, a
@@ -228,8 +230,9 @@ The short form is:
 cf-integration l f r -f benchmarks/fyre/openshift-2v2-parallel.yaml -i openshift-2v2-parallel
 ```
 
-The three OpenShift masters, infrastructure node, and all three workers use
-40 GB root disks. The
+The three OpenShift masters and all three workers use 40 GB root disks, the
+FYRE API VM uses its fixed 500 GB root disk, and workers have no additional
+data disks. The cluster therefore requests 740 GB of disk in total. The
 orchestration command may run on a persistent VM or CI worker; the benchmark
 continues if the developer laptop sleeps. Artifacts are downloaded to
 `$CF_INTEGRATION_DIR/fyre/<run-id>/results/` before the run-owned cluster is

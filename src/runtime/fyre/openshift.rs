@@ -210,36 +210,66 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             )));
         }
         let root = self.config.integration_dir().join("fyre").join(&run_id);
-        if root.exists() {
-            return Err(AppFailure::from(anyhow::anyhow!(
-                "FYRE run {run_id} already exists at {}; use status or destroy with this run ID",
-                root.display()
-            )));
-        }
-        fs::create_dir_all(root.join("results/comparison"))
-            .with_context(|| format!("failed to create FYRE run directory {}", root.display()))
-            .map_err(AppFailure::from)?;
         let config_path = root.join("config.json");
-        write_json(&config_path, &config).map_err(AppFailure::from)?;
-        let mut state = RunState {
-            schema_version: 1,
-            run_id: run_id.clone(),
-            infrastructure_kind: "openshift".to_owned(),
-            cluster_name: Some(cluster_name.clone()),
-            phase: "provisioning".to_owned(),
-            config_file: source,
-            current_scenario: Some("comparison".to_owned()),
-            locust_helper_size: 0,
-            fast_time_helper_size: 0,
-            completed_scenarios: Vec::new(),
-            cleanup_required: true,
+        let resuming = root.exists();
+        let (config, mut state) = if resuming {
+            let state = super::read_owned_state(&root, &run_id).map_err(AppFailure::from)?;
+            if !state.cleanup_required {
+                return Err(AppFailure::from(anyhow::anyhow!(
+                    "FYRE OpenShift run {run_id} is already {}",
+                    state.phase
+                )));
+            }
+            if state.cluster_name.as_deref() != Some(cluster_name.as_str()) {
+                return Err(AppFailure::from(anyhow::anyhow!(
+                    "FYRE OpenShift run {run_id} owns a different cluster; refusing resume"
+                )));
+            }
+            let saved: FyreConfig = serde_json::from_slice(
+                &fs::read(&config_path)
+                    .with_context(|| format!("failed to read {}", config_path.display()))
+                    .map_err(AppFailure::from)?,
+            )
+            .context("invalid saved FYRE OpenShift configuration")
+            .map_err(AppFailure::from)?;
+            println!(
+                "Resuming FYRE OpenShift run {run_id} from phase {}",
+                state.phase
+            );
+            (saved, state)
+        } else {
+            fs::create_dir_all(root.join("results/comparison"))
+                .with_context(|| format!("failed to create FYRE run directory {}", root.display()))
+                .map_err(AppFailure::from)?;
+            write_json(&config_path, &config).map_err(AppFailure::from)?;
+            let state = RunState {
+                schema_version: 1,
+                run_id: run_id.clone(),
+                infrastructure_kind: "openshift".to_owned(),
+                cluster_name: Some(cluster_name.clone()),
+                phase: "provisioning".to_owned(),
+                config_file: source,
+                current_scenario: Some("comparison".to_owned()),
+                locust_helper_size: 0,
+                fast_time_helper_size: 0,
+                completed_scenarios: Vec::new(),
+                cleanup_required: true,
+            };
+            write_state(&root, &state).map_err(AppFailure::from)?;
+            (config, state)
         };
-        write_state(&root, &state).map_err(AppFailure::from)?;
         let api = FyreOpenShiftApi::new(self).map_err(AppFailure::from)?;
 
         let primary = async {
             let provision = async {
-                api.create(&cluster_name, &config).await?;
+                if resuming {
+                    ensure!(
+                        !api.hostname_available(&cluster_name).await?,
+                        "FYRE OpenShift cluster {cluster_name} no longer exists; use destroy to close the stale run"
+                    );
+                } else {
+                    api.create(&cluster_name, &config).await?;
+                }
                 api.wait_deployed(&cluster_name).await
             };
             tokio::pin!(provision);
@@ -260,29 +290,31 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             write_state(&root, &state).map_err(AppFailure::from)?;
             self.openshift_login(&root, &cluster_name, &config, &details)
                 .await?;
-            state.phase = "benchmarking".to_owned();
-            write_state(&root, &state).map_err(AppFailure::from)?;
             let scenario_root = root.join("results/comparison");
-            let command = CommandSpec::new("python3")
-                .arg(
-                    self.config
-                        .asset_root()
-                        .join("benchmarks/fyre/openshift_campaign.py"),
-                )
-                .arg("--config")
-                .arg(&config_path)
-                .arg("--kubeconfig")
-                .arg(root.join("kubeconfig"))
-                .arg("--output")
-                .arg(&scenario_root)
-                .arg("--run-id")
-                .arg(&run_id)
-                .arg("--assets")
-                .arg(self.config.asset_root().join("benchmarks/fyre"));
-            self.run_cancellable(&command).await?;
-            state.completed_scenarios.push("comparison".to_owned());
-            state.current_scenario = None;
-            write_state(&root, &state).map_err(AppFailure::from)?;
+            if !state.completed_scenarios.iter().any(|item| item == "comparison") {
+                state.phase = "benchmarking".to_owned();
+                write_state(&root, &state).map_err(AppFailure::from)?;
+                let command = CommandSpec::new("python3")
+                    .arg(
+                        self.config
+                            .asset_root()
+                            .join("benchmarks/fyre/openshift_campaign.py"),
+                    )
+                    .arg("--config")
+                    .arg(&config_path)
+                    .arg("--kubeconfig")
+                    .arg(root.join("kubeconfig"))
+                    .arg("--output")
+                    .arg(&scenario_root)
+                    .arg("--run-id")
+                    .arg(&run_id)
+                    .arg("--assets")
+                    .arg(self.config.asset_root().join("benchmarks/fyre"));
+                self.run_cancellable(&command).await?;
+                state.completed_scenarios.push("comparison".to_owned());
+                state.current_scenario = None;
+                write_state(&root, &state).map_err(AppFailure::from)?;
+            }
             self.generate_fyre_report(&root, &config_path).await?;
             write_json(
                 &root.join("manifest.json"),
@@ -391,6 +423,7 @@ fn cluster_payload(
     product_group: &str,
     site: &str,
 ) -> Value {
+    let base_disk_size = openshift.base_disk_gb.to_string();
     let mut worker_pools = BTreeMap::<(u32, u32), u32>::new();
     for pool in &openshift.worker_pools {
         *worker_pools.entry((pool.cpu, pool.memory_gb)).or_default() += pool.count;
@@ -398,6 +431,7 @@ fn cluster_payload(
     json!({
         "name": cluster,
         "description": "ContextForge parallel built-in/external dataplane benchmark",
+        "platform": "x",
         "quota_type": "product_group",
         "site": site,
         "product_group_id": product_group,
@@ -410,6 +444,14 @@ fn cluster_payload(
             "cpu": openshift.master.cpu,
             "memory": openshift.master.memory_gb,
             "disk": openshift.base_disk_gb,
+            "base_disk_size": base_disk_size,
+        },
+        "api": {
+            "count": 1,
+            "cpu": openshift.api.cpu,
+            "memory": openshift.api.memory_gb,
+            "disk": openshift.base_disk_gb,
+            "base_disk_size": base_disk_size,
         },
         "infra": {
             "cpu": openshift.api.cpu,
@@ -421,6 +463,8 @@ fn cluster_payload(
             "cpu": cpu,
             "memory": memory,
             "os_disk": openshift.base_disk_gb,
+            "base_disk_size": base_disk_size,
+            "additional_disk": [],
         })).collect::<Vec<_>>(),
     })
 }
@@ -570,10 +614,17 @@ mod tests {
             .expect("OpenShift settings");
         let payload = cluster_payload("cf-test", &config, openshift, "808", "svl");
         assert_eq!(payload["master"]["disk"], 40);
+        assert_eq!(payload["master"]["base_disk_size"], "40");
         let workers = payload["worker"].as_array().expect("worker pools");
         assert_eq!(workers.len(), 3);
         assert!(workers.iter().all(|pool| pool["count"] == 2));
         assert!(workers.iter().all(|pool| pool["os_disk"] == 40));
+        assert!(workers.iter().all(|pool| pool["base_disk_size"] == "40"));
+        assert!(
+            workers
+                .iter()
+                .all(|pool| pool["additional_disk"] == json!([]))
+        );
     }
 
     #[test]
@@ -593,6 +644,8 @@ mod tests {
         let payload = cluster_payload("cf-test", &config, openshift, "808", "svl");
         let workers = payload["worker"].as_array().expect("worker pools");
         assert_eq!(payload["master"]["count"], 3);
+        assert_eq!(payload["master"]["base_disk_size"], "40");
+        assert_eq!(payload["api"]["base_disk_size"], "40");
         assert_eq!(payload["infra"]["disk"], 40);
         assert_eq!(workers.len(), 2);
         assert_eq!(
@@ -603,6 +656,12 @@ mod tests {
             3
         );
         assert!(workers.iter().all(|pool| pool["os_disk"] == 40));
+        assert!(workers.iter().all(|pool| pool["base_disk_size"] == "40"));
+        assert!(
+            workers
+                .iter()
+                .all(|pool| pool["additional_disk"] == json!([]))
+        );
         let worker_cpu: u64 = workers
             .iter()
             .map(|pool| {
@@ -626,7 +685,9 @@ mod tests {
             .sum();
         assert_eq!(worker_cpu + 3 * 4 + 4, 60);
         assert_eq!(worker_memory + 3 * 16 + 8, 96);
-        assert_eq!(worker_disk + 3 * 40 + 40, 280);
+        // FYRE fixes the API VM at 500 GB. Empty additional_disk arrays prevent
+        // the default two 200 GB data disks from being attached to every worker.
+        assert_eq!(worker_disk + 3 * 40 + 500, 740);
     }
 
     #[test]
