@@ -261,7 +261,7 @@ def comparison_report(config: dict, results_root: Path, *, render: bool = True) 
             else "TARGET — SAME VM, SEQUENTIAL",
             f"Per measurement: {target['cpu']} vCPU / {target['memory_gb']} GB pod allocation\n"
             "Built-in: Python + Postgres + Redis\nExternal: Rust + Redis + loopback JWKS\n"
-            "Balanced across 2 dedicated target workers"
+            "Shared dedicated target worker"
             if openshift
             else f"{target['cpu']} vCPU / {target['memory_gb']} GB\n"
             "Built-in dataplane: Python gateway + Postgres + Redis\n"

@@ -68,6 +68,7 @@ struct OpenShiftConfig {
     oc_image: String,
     master: MachineSize,
     api: MachineSize,
+    target_pod: PodSize,
     load_pod: PodSize,
     backend_pod: PodSize,
     worker_pools: Vec<OpenShiftWorkerPool>,
@@ -1006,6 +1007,8 @@ fn validate_openshift_config(config: &FyreConfig) -> Result<()> {
     ensure!(
         openshift.load_pod.cpu_millicores > 0
             && openshift.load_pod.memory_mib > 0
+            && openshift.target_pod.cpu_millicores > 0
+            && openshift.target_pod.memory_mib > 0
             && openshift.backend_pod.cpu_millicores > 0
             && openshift.backend_pod.memory_mib > 0,
         "OpenShift helper pod resources must be positive"
@@ -1022,9 +1025,15 @@ fn validate_openshift_config(config: &FyreConfig) -> Result<()> {
         let target = pool("target");
         let scenario = &config.scenarios[0];
         ensure!(
-            scenario.cpu * measurements <= target.cpu * target.count
-                && scenario.memory_gb * measurements <= target.memory_gb * target.count,
-            "shared OpenShift target worker cannot reserve every parallel 2v2 target"
+            openshift.target_pod.cpu_millicores <= scenario.cpu * 1_000
+                && openshift.target_pod.memory_mib <= scenario.memory_gb * 1_024,
+            "OpenShift target requests cannot exceed the target limits"
+        );
+        ensure!(
+            openshift.target_pod.cpu_millicores * measurements <= target.cpu * target.count * 1_000
+                && openshift.target_pod.memory_mib * measurements
+                    <= target.memory_gb * target.count * 1_024,
+            "shared OpenShift target workers cannot reserve every parallel target"
         );
         for (role, pod) in [
             ("locust", openshift.load_pod),

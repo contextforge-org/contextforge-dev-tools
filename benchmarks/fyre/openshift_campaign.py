@@ -83,9 +83,19 @@ def metadata(name: str, namespace: str | None = None) -> dict:
     return result
 
 
-def resources(cpu: str, memory: str) -> dict:
-    values = {"cpu": cpu, "memory": memory}
-    return {"requests": values, "limits": values}
+def resources(
+    cpu: str,
+    memory: str,
+    request_cpu: str | None = None,
+    request_memory: str | None = None,
+) -> dict:
+    return {
+        "requests": {
+            "cpu": request_cpu or cpu,
+            "memory": request_memory or memory,
+        },
+        "limits": {"cpu": cpu, "memory": memory},
+    }
 
 
 def pod_size(config: dict, key: str) -> tuple[str, str]:
@@ -96,6 +106,11 @@ def pod_size(config: dict, key: str) -> tuple[str, str]:
 def target_size(config: dict) -> tuple[int, int]:
     scenario = config["scenarios"][0]
     return int(scenario["cpu"]) * 1000, int(scenario["memory_gb"]) * 1024
+
+
+def target_request_size(config: dict) -> tuple[int, int]:
+    size = config["infrastructure"]["openshift"]["target_pod"]
+    return int(size["cpu_millicores"]), int(size["memory_mib"])
 
 
 def instance_name(base: str, lane: str, users: int | None = None) -> str:
@@ -341,8 +356,11 @@ def deploy_external(
 ) -> tuple[str, list[str]]:
     name = instance_name("target", "external", users)
     total_cpu, total_memory = target_size(config)
+    request_cpu, request_memory = target_request_size(config)
     dataplane_cpu = total_cpu - 500
     dataplane_memory = total_memory - 512
+    dataplane_request_cpu = request_cpu - 500
+    dataplane_request_memory = request_memory - 512
     oc.apply(
         {
             "apiVersion": "v1",
@@ -387,7 +405,10 @@ def deploy_external(
                         ),
                         "ports": [{"containerPort": 4445}],
                         "resources": resources(
-                            f"{dataplane_cpu}m", f"{dataplane_memory}Mi"
+                            f"{dataplane_cpu}m",
+                            f"{dataplane_memory}Mi",
+                            f"{dataplane_request_cpu}m",
+                            f"{dataplane_request_memory}Mi",
                         ),
                         "readinessProbe": {
                             "tcpSocket": {"port": 4445},
@@ -550,12 +571,21 @@ def deploy_builtin(
     migration_name = with_users("builtin-migration", users)
     registration_name = with_users("builtin-registration", users)
     total_cpu, total_memory = target_size(config)
+    request_cpu, request_memory = target_request_size(config)
     postgres_cpu = total_cpu * 3 // 16
     redis_cpu = total_cpu // 16
     gateway_cpu = total_cpu - postgres_cpu - redis_cpu
     postgres_memory = total_memory * 3 // 16
     redis_memory = total_memory // 16
     gateway_memory = total_memory - postgres_memory - redis_memory
+    postgres_request_cpu = request_cpu * 3 // 16
+    redis_request_cpu = request_cpu // 16
+    gateway_request_cpu = request_cpu - postgres_request_cpu - redis_request_cpu
+    postgres_request_memory = request_memory * 3 // 16
+    redis_request_memory = request_memory // 16
+    gateway_request_memory = (
+        request_memory - postgres_request_memory - redis_request_memory
+    )
     credentials = {
         "postgres": secrets.token_hex(24),
         "jwt": secrets.token_hex(32),
@@ -597,7 +627,10 @@ def deploy_builtin(
                         ),
                         "ports": [{"containerPort": 5432}],
                         "resources": resources(
-                            f"{postgres_cpu}m", f"{postgres_memory}Mi"
+                            f"{postgres_cpu}m",
+                            f"{postgres_memory}Mi",
+                            f"{postgres_request_cpu}m",
+                            f"{postgres_request_memory}Mi",
                         ),
                         "readinessProbe": {
                             "exec": {
@@ -622,7 +655,10 @@ def deploy_builtin(
                         ],
                         "ports": [{"containerPort": 6379}],
                         "resources": resources(
-                            f"{redis_cpu}m", f"{redis_memory}Mi"
+                            f"{redis_cpu}m",
+                            f"{redis_memory}Mi",
+                            f"{redis_request_cpu}m",
+                            f"{redis_request_memory}Mi",
                         ),
                         "readinessProbe": {
                             "exec": {"command": ["redis-cli", "ping"]},
@@ -687,7 +723,10 @@ def deploy_builtin(
                         "env": env_list({**environment, "HOST": "0.0.0.0", "PORT": "4444"}),
                         "ports": [{"containerPort": 4444}],
                         "resources": resources(
-                            f"{gateway_cpu}m", f"{gateway_memory}Mi"
+                            f"{gateway_cpu}m",
+                            f"{gateway_memory}Mi",
+                            f"{gateway_request_cpu}m",
+                            f"{gateway_request_memory}Mi",
                         ),
                         "readinessProbe": {
                             "httpGet": {"path": "/health", "port": 4444},
@@ -1299,7 +1338,7 @@ def main() -> None:
             "namespace": namespace,
             "nodes": nodes,
             "architecture": (
-                "eight reserved 2v2 targets running concurrently on four dedicated-role workers"
+                "eight reserved 2v2 targets running concurrently on three dedicated-role workers"
                 if all_parallel
                 else "two isolated lanes running concurrently on six workers"
             ),

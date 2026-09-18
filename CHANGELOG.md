@@ -16,9 +16,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   the existing CSV, JSON, and Slack-ready PNG artifacts.
 - Add a quota-sized 2 vCPU / 2 GiB OpenShift profile that runs all eight
   built-in/external and 125/250/500/1,000-user measurements concurrently with
-  exact pod reservations on four dedicated-role workers. Balance targets over
-  two workers to stay below FYRE's 16-vCPU node limit, set the infrastructure
-  node disk explicitly, and preserve structured FYRE API validation errors.
+  exact pod limits on three dedicated-role workers. Reserve 1.75 vCPU / 1.75
+  GiB per 2 vCPU / 2 GiB target so all eight targets schedule with host
+  headroom, set every cluster disk explicitly, and preserve structured FYRE
+  API validation errors.
 
 ### Changed
 

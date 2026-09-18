@@ -577,7 +577,7 @@ mod tests {
     }
 
     #[test]
-    fn parallel_2v2_profile_fits_four_40_gb_workers() {
+    fn parallel_2v2_profile_fits_three_40_gb_workers() {
         let config = super::super::read_config(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("benchmarks/fyre/openshift-2v2-parallel.yaml")
@@ -600,7 +600,7 @@ mod tests {
                 .iter()
                 .map(|pool| pool["count"].as_u64().expect("worker count"))
                 .sum::<u64>(),
-            4
+            3
         );
         assert!(workers.iter().all(|pool| pool["os_disk"] == 40));
         let worker_cpu: u64 = workers
@@ -624,9 +624,9 @@ mod tests {
                     * pool["os_disk"].as_u64().expect("worker disk")
             })
             .sum();
-        assert_eq!(worker_cpu + 3 * 4 + 4, 64);
-        assert_eq!(worker_memory + 3 * 16 + 8, 100);
-        assert_eq!(worker_disk + 3 * 40 + 40, 320);
+        assert_eq!(worker_cpu + 3 * 4 + 4, 60);
+        assert_eq!(worker_memory + 3 * 16 + 8, 96);
+        assert_eq!(worker_disk + 3 * 40 + 40, 280);
     }
 
     #[test]
