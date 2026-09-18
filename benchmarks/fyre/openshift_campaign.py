@@ -8,6 +8,7 @@ import concurrent.futures
 import json
 import secrets
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -85,6 +86,25 @@ def metadata(name: str, namespace: str | None = None) -> dict:
 def resources(cpu: str, memory: str) -> dict:
     values = {"cpu": cpu, "memory": memory}
     return {"requests": values, "limits": values}
+
+
+def pod_size(config: dict, key: str) -> tuple[str, str]:
+    size = config["infrastructure"]["openshift"][key]
+    return f"{int(size['cpu_millicores'])}m", f"{int(size['memory_mib'])}Mi"
+
+
+def target_size(config: dict) -> tuple[int, int]:
+    scenario = config["scenarios"][0]
+    return int(scenario["cpu"]) * 1000, int(scenario["memory_gb"]) * 1024
+
+
+def instance_name(base: str, lane: str, users: int | None = None) -> str:
+    suffix = f"-{users}" if users is not None else ""
+    return f"{base}-{lane}{suffix}"
+
+
+def with_users(base: str, users: int | None) -> str:
+    return f"{base}-{users}" if users is not None else base
 
 
 def env_list(values: dict[str, str]) -> list[dict]:
@@ -249,9 +269,15 @@ def service(oc: Oc, namespace: str, name: str, selector: str, ports: list[dict])
 
 
 def deploy_fast_time(
-    oc: Oc, config: dict, namespace: str, lane: str, node: str
+    oc: Oc,
+    config: dict,
+    namespace: str,
+    lane: str,
+    node: str,
+    users: int | None = None,
 ) -> None:
-    name = f"fast-time-{lane}"
+    name = instance_name("fast-time", lane, users)
+    cpu, memory = pod_size(config, "backend_pod")
     oc.apply(
         {
             "apiVersion": "v1",
@@ -272,7 +298,7 @@ def deploy_fast_time(
                             {"BIND_ADDRESS": "0.0.0.0:9080", "RUST_LOG": "warn"}
                         ),
                         "ports": [{"containerPort": 9080}],
-                        "resources": resources("8", "32Gi"),
+                        "resources": resources(cpu, memory),
                         "readinessProbe": {
                             "httpGet": {"path": "/health", "port": 9080},
                             "periodSeconds": 2,
@@ -294,9 +320,16 @@ def deploy_fast_time(
 
 
 def deploy_external(
-    oc: Oc, config: dict, namespace: str, node: str
+    oc: Oc,
+    config: dict,
+    namespace: str,
+    node: str,
+    users: int | None = None,
 ) -> tuple[str, list[str]]:
-    name = "target-external"
+    name = instance_name("target", "external", users)
+    total_cpu, total_memory = target_size(config)
+    dataplane_cpu = total_cpu - 500
+    dataplane_memory = total_memory - 512
     oc.apply(
         {
             "apiVersion": "v1",
@@ -332,7 +365,7 @@ def deploy_external(
                                 "CONTEXTFORGE_DATA_PLANE_REDIS_CONNECTION_MODE": "plain-text",
                                 "CONTEXTFORGE_DATA_PLANE_JWKS_URL": "http://127.0.0.1:4446/.well-known/jwks.json",
                                 "CONTEXTFORGE_DATA_PLANE_UPSTREAM_CONNECTION_MODE": "plain-text-or-tls",
-                                "CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS": "target-external:4445,127.0.0.1:4445,localhost:4445",
+                                "CONTEXTFORGE_GATEWAY_RS_MCP_ALLOWED_HOSTS": f"{name}:4445,127.0.0.1:4445,localhost:4445",
                                 "CONTEXTFORGE_DATA_PLANE_USER_CONFIG_CACHE_EXPIRY_SECONDS": str(
                                     config["workload"]["config_cache_seconds"]
                                 ),
@@ -340,7 +373,9 @@ def deploy_external(
                             }
                         ),
                         "ports": [{"containerPort": 4445}],
-                        "resources": resources("3500m", "3584Mi"),
+                        "resources": resources(
+                            f"{dataplane_cpu}m", f"{dataplane_memory}Mi"
+                        ),
                         "readinessProbe": {
                             "tcpSocket": {"port": 4445},
                             "periodSeconds": 2,
@@ -389,7 +424,7 @@ def deploy_external(
     ).stdout.strip()
     if not token or "\n" in token:
         raise RuntimeError("external dataplane token helper returned invalid output")
-    backend = "http://fast-time-external:9080/mcp"
+    backend = f"http://{instance_name('fast-time', 'external', users)}:9080/mcp"
     tools = configure_external(
         oc,
         name,
@@ -432,10 +467,12 @@ def configure_external(
     return json.loads(result[-1])
 
 
-def builtin_environment(secret: dict[str, str]) -> dict[str, str]:
+def builtin_environment(
+    secret: dict[str, str], database_host: str = "builtin-db"
+) -> dict[str, str]:
     return {
-        "DATABASE_URL": f"postgresql+psycopg://postgres:{secret['postgres']}@builtin-db:5432/mcp",
-        "REDIS_URL": "redis://builtin-db:6379/0",
+        "DATABASE_URL": f"postgresql+psycopg://postgres:{secret['postgres']}@{database_host}:5432/mcp",
+        "REDIS_URL": f"redis://{database_host}:6379/0",
         "CACHE_TYPE": "redis",
         "JWT_ALGORITHM": "HS256",
         "JWT_SECRET_KEY": secret["jwt"],
@@ -489,22 +526,37 @@ def builtin_environment(secret: dict[str, str]) -> dict[str, str]:
 
 
 def deploy_builtin(
-    oc: Oc, config: dict, namespace: str, node: str
+    oc: Oc,
+    config: dict,
+    namespace: str,
+    node: str,
+    users: int | None = None,
 ) -> tuple[str, list[str]]:
+    database_name = with_users("builtin-db", users)
+    target_name = instance_name("target", "builtin", users)
+    migration_name = with_users("builtin-migration", users)
+    registration_name = with_users("builtin-registration", users)
+    total_cpu, total_memory = target_size(config)
+    postgres_cpu = total_cpu * 3 // 16
+    redis_cpu = total_cpu // 16
+    gateway_cpu = total_cpu - postgres_cpu - redis_cpu
+    postgres_memory = total_memory * 3 // 16
+    redis_memory = total_memory // 16
+    gateway_memory = total_memory - postgres_memory - redis_memory
     credentials = {
         "postgres": secrets.token_hex(24),
         "jwt": secrets.token_hex(32),
         "encryption": secrets.token_hex(32),
         "password": secrets.token_hex(24),
     }
-    environment = builtin_environment(credentials)
+    environment = builtin_environment(credentials, database_name)
     oc.apply(
         {
             "apiVersion": "v1",
             "kind": "Pod",
             "metadata": {
-                **metadata("builtin-db", namespace),
-                "labels": {"cf.contextforge/service": "builtin-db"},
+                **metadata(database_name, namespace),
+                "labels": {"cf.contextforge/service": database_name},
             },
             "spec": {
                 "serviceAccountName": "benchmark",
@@ -531,7 +583,9 @@ def deploy_builtin(
                             }
                         ),
                         "ports": [{"containerPort": 5432}],
-                        "resources": resources("750m", "768Mi"),
+                        "resources": resources(
+                            f"{postgres_cpu}m", f"{postgres_memory}Mi"
+                        ),
                         "readinessProbe": {
                             "exec": {
                                 "command": ["pg_isready", "-U", "postgres", "-d", "mcp"]
@@ -554,7 +608,9 @@ def deploy_builtin(
                             "allkeys-lru",
                         ],
                         "ports": [{"containerPort": 6379}],
-                        "resources": resources("250m", "256Mi"),
+                        "resources": resources(
+                            f"{redis_cpu}m", f"{redis_memory}Mi"
+                        ),
                         "readinessProbe": {
                             "exec": {"command": ["redis-cli", "ping"]},
                             "periodSeconds": 2,
@@ -567,20 +623,20 @@ def deploy_builtin(
     service(
         oc,
         namespace,
-        "builtin-db",
-        "builtin-db",
+        database_name,
+        database_name,
         [
             {"name": "postgres", "port": 5432, "targetPort": 5432},
             {"name": "redis", "port": 6379, "targetPort": 6379},
         ],
     )
-    wait_for(oc, namespace, "pod", "builtin-db", "condition=Ready", 300)
+    wait_for(oc, namespace, "pod", database_name, "condition=Ready", 300)
     migration_env = {**environment, "MCPGATEWAY_SKIP_MIGRATIONS": "false"}
     oc.apply(
         {
             "apiVersion": "v1",
             "kind": "Pod",
-            "metadata": metadata("builtin-migration", namespace),
+            "metadata": metadata(migration_name, namespace),
             "spec": {
                 "serviceAccountName": "benchmark",
                 "nodeName": node,
@@ -597,15 +653,15 @@ def deploy_builtin(
             },
         }
     )
-    wait_for(oc, namespace, "pod", "builtin-migration", "phase=Succeeded", 600)
-    oc.delete("pod", "builtin-migration", "-n", namespace)
+    wait_for(oc, namespace, "pod", migration_name, "phase=Succeeded", 600)
+    oc.delete("pod", migration_name, "-n", namespace)
     oc.apply(
         {
             "apiVersion": "v1",
             "kind": "Pod",
             "metadata": {
-                **metadata("target-builtin", namespace),
-                "labels": {"cf.contextforge/service": "target-builtin"},
+                **metadata(target_name, namespace),
+                "labels": {"cf.contextforge/service": target_name},
             },
             "spec": {
                 "serviceAccountName": "benchmark",
@@ -617,7 +673,9 @@ def deploy_builtin(
                         "image": config["images"]["controlplane"],
                         "env": env_list({**environment, "HOST": "0.0.0.0", "PORT": "4444"}),
                         "ports": [{"containerPort": 4444}],
-                        "resources": resources("3", "3Gi"),
+                        "resources": resources(
+                            f"{gateway_cpu}m", f"{gateway_memory}Mi"
+                        ),
                         "readinessProbe": {
                             "httpGet": {"path": "/health", "port": 4444},
                             "periodSeconds": 3,
@@ -631,16 +689,16 @@ def deploy_builtin(
     service(
         oc,
         namespace,
-        "target-builtin",
-        "target-builtin",
+        target_name,
+        target_name,
         [{"name": "mcp", "port": 4444, "targetPort": 4444}],
     )
-    wait_for(oc, namespace, "pod", "target-builtin", "condition=Ready", 600)
+    wait_for(oc, namespace, "pod", target_name, "condition=Ready", 600)
     oc.apply(
         {
             "apiVersion": "v1",
             "kind": "Pod",
-            "metadata": metadata("builtin-registration", namespace),
+            "metadata": metadata(registration_name, namespace),
             "spec": {
                 "serviceAccountName": "benchmark",
                 "nodeName": node,
@@ -651,11 +709,14 @@ def deploy_builtin(
                         "name": "registration",
                         "image": config["images"]["controlplane"],
                         "command": ["python3", "/work/register_builtin.py"],
-                        "args": ["--backend", "http://fast-time-builtin:9080/mcp"],
+                        "args": [
+                            "--backend",
+                            f"http://{instance_name('fast-time', 'builtin', users)}:9080/mcp",
+                        ],
                         "env": env_list(
                             {
                                 **environment,
-                                "GATEWAY_URL": "http://target-builtin:4444",
+                                "GATEWAY_URL": f"http://{target_name}:4444",
                             }
                         ),
                         "volumeMounts": [{"name": "code", "mountPath": "/work"}],
@@ -665,25 +726,30 @@ def deploy_builtin(
             },
         }
     )
-    wait_for(oc, namespace, "pod", "builtin-registration", "phase=Succeeded", 600)
+    wait_for(oc, namespace, "pod", registration_name, "phase=Succeeded", 600)
     output = oc.run(
-        "logs", "builtin-registration", "-n", namespace, "-c", "registration"
+        "logs", registration_name, "-n", namespace, "-c", "registration"
     ).stdout.splitlines()
     if not output:
         raise RuntimeError("built-in registration produced no result")
     registration = json.loads(output[-1])
-    oc.delete("pod", "builtin-registration", "-n", namespace)
+    oc.delete("pod", registration_name, "-n", namespace)
     return registration["token"], registration["tool_names"]
 
 
 def store_lane_secret(
-    oc: Oc, namespace: str, lane: str, token: str, tools: list[str]
+    oc: Oc,
+    namespace: str,
+    lane: str,
+    token: str,
+    tools: list[str],
+    users: int,
 ) -> None:
     oc.apply(
         {
             "apiVersion": "v1",
             "kind": "Secret",
-            "metadata": metadata(f"lane-{lane}", namespace),
+            "metadata": metadata(instance_name("lane", lane, users), namespace),
             "type": "Opaque",
             "stringData": {"token": token, "tools": ",".join(tools)},
         }
@@ -698,8 +764,9 @@ def smoke_lane(
     node: str,
     url: str,
     tools: list[str],
+    users: int,
 ) -> None:
-    name = f"smoke-{lane}"
+    name = instance_name("smoke", lane, users)
     oc.delete("pod", name, "-n", namespace)
     oc.apply(
         {
@@ -712,7 +779,12 @@ def smoke_lane(
                 "restartPolicy": "Never",
                 "volumes": [
                     {"name": "code", "configMap": {"name": "benchmark-code"}},
-                    {"name": "secret", "secret": {"secretName": f"lane-{lane}"}},
+                    {
+                        "name": "secret",
+                        "secret": {
+                            "secretName": instance_name("lane", lane, users)
+                        },
+                    },
                 ],
                 "containers": [
                     {
@@ -742,7 +814,9 @@ def smoke_lane(
     oc.delete("pod", name, "-n", namespace)
 
 
-def load_environment(config: dict, lane: str, url: str, tools: list[str]) -> list[dict]:
+def load_environment(
+    config: dict, lane: str, url: str, tools: list[str], users: int
+) -> list[dict]:
     values = {
         "MCP_PROTOCOL_VERSION": config["workload"]["protocol_version"],
         "MCP_STACK_MODE": "controlplane" if lane == "builtin" else "dataplane",
@@ -758,7 +832,7 @@ def load_environment(config: dict, lane: str, url: str, tools: list[str]) -> lis
         "MCP_MEASUREMENT_SECONDS": str(config["workload"]["measure_seconds"]),
         "MCP_WARMUP_SECONDS": str(config["workload"]["warmup_seconds"]),
     }
-    return [*env_list(values), secret_env(f"lane-{lane}")]
+    return [*env_list(values), secret_env(instance_name("lane", lane, users))]
 
 
 def locust_pod(
@@ -782,7 +856,7 @@ def locust_pod(
         {"name": "code", "mountPath": "/mnt/locust-cf"},
         {"name": "reports", "mountPath": "/reports"},
     ]
-    common_env = load_environment(config, lane, url, tools)
+    common_env = load_environment(config, lane, url, tools, users)
     master_args = [
         "-f",
         "/mnt/locust-cf/locustfile_mcp.py",
@@ -817,7 +891,10 @@ def locust_pod(
             "args": master_args,
             "env": common_env,
             "volumeMounts": common_mounts,
-            "resources": resources("1", "4Gi"),
+            "resources": resources(
+                f"{int(config['infrastructure']['openshift']['load_pod']['cpu_millicores']) // 4}m",
+                f"{int(config['infrastructure']['openshift']['load_pod']['memory_mib']) // 4}Mi",
+            ),
         }
     ]
     for index in range(3):
@@ -837,7 +914,10 @@ def locust_pod(
                     {"name": "MCP_REPLICA_OFFSET", "value": str(index)},
                 ],
                 "volumeMounts": common_mounts,
-                "resources": resources("1", "4Gi"),
+                "resources": resources(
+                    f"{int(config['infrastructure']['openshift']['load_pod']['cpu_millicores']) // 4}m",
+                    f"{int(config['infrastructure']['openshift']['load_pod']['memory_mib']) // 4}Mi",
+                ),
             }
         )
     return {
@@ -916,13 +996,17 @@ def measurement_samples(
 def lane_memory(
     samples: list[dict],
     lane: str,
+    users: int | None = None,
     start_time: float | None = None,
     end_time: float | None = None,
 ) -> dict[str, float]:
-    prefixes = (
-        ("target-builtin", "builtin-db")
+    pod_names = (
+        (
+            instance_name("target", "builtin", users),
+            with_users("builtin-db", users),
+        )
         if lane == "builtin"
-        else ("target-external",)
+        else (instance_name("target", "external", users),)
     )
     totals = []
     for sample in measurement_samples(samples, start_time, end_time):
@@ -930,7 +1014,7 @@ def lane_memory(
         seen = False
         for line in sample.get("pods", "").splitlines():
             fields = line.split()
-            if len(fields) < 4 or not fields[0].startswith(prefixes):
+            if len(fields) < 4 or fields[0] not in pod_names:
                 continue
             try:
                 total += parse_memory_mib(fields[3])
@@ -950,9 +1034,16 @@ def helper_pressure(
     samples: list[dict],
     lane: str,
     config: dict,
+    users: int,
     start_time: float,
     end_time: float,
 ) -> dict:
+    load_size = config["infrastructure"]["openshift"]["load_pod"]
+    backend_size = config["infrastructure"]["openshift"]["backend_pod"]
+    load_cpu = float(load_size["cpu_millicores"])
+    load_memory = float(load_size["memory_mib"])
+    backend_cpu = float(backend_size["cpu_millicores"])
+    backend_memory = float(backend_size["memory_mib"])
     snapshots = measurement_samples(samples, start_time, end_time)
     totals: list[tuple[float, float, float, float]] = []
     worker_cpu: dict[str, list[float]] = {}
@@ -969,23 +1060,25 @@ def helper_pressure(
                 memory_mib = parse_memory_mib(memory)
             except ValueError:
                 continue
-            if pod.startswith(f"load-{lane}-"):
+            if pod == instance_name("load", lane, users):
                 locust_cpu += cpu_milli
                 locust_memory += memory_mib
                 seen_locust = True
                 if container.startswith("worker-"):
-                    worker_cpu.setdefault(container, []).append(cpu_milli / 10)
-            elif pod == f"fast-time-{lane}":
+                    worker_cpu.setdefault(container, []).append(
+                        cpu_milli / (load_cpu / 4) * 100
+                    )
+            elif pod == instance_name("fast-time", lane, users):
                 fast_cpu += cpu_milli
                 fast_memory += memory_mib
                 seen_fast = True
         if seen_locust and seen_fast:
             totals.append(
                 (
-                    locust_cpu / 4000 * 100,
-                    locust_memory / 16384 * 100,
-                    fast_cpu / 8000 * 100,
-                    fast_memory / 32768 * 100,
+                    locust_cpu / load_cpu * 100,
+                    locust_memory / load_memory * 100,
+                    fast_cpu / backend_cpu * 100,
+                    fast_memory / backend_memory * 100,
                 )
             )
     average = lambda index: (
@@ -1045,6 +1138,7 @@ def run_parallel_step(
     tools: dict[str, list[str]],
     output: Path,
     users: int,
+    stop_event: threading.Event | None = None,
 ) -> dict[str, dict]:
     pods = {lane: f"load-{lane}-{users}" for lane in LANES}
     for lane in LANES:
@@ -1054,7 +1148,7 @@ def run_parallel_step(
                 config,
                 namespace,
                 lane,
-                nodes[f"locust-{lane}"],
+                nodes.get(f"locust-{lane}", nodes.get("locust")),
                 users,
                 urls[lane],
                 tools[lane],
@@ -1070,6 +1164,8 @@ def run_parallel_step(
     )
     last_sample = 0.0
     while len(completed) < len(LANES):
+        if stop_event is not None and stop_event.is_set():
+            break
         if time.monotonic() > deadline:
             raise RuntimeError(f"parallel {users}-user step exceeded its time bound")
         for lane, pod_name in pods.items():
@@ -1089,6 +1185,8 @@ def run_parallel_step(
             samples.append(telemetry_snapshot(oc, namespace))
             last_sample = now
         if any(code for code in completed.values()):
+            if stop_event is not None:
+                stop_event.set()
             break
         time.sleep(2)
 
@@ -1107,7 +1205,7 @@ def run_parallel_step(
             stats = read_stats(lane_output / "locust_stats.csv", use_aggregate=True)
             exit_code = completed.get(lane, 1)
             pressure = helper_pressure(
-                samples, lane, config, measurement_start, measurement_end
+                samples, lane, config, users, measurement_start, measurement_end
             )
             stats.update(
                 {
@@ -1117,7 +1215,7 @@ def run_parallel_step(
                     and stats["failures"] == 0
                     and not pressure["saturated"],
                     "memory": lane_memory(
-                        samples, lane, measurement_start, measurement_end
+                        samples, lane, users, measurement_start, measurement_end
                     ),
                     "pressure": pressure,
                 }
@@ -1128,6 +1226,8 @@ def run_parallel_step(
                 stats["reason"] = "helper pressure: " + ", ".join(
                     pressure["saturated"]
                 )
+                if stop_event is not None:
+                    stop_event.set()
             results[lane] = stats
         except Exception as error:
             results[lane] = {
@@ -1135,7 +1235,7 @@ def run_parallel_step(
                 "users": users,
                 "passed": False,
                 "reason": str(error),
-                "memory": lane_memory(samples, lane),
+                "memory": lane_memory(samples, lane, users),
                 "pressure": {},
             }
         finally:
@@ -1181,16 +1281,29 @@ def main() -> None:
     try:
         setup_namespace(oc, namespace, Path(args.assets))
         nodes = assign_nodes(config, oc.json("get", "nodes"))
+        all_parallel = bool(config["workload"].get("parallel_user_levels"))
         result["inventory"] = {
             "namespace": namespace,
             "nodes": nodes,
-            "architecture": "two isolated lanes running concurrently on six workers",
+            "architecture": (
+                "eight reserved 2v2 targets running concurrently on three shared workers"
+                if all_parallel
+                else "two isolated lanes running concurrently on six workers"
+            ),
         }
         (output / "inventory.json").write_text(
             json.dumps(result["inventory"], indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        levels = [int(users) for users in config["workload"]["user_levels"]]
+        instances = (
+            [(lane, users) for users in levels for lane in LANES]
+            if all_parallel
+            else [(lane, None) for lane in LANES]
+        )
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=len(instances)
+        ) as executor:
             futures = [
                 executor.submit(
                     deploy_fast_time,
@@ -1198,32 +1311,59 @@ def main() -> None:
                     config,
                     namespace,
                     lane,
-                    nodes[f"fast-time-{lane}"],
+                    nodes.get(f"fast-time-{lane}", nodes.get("fast-time")),
+                    users,
                 )
-                for lane in LANES
+                for lane, users in instances
             ]
             for future in futures:
                 future.result()
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            builtin = executor.submit(
-                deploy_builtin, oc, config, namespace, nodes["target-builtin"]
-            )
-            external = executor.submit(
-                deploy_external, oc, config, namespace, nodes["target-external"]
-            )
-            credentials = {
-                "builtin": builtin.result(),
-                "external": external.result(),
-            }
-        for lane, (token, tool_names) in credentials.items():
-            if len(tool_names) != 6:
-                raise RuntimeError(f"{lane} did not expose all six benchmark tools")
-            store_lane_secret(oc, namespace, lane, token, tool_names)
-        urls = {
-            "builtin": "http://target-builtin:4444/mcp",
-            "external": f"http://target-external:4445/contextforge-rs/servers/{SERVER_ID}/mcp",
-        }
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        credentials: dict[tuple[str, int | None], tuple[str, list[str]]] = {}
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=len(instances)
+        ) as executor:
+            futures = {}
+            for lane, users in instances:
+                function = deploy_builtin if lane == "builtin" else deploy_external
+                future = executor.submit(
+                    function,
+                    oc,
+                    config,
+                    namespace,
+                    nodes.get(f"target-{lane}", nodes.get("target")),
+                    users,
+                )
+                futures[future] = (lane, users)
+            for future, key in futures.items():
+                credentials[key] = future.result()
+        urls: dict[tuple[str, int], str] = {}
+        for users in levels:
+            for lane in LANES:
+                credential_key = (lane, users if all_parallel else None)
+                token, tool_names = credentials[credential_key]
+                if len(tool_names) != 6:
+                    raise RuntimeError(
+                        f"{lane} at {users} users did not expose all six benchmark tools"
+                    )
+                store_lane_secret(
+                    oc, namespace, lane, token, tool_names, users
+                )
+                target = instance_name(
+                    "target", lane, users if all_parallel else None
+                )
+                urls[(lane, users)] = (
+                    f"http://{target}:4444/mcp"
+                    if lane == "builtin"
+                    else f"http://{target}:4445/contextforge-rs/servers/{SERVER_ID}/mcp"
+                )
+        smoke_instances = (
+            [(lane, users) for users in levels for lane in LANES]
+            if all_parallel
+            else [(lane, levels[0]) for lane in LANES]
+        )
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=len(smoke_instances)
+        ) as executor:
             futures = [
                 executor.submit(
                     smoke_lane,
@@ -1231,33 +1371,61 @@ def main() -> None:
                     config,
                     namespace,
                     lane,
-                    nodes[f"locust-{lane}"],
-                    urls[lane],
-                    credentials[lane][1],
+                    nodes.get(f"locust-{lane}", nodes.get("locust")),
+                    urls[(lane, users)],
+                    credentials[(lane, users if all_parallel else None)][1],
+                    users,
                 )
-                for lane in LANES
+                for lane, users in smoke_instances
             ]
             for future in futures:
                 future.result()
-        for users in config["workload"]["user_levels"]:
-            step = run_parallel_step(
-                oc,
-                config,
-                namespace,
-                nodes,
-                urls,
-                {lane: credentials[lane][1] for lane in LANES},
-                output,
-                int(users),
-            )
+        stop_event = threading.Event()
+        step_results: dict[int, dict[str, dict]] = {}
+        workers = len(levels) if all_parallel else 1
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {}
+            for users in levels:
+                future = executor.submit(
+                    run_parallel_step,
+                    oc,
+                    config,
+                    namespace,
+                    nodes,
+                    {lane: urls[(lane, users)] for lane in LANES},
+                    {
+                        lane: credentials[
+                            (lane, users if all_parallel else None)
+                        ][1]
+                        for lane in LANES
+                    },
+                    output,
+                    users,
+                    stop_event if all_parallel else None,
+                )
+                futures[future] = users
+                if not all_parallel:
+                    step = future.result()
+                    step_results[users] = step
+                    if not all(item.get("passed") for item in step.values()):
+                        break
+            if all_parallel:
+                for future, users in futures.items():
+                    step_results[users] = future.result()
+        for users in sorted(step_results):
+            step = step_results[users]
             result["runs"]["builtin"].append(step["builtin"])
             result["runs"]["rust"].append(step["external"])
+        save()
+        if len(step_results) != len(levels) or not all(
+            item.get("passed")
+            for step in step_results.values()
+            for item in step.values()
+        ):
+            result["status"] = "failed"
+            result["reason"] = "first request, worker, or helper-pressure error"
             save()
-            if not all(item.get("passed") for item in step.values()):
-                result["status"] = "failed"
-                result["reason"] = f"first error occurred at {users} users"
-                save()
-                raise SystemExit(1)
+            raise SystemExit(1)
         result["status"] = "confirmed"
         save()
     except BaseException as error:

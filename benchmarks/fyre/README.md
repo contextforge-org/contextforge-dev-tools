@@ -194,3 +194,42 @@ The built-in lane remains pinned to the MCP SDK v2 fixture image until that SDK
 change is available in the main gateway image. The profile must not be changed
 back to the main image before that merge because both lanes use the same modern
 `2026-07-28` client.
+
+### Fully parallel 2 vCPU / 2 GiB comparison
+
+`openshift-2v2-parallel.yaml` runs all eight measurements at the same time:
+built-in and external dataplane lanes at 125, 250, 500, and 1,000 users. Each
+measurement gets its own target, Locust, and Fast Time pods with identical
+requests and limits. Pods share only with pods serving the same role.
+
+| Dedicated worker role | Worker size | Pods | Reserved per measurement |
+| --- | ---: | ---: | ---: |
+| Target | 18 vCPU / 18 GiB | 8 | 2 vCPU / 2 GiB |
+| Locust | 14 vCPU / 12 GiB | 8 | 1.5 vCPU / 1.25 GiB |
+| Fast Time | 14 vCPU / 13 GiB | 8 | 1.5 vCPU / 1.375 GiB |
+
+Each target reservation includes its supporting PostgreSQL and Redis
+containers for the built-in dataplane, or Redis and loopback JWKS containers
+for the external dataplane. Each Locust pod has one master and three workers.
+The helper pressure gate rejects the campaign if the shared helper workers or
+individual helper pods become the bottleneck.
+
+Run the full comparison with one command:
+
+```bash
+cf-integration load fyre run \
+  --file benchmarks/fyre/openshift-2v2-parallel.yaml \
+  --run-id openshift-2v2-parallel
+```
+
+The short form is:
+
+```bash
+cf-integration l f r -f benchmarks/fyre/openshift-2v2-parallel.yaml -i openshift-2v2-parallel
+```
+
+The OpenShift control plane and all three workers use 40 GB root disks. The
+orchestration command may run on a persistent VM or CI worker; the benchmark
+continues if the developer laptop sleeps. Artifacts are downloaded to
+`$CF_INTEGRATION_DIR/fyre/<run-id>/results/` before the run-owned cluster is
+deleted.

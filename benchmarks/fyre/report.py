@@ -11,16 +11,34 @@ from pathlib import Path
 def comparison_markdown(config: dict, rows: list[dict]) -> str:
     infrastructure = config.get("infrastructure", {})
     openshift = infrastructure.get("kind") == "openshift"
+    openshift_config = infrastructure.get("openshift", {})
     workload = config.get("workload", {})
+    all_parallel = openshift and bool(workload.get("parallel_user_levels"))
     target = (config.get("scenarios") or [{}])[0]
     images = config.get("images", {})
     tools = workload.get("tools", [])
     duration = int(workload.get("measure_seconds", 0))
     helpers = config.get("active_helper", {})
-    locust_cpu = 4 if openshift else helpers.get("locust_cpu", "n/a")
-    locust_memory = 16 if openshift else helpers.get("locust_memory_gb", "n/a")
-    fast_time_cpu = 8 if openshift else helpers.get("fast_time_cpu", "n/a")
-    fast_time_memory = 32 if openshift else helpers.get("fast_time_memory_gb", "n/a")
+    locust_cpu = (
+        openshift_config.get("load_pod", {}).get("cpu_millicores", 0) / 1_000
+        if openshift
+        else helpers.get("locust_cpu", "n/a")
+    )
+    locust_memory = (
+        openshift_config.get("load_pod", {}).get("memory_mib", 0) / 1_024
+        if openshift
+        else helpers.get("locust_memory_gb", "n/a")
+    )
+    fast_time_cpu = (
+        openshift_config.get("backend_pod", {}).get("cpu_millicores", 0) / 1_000
+        if openshift
+        else helpers.get("fast_time_cpu", "n/a")
+    )
+    fast_time_memory = (
+        openshift_config.get("backend_pod", {}).get("memory_mib", 0) / 1_024
+        if openshift
+        else helpers.get("fast_time_memory_gb", "n/a")
+    )
     disk = (
         f"{infrastructure.get('openshift', {}).get('base_disk_gb', 'n/a')} GB"
         if openshift
@@ -44,9 +62,16 @@ def comparison_markdown(config: dict, rows: list[dict]) -> str:
         "```",
         "",
         (
-            "The two lanes ran concurrently on six dedicated OpenShift worker nodes. "
-            "Each lane had its own load generator, target, and backend, so the measured "
-            "targets and helpers shared no worker node."
+            (
+                "All eight lane/user measurements ran concurrently. Each measurement had "
+                "its own reserved Locust, target, and Fast Time pods. Pods of the same role "
+                "shared one dedicated worker, with requests and limits equal to the stated "
+                "per-measurement allocation."
+                if all_parallel
+                else "The two lanes ran concurrently on six dedicated OpenShift worker nodes. "
+                "Each lane had its own load generator, target, and backend, so the measured "
+                "targets and helpers shared no worker node."
+            )
             if openshift
             else "The two lanes ran sequentially on the same standalone target VM."
         ),
@@ -56,13 +81,15 @@ def comparison_markdown(config: dict, rows: list[dict]) -> str:
         f"| Infrastructure | {'FYRE OpenShift ' + str(infrastructure.get('openshift', {}).get('version', '')) if openshift else 'FYRE standalone VMs'} |",
         f"| Worker root disk | {disk} |",
         f"| Target allocation per lane | {target.get('cpu', 'n/a')} vCPU / {target.get('memory_gb', 'n/a')} GiB |",
-        f"| Locust allocation per lane | {locust_cpu} vCPU / {locust_memory} GiB; "
+        f"| Locust allocation per measurement | {locust_cpu} vCPU / {locust_memory} GiB; "
         + ("one master and three workers |" if openshift else "distributed workers |"),
-        f"| Fast Time allocation per lane | {fast_time_cpu} vCPU / {fast_time_memory} GiB |",
+        f"| Fast Time allocation per measurement | {fast_time_cpu} vCPU / {fast_time_memory} GiB |",
         f"| MCP protocol | {workload.get('protocol_version', 'n/a')} |",
         f"| Timing per measurement | {workload.get('ramp_seconds', 0)} s ramp, {workload.get('warmup_seconds', 0)} s warmup, {duration // 60} min measured |",
         "| Client | Locust FastHttpUser, zero wait |",
-        "| Failure policy | Stop the current pair on the first request or worker error; do not advance |",
+        "| Failure policy | Stop all concurrent measurements on the first request or worker error |"
+        if all_parallel
+        else "| Failure policy | Stop the current pair on the first request or worker error; do not advance |",
         "",
         "## Requests",
         "",
@@ -177,16 +204,24 @@ def comparison_report(config: dict, results_root: Path, *, render: bool = True) 
     from matplotlib.patches import FancyBboxPatch
 
     openshift = config.get("infrastructure", {}).get("kind") == "openshift"
+    openshift_config = config.get("infrastructure", {}).get("openshift", {})
     helpers = config.get("active_helper", {})
     workload = config["workload"]
+    all_parallel = openshift and bool(workload.get("parallel_user_levels"))
     target = config["scenarios"][0]
+    load_cpu = openshift_config.get("load_pod", {}).get("cpu_millicores", 0) / 1_000
+    load_memory = openshift_config.get("load_pod", {}).get("memory_mib", 0) / 1_024
+    backend_cpu = openshift_config.get("backend_pod", {}).get("cpu_millicores", 0) / 1_000
+    backend_memory = openshift_config.get("backend_pod", {}).get("memory_mib", 0) / 1_024
     figure = plt.figure(figsize=(18, 10), dpi=160, facecolor="#0b1020")
     axis = figure.add_axes([0, 0, 1, 1])
     axis.set_axis_off()
     figure.text(
         0.035,
         0.95,
-        "FYRE OpenShift built-in vs external dataplane — parallel one-hour load comparison"
+        "FYRE OpenShift built-in vs external dataplane — eight parallel one-hour measurements"
+        if all_parallel
+        else "FYRE OpenShift built-in vs external dataplane — parallel one-hour load comparison"
         if openshift
         else "FYRE built-in dataplane vs external dataplane — one-hour load comparison",
         color="white",
@@ -196,7 +231,9 @@ def comparison_report(config: dict, results_root: Path, *, render: bool = True) 
     figure.text(
         0.035,
         0.91,
-        "Eight zero-error benchmarks • isolated equal-size lane allocations • 40 GB OpenShift nodes"
+        "Eight benchmarks run together • reserved 2 vCPU / 2 GB targets • 40 GB OpenShift nodes"
+        if all_parallel
+        else "Eight zero-error benchmarks • isolated equal-size lane allocations • 40 GB OpenShift nodes"
         if openshift
         else "Eight zero-error benchmarks • same modern client and same target VM allocation • private FYRE network",
         color="#a7b0c0",
@@ -207,15 +244,22 @@ def comparison_report(config: dict, results_root: Path, *, render: bool = True) 
         (
             0.035,
             "LOAD GENERATOR",
-            "Per lane: 4 vCPU / 16 GB pod\n3 distributed workers • zero wait\nDedicated OpenShift worker"
+            f"Per measurement: {load_cpu:g} vCPU / {load_memory:g} GB pod\n"
+            "3 distributed workers • zero wait\nShared dedicated-role OpenShift worker"
+            if all_parallel
+            else "Per lane: 4 vCPU / 16 GB pod\n3 distributed workers • zero wait\nDedicated OpenShift worker"
             if openshift
             else f"Locust VM • {helpers['locust_cpu']} vCPU / {helpers['locust_memory_gb']} GB\n"
             f"{max(2, int(helpers['locust_cpu']) - 1)} distributed workers • zero wait",
         ),
         (
             0.355,
-            "TARGETS — ISOLATED, PARALLEL" if openshift else "TARGET — SAME VM, SEQUENTIAL",
-            f"Per lane: {target['cpu']} vCPU / {target['memory_gb']} GB pod allocation\n"
+            "TARGETS — 8 RESERVED PODS"
+            if all_parallel
+            else "TARGETS — ISOLATED, PARALLEL"
+            if openshift
+            else "TARGET — SAME VM, SEQUENTIAL",
+            f"Per measurement: {target['cpu']} vCPU / {target['memory_gb']} GB pod allocation\n"
             "Built-in: Python + Postgres + Redis\nExternal: Rust + Redis + loopback JWKS"
             if openshift
             else f"{target['cpu']} vCPU / {target['memory_gb']} GB\n"
@@ -225,7 +269,10 @@ def comparison_report(config: dict, results_root: Path, *, render: bool = True) 
         (
             0.71,
             "BACKEND",
-            "Per lane: 8 vCPU / 32 GB pod\n6 tools • explicit zero delay\nDedicated OpenShift worker"
+            f"Per measurement: {backend_cpu:g} vCPU / {backend_memory:g} GB pod\n"
+            "6 tools • explicit zero delay\nShared dedicated-role OpenShift worker"
+            if all_parallel
+            else "Per lane: 8 vCPU / 32 GB pod\n6 tools • explicit zero delay\nDedicated OpenShift worker"
             if openshift
             else f"Fast Time VM • {helpers['fast_time_cpu']} vCPU / {helpers['fast_time_memory_gb']} GB\n6 tools • explicit zero delay",
         ),

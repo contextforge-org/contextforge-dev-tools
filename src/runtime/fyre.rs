@@ -68,7 +68,15 @@ struct OpenShiftConfig {
     oc_image: String,
     master: MachineSize,
     api: MachineSize,
+    load_pod: PodSize,
+    backend_pod: PodSize,
     worker_pools: Vec<OpenShiftWorkerPool>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct PodSize {
+    cpu_millicores: u32,
+    memory_mib: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +140,8 @@ struct WorkloadConfig {
     worker_core_percent: f64,
     #[serde(default)]
     parallel_lanes: bool,
+    #[serde(default)]
+    parallel_user_levels: bool,
     tools: Vec<String>,
 }
 
@@ -964,14 +974,18 @@ fn validate_openshift_config(config: &FyreConfig) -> Result<()> {
             && openshift.api.memory_gb > 0,
         "OpenShift control-plane resources must be positive"
     );
-    let expected = BTreeSet::from([
-        "target-builtin",
-        "target-external",
-        "locust-builtin",
-        "locust-external",
-        "fast-time-builtin",
-        "fast-time-external",
-    ]);
+    let expected = if config.workload.parallel_user_levels {
+        BTreeSet::from(["target", "locust", "fast-time"])
+    } else {
+        BTreeSet::from([
+            "target-builtin",
+            "target-external",
+            "locust-builtin",
+            "locust-external",
+            "fast-time-builtin",
+            "fast-time-external",
+        ])
+    };
     let mut roles = BTreeSet::new();
     for pool in &openshift.worker_pools {
         ensure!(
@@ -987,8 +1001,43 @@ fn validate_openshift_config(config: &FyreConfig) -> Result<()> {
     }
     ensure!(
         roles == expected,
-        "OpenShift comparison requires two isolated target, Locust, and Fast Time workers"
+        "OpenShift worker roles do not match the selected parallel topology"
     );
+    ensure!(
+        openshift.load_pod.cpu_millicores > 0
+            && openshift.load_pod.memory_mib > 0
+            && openshift.backend_pod.cpu_millicores > 0
+            && openshift.backend_pod.memory_mib > 0,
+        "OpenShift helper pod resources must be positive"
+    );
+    if config.workload.parallel_user_levels {
+        let measurements = (config.workload.user_levels.len() * 2) as u32;
+        let pool = |role: &str| {
+            openshift
+                .worker_pools
+                .iter()
+                .find(|pool| pool.role == role)
+                .expect("validated OpenShift worker role")
+        };
+        let target = pool("target");
+        let scenario = &config.scenarios[0];
+        ensure!(
+            scenario.cpu * measurements <= target.cpu
+                && scenario.memory_gb * measurements <= target.memory_gb,
+            "shared OpenShift target worker cannot reserve every parallel 2v2 target"
+        );
+        for (role, pod) in [
+            ("locust", openshift.load_pod),
+            ("fast-time", openshift.backend_pod),
+        ] {
+            let worker = pool(role);
+            ensure!(
+                pod.cpu_millicores * measurements <= worker.cpu * 1_000
+                    && pod.memory_mib * measurements <= worker.memory_gb * 1_024,
+                "shared OpenShift {role} worker cannot reserve every parallel benchmark pod"
+            );
+        }
+    }
     Ok(())
 }
 
