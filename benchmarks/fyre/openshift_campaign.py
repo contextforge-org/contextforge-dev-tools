@@ -158,7 +158,7 @@ def memory_gib(value: str) -> float:
     return float(value) / 1024 / 1024 / 1024
 
 
-def assign_nodes(config: dict, nodes: dict) -> dict[str, str]:
+def assign_nodes(config: dict, nodes: dict) -> dict[str, list[str]]:
     workers = []
     for item in nodes.get("items", []):
         labels = item.get("metadata", {}).get("labels", {})
@@ -181,33 +181,46 @@ def assign_nodes(config: dict, nodes: dict) -> dict[str, str]:
     pools = config["infrastructure"]["openshift"]["worker_pools"]
     if len(workers) != sum(int(pool["count"]) for pool in pools):
         raise RuntimeError(
-            f"expected six dedicated workers, found {len(workers)}: "
+            f"expected {sum(int(pool['count']) for pool in pools)} dedicated workers, "
+            f"found {len(workers)}: "
             + ", ".join(item["name"] for item in workers)
         )
     remaining = list(workers)
-    assigned: dict[str, str] = {}
+    assigned: dict[str, list[str]] = {}
     for pool in sorted(pools, key=lambda item: (item["memory_gb"], item["role"])):
-        matches = sorted(
-            remaining,
-            key=lambda node: (
-                abs(node["memory_gb"] - float(pool["memory_gb"])),
-                abs(node["cpu"] - int(pool["cpu"])),
-                node["name"],
-            ),
-        )
-        if not matches:
-            raise RuntimeError(f"no OpenShift worker remains for {pool['role']}")
-        selected = matches[0]
-        if selected["cpu"] != int(pool["cpu"]) or abs(
-            selected["memory_gb"] - float(pool["memory_gb"])
-        ) > 2:
-            raise RuntimeError(
-                f"worker {selected['name']} does not match {pool['role']} "
-                f"({selected['cpu']} vCPU / {selected['memory_gb']:.1f} GiB)"
+        assigned[pool["role"]] = []
+        for _index in range(int(pool["count"])):
+            matches = sorted(
+                remaining,
+                key=lambda node: (
+                    abs(node["memory_gb"] - float(pool["memory_gb"])),
+                    abs(node["cpu"] - int(pool["cpu"])),
+                    node["name"],
+                ),
             )
-        assigned[pool["role"]] = selected["name"]
-        remaining.remove(selected)
+            if not matches:
+                raise RuntimeError(f"no OpenShift worker remains for {pool['role']}")
+            selected = matches[0]
+            if selected["cpu"] != int(pool["cpu"]) or abs(
+                selected["memory_gb"] - float(pool["memory_gb"])
+            ) > 2:
+                raise RuntimeError(
+                    f"worker {selected['name']} does not match {pool['role']} "
+                    f"({selected['cpu']} vCPU / {selected['memory_gb']:.1f} GiB)"
+                )
+            assigned[pool["role"]].append(selected["name"])
+            remaining.remove(selected)
     return assigned
+
+
+def assigned_node(
+    nodes: dict[str, list[str]], role: str, lane: str, users: int | None
+) -> str:
+    candidates = nodes.get(f"{role}-{lane}", nodes.get(role, []))
+    if not candidates:
+        raise RuntimeError(f"no OpenShift worker assigned for {role}-{lane}")
+    lane_offset = 0 if lane == "builtin" else 1
+    return candidates[((users or 0) + lane_offset) % len(candidates)]
 
 
 def setup_namespace(oc: Oc, namespace: str, assets: Path) -> None:
@@ -1133,7 +1146,7 @@ def run_parallel_step(
     oc: Oc,
     config: dict,
     namespace: str,
-    nodes: dict[str, str],
+    nodes: dict[str, list[str]],
     urls: dict[str, str],
     tools: dict[str, list[str]],
     output: Path,
@@ -1148,7 +1161,7 @@ def run_parallel_step(
                 config,
                 namespace,
                 lane,
-                nodes.get(f"locust-{lane}", nodes.get("locust")),
+                assigned_node(nodes, "locust", lane, users),
                 users,
                 urls[lane],
                 tools[lane],
@@ -1286,7 +1299,7 @@ def main() -> None:
             "namespace": namespace,
             "nodes": nodes,
             "architecture": (
-                "eight reserved 2v2 targets running concurrently on three shared workers"
+                "eight reserved 2v2 targets running concurrently on four dedicated-role workers"
                 if all_parallel
                 else "two isolated lanes running concurrently on six workers"
             ),
@@ -1311,7 +1324,7 @@ def main() -> None:
                     config,
                     namespace,
                     lane,
-                    nodes.get(f"fast-time-{lane}", nodes.get("fast-time")),
+                    assigned_node(nodes, "fast-time", lane, users),
                     users,
                 )
                 for lane, users in instances
@@ -1330,7 +1343,7 @@ def main() -> None:
                     oc,
                     config,
                     namespace,
-                    nodes.get(f"target-{lane}", nodes.get("target")),
+                    assigned_node(nodes, "target", lane, users),
                     users,
                 )
                 futures[future] = (lane, users)
@@ -1371,7 +1384,7 @@ def main() -> None:
                     config,
                     namespace,
                     lane,
-                    nodes.get(f"locust-{lane}", nodes.get("locust")),
+                    assigned_node(nodes, "locust", lane, users),
                     urls[(lane, users)],
                     credentials[(lane, users if all_parallel else None)][1],
                     users,

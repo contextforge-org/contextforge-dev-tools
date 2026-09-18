@@ -65,7 +65,7 @@ def comparison_markdown(config: dict, rows: list[dict]) -> str:
             (
                 "All eight lane/user measurements ran concurrently. Each measurement had "
                 "its own reserved Locust, target, and Fast Time pods. Pods of the same role "
-                "shared one dedicated worker, with requests and limits equal to the stated "
+                "shared a dedicated worker pool, with requests and limits equal to the stated "
                 "per-measurement allocation."
                 if all_parallel
                 else "The two lanes ran concurrently on six dedicated OpenShift worker nodes. "
@@ -260,7 +260,8 @@ def comparison_report(config: dict, results_root: Path, *, render: bool = True) 
             if openshift
             else "TARGET — SAME VM, SEQUENTIAL",
             f"Per measurement: {target['cpu']} vCPU / {target['memory_gb']} GB pod allocation\n"
-            "Built-in: Python + Postgres + Redis\nExternal: Rust + Redis + loopback JWKS"
+            "Built-in: Python + Postgres + Redis\nExternal: Rust + Redis + loopback JWKS\n"
+            "Balanced across 2 dedicated target workers"
             if openshift
             else f"{target['cpu']} vCPU / {target['memory_gb']} GB\n"
             "Built-in dataplane: Python gateway + Postgres + Redis\n"

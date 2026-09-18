@@ -989,8 +989,8 @@ fn validate_openshift_config(config: &FyreConfig) -> Result<()> {
     let mut roles = BTreeSet::new();
     for pool in &openshift.worker_pools {
         ensure!(
-            pool.count == 1 && pool.cpu > 0 && pool.memory_gb > 0,
-            "OpenShift worker pool {} must contain one positive-sized worker",
+            pool.count > 0 && pool.cpu > 0 && pool.cpu <= 16 && pool.memory_gb > 0,
+            "OpenShift worker pool {} must contain positive-sized workers with at most 16 vCPU each",
             pool.role
         );
         ensure!(
@@ -1022,8 +1022,8 @@ fn validate_openshift_config(config: &FyreConfig) -> Result<()> {
         let target = pool("target");
         let scenario = &config.scenarios[0];
         ensure!(
-            scenario.cpu * measurements <= target.cpu
-                && scenario.memory_gb * measurements <= target.memory_gb,
+            scenario.cpu * measurements <= target.cpu * target.count
+                && scenario.memory_gb * measurements <= target.memory_gb * target.count,
             "shared OpenShift target worker cannot reserve every parallel 2v2 target"
         );
         for (role, pod) in [
@@ -1032,11 +1032,16 @@ fn validate_openshift_config(config: &FyreConfig) -> Result<()> {
         ] {
             let worker = pool(role);
             ensure!(
-                pod.cpu_millicores * measurements <= worker.cpu * 1_000
-                    && pod.memory_mib * measurements <= worker.memory_gb * 1_024,
+                pod.cpu_millicores * measurements <= worker.cpu * worker.count * 1_000
+                    && pod.memory_mib * measurements <= worker.memory_gb * worker.count * 1_024,
                 "shared OpenShift {role} worker cannot reserve every parallel benchmark pod"
             );
         }
+    } else {
+        ensure!(
+            openshift.worker_pools.iter().all(|pool| pool.count == 1),
+            "isolated OpenShift lane worker pools must contain exactly one worker"
+        );
     }
     Ok(())
 }

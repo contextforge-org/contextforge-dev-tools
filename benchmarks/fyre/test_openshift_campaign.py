@@ -66,7 +66,19 @@ class OpenShiftCampaignTests(unittest.TestCase):
             {"items": list(reversed(nodes))},
         )
         self.assertEqual(set(assigned), {pool["role"] for pool in pools})
-        self.assertEqual(len(set(assigned.values())), 6)
+        self.assertEqual(
+            len({node for role_nodes in assigned.values() for node in role_nodes}), 6
+        )
+
+    def test_balances_parallel_targets_across_repeated_role_workers(self):
+        nodes = {"target": ["target-a", "target-b"]}
+        selected = [
+            openshift_campaign.assigned_node(nodes, "target", lane, users)
+            for users in (125, 250, 500, 1000)
+            for lane in ("builtin", "external")
+        ]
+        self.assertEqual(selected.count("target-a"), 4)
+        self.assertEqual(selected.count("target-b"), 4)
 
     def test_locust_pod_reserves_four_cpus_and_sixteen_gib(self):
         config = {
