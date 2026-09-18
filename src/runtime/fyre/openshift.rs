@@ -391,7 +391,6 @@ fn cluster_payload(
     product_group: &str,
     site: &str,
 ) -> Value {
-    let disk = openshift.base_disk_gb.to_string();
     let mut worker_pools = BTreeMap::<(u32, u32), u32>::new();
     for pool in &openshift.worker_pools {
         *worker_pools.entry((pool.cpu, pool.memory_gb)).or_default() += pool.count;
@@ -410,7 +409,7 @@ fn cluster_payload(
             "count": 3,
             "cpu": openshift.master.cpu,
             "memory": openshift.master.memory_gb,
-            "base_disk_size": disk,
+            "disk": openshift.base_disk_gb,
         },
         "infra": {
             "cpu": openshift.api.cpu,
@@ -421,7 +420,7 @@ fn cluster_payload(
             "count": count,
             "cpu": cpu,
             "memory": memory,
-            "base_disk_size": openshift.base_disk_gb.to_string(),
+            "os_disk": openshift.base_disk_gb,
         })).collect::<Vec<_>>(),
     })
 }
@@ -570,11 +569,11 @@ mod tests {
             .as_ref()
             .expect("OpenShift settings");
         let payload = cluster_payload("cf-test", &config, openshift, "808", "svl");
-        assert_eq!(payload["master"]["base_disk_size"], "40");
+        assert_eq!(payload["master"]["disk"], 40);
         let workers = payload["worker"].as_array().expect("worker pools");
         assert_eq!(workers.len(), 3);
         assert!(workers.iter().all(|pool| pool["count"] == 2));
-        assert!(workers.iter().all(|pool| pool["base_disk_size"] == "40"));
+        assert!(workers.iter().all(|pool| pool["os_disk"] == 40));
     }
 
     #[test]
@@ -603,7 +602,7 @@ mod tests {
                 .sum::<u64>(),
             4
         );
-        assert!(workers.iter().all(|pool| pool["base_disk_size"] == "40"));
+        assert!(workers.iter().all(|pool| pool["os_disk"] == 40));
         let worker_cpu: u64 = workers
             .iter()
             .map(|pool| {
@@ -622,11 +621,7 @@ mod tests {
             .iter()
             .map(|pool| {
                 pool["count"].as_u64().expect("worker count")
-                    * pool["base_disk_size"]
-                        .as_str()
-                        .expect("worker disk")
-                        .parse::<u64>()
-                        .expect("numeric worker disk")
+                    * pool["os_disk"].as_u64().expect("worker disk")
             })
             .sum();
         assert_eq!(worker_cpu + 3 * 4 + 4, 64);
