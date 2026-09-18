@@ -70,6 +70,14 @@ class OpenShiftCampaignTests(unittest.TestCase):
 
     def test_locust_pod_reserves_four_cpus_and_sixteen_gib(self):
         config = {
+            "infrastructure": {
+                "openshift": {
+                    "load_pod": {
+                        "cpu_millicores": 4000,
+                        "memory_mib": 16384,
+                    }
+                }
+            },
             "images": {"locust": "locust@sha256:test"},
             "workload": {
                 "protocol_version": "2026-07-28",
@@ -129,7 +137,9 @@ class OpenShiftCampaignTests(unittest.TestCase):
             {"time": 20, "pods": "target-external dataplane 100m 400Mi\n"},
             {"time": 30, "pods": "target-external dataplane 100m 500Mi\n"},
         ]
-        memory = openshift_campaign.lane_memory(samples, "external", 20, 30)
+        memory = openshift_campaign.lane_memory(
+            samples, "external", start_time=20, end_time=30
+        )
         self.assertEqual(memory["average_mib"], 450)
         self.assertEqual(memory["peak_mib"], 500)
         self.assertEqual(memory["samples"], 2)
@@ -142,7 +152,7 @@ class OpenShiftCampaignTests(unittest.TestCase):
                 "load-external-125 worker-1 900m 100Mi\n"
                 "load-external-125 worker-2 900m 100Mi\n"
                 "load-external-125 worker-3 900m 100Mi\n"
-                "fast-time-external fast-time 1000m 100Mi\n",
+                "fast-time-external-125 fast-time 1000m 100Mi\n",
             }
             for timestamp in (20, 30, 40)
         ]
@@ -150,12 +160,25 @@ class OpenShiftCampaignTests(unittest.TestCase):
             samples,
             "external",
             {
+                "infrastructure": {
+                    "openshift": {
+                        "load_pod": {
+                            "cpu_millicores": 4000,
+                            "memory_mib": 16384,
+                        },
+                        "backend_pod": {
+                            "cpu_millicores": 8000,
+                            "memory_mib": 32768,
+                        },
+                    }
+                },
                 "workload": {
                     "helper_cpu_percent": 70,
                     "helper_memory_percent": 80,
                     "worker_core_percent": 85,
                 }
             },
+            125,
             20,
             40,
         )

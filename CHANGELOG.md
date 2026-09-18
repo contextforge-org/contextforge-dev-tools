@@ -14,6 +14,9 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   Locust, and Fast Time workers. Package the pinned `oc` runtime, collect
   gateway-side memory, and produce a self-contained Markdown report alongside
   the existing CSV, JSON, and Slack-ready PNG artifacts.
+- Add a quota-sized 2 vCPU / 2 GiB OpenShift profile that runs all eight
+  built-in/external and 125/250/500/1,000-user measurements concurrently with
+  exact pod reservations on three dedicated-role workers.
 
 ### Changed
 

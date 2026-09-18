@@ -567,4 +567,25 @@ mod tests {
         assert!(workers.iter().all(|pool| pool["count"] == 2));
         assert!(workers.iter().all(|pool| pool["base_disk_size"] == "40"));
     }
+
+    #[test]
+    fn parallel_2v2_profile_fits_three_40_gb_workers() {
+        let config = super::super::read_config(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("benchmarks/fyre/openshift-2v2-parallel.yaml")
+                .as_path(),
+        )
+        .expect("packaged parallel 2v2 OpenShift profile");
+        super::super::validate_config(&config).expect("valid parallel 2v2 profile");
+        let openshift = config
+            .infrastructure
+            .openshift
+            .as_ref()
+            .expect("OpenShift settings");
+        let payload = cluster_payload("cf-test", &config, openshift, "808", "svl");
+        let workers = payload["worker"].as_array().expect("worker pools");
+        assert_eq!(workers.len(), 3);
+        assert!(workers.iter().all(|pool| pool["count"] == 1));
+        assert!(workers.iter().all(|pool| pool["base_disk_size"] == "40"));
+    }
 }

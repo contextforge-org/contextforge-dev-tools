@@ -3,22 +3,19 @@ benchmark_kind: comparison
 infrastructure:
   kind: openshift
   os: Red Hat CoreOS
-  expiry_hours: 12
+  expiry_hours: 24
   openshift:
     version: "4.21"
     base_disk_gb: 40
     oc_image: quay.io/openshift/origin-cli@sha256:f3fc63fc3d2fd1c3a2c3311bf517b776f6596244e697dad32d62ca9fd6482fe5
     master: { cpu: 4, memory_gb: 16 }
     api: { cpu: 4, memory_gb: 8 }
-    load_pod: { cpu_millicores: 4000, memory_mib: 16384 }
-    backend_pod: { cpu_millicores: 8000, memory_mib: 32768 }
+    load_pod: { cpu_millicores: 1500, memory_mib: 1280 }
+    backend_pod: { cpu_millicores: 1500, memory_mib: 1408 }
     worker_pools:
-      - { role: target-builtin, cpu: 6, memory_gb: 12, count: 1 }
-      - { role: target-external, cpu: 6, memory_gb: 12, count: 1 }
-      - { role: locust-builtin, cpu: 6, memory_gb: 20, count: 1 }
-      - { role: locust-external, cpu: 6, memory_gb: 20, count: 1 }
-      - { role: fast-time-builtin, cpu: 10, memory_gb: 40, count: 1 }
-      - { role: fast-time-external, cpu: 10, memory_gb: 40, count: 1 }
+      - { role: target, cpu: 18, memory_gb: 18, count: 1 }
+      - { role: locust, cpu: 14, memory_gb: 12, count: 1 }
+      - { role: fast-time, cpu: 14, memory_gb: 13, count: 1 }
 images:
   dataplane: ghcr.io/contextforge-org/contextforge-data-plane@sha256:0b3026b21659ce6c494142aee2c5866b44122232e73fcf21102da1f210692a96
   controlplane: ghcr.io/contextforge-org/cf-integration-fixture@sha256:5b206e6f863cea9f8cabea6451392428fbe67b16bdf10fefd1f7ac8032d95b52
@@ -36,7 +33,7 @@ workload:
   warmup_seconds: 30
   measure_seconds: 3600
   repetitions: 1
-  maximum_campaign_seconds: 18000
+  maximum_campaign_seconds: 7200
   plateau_improvement_percent: 5.0
   boundary_percent: 12.5
   config_cache_seconds: 60
@@ -44,7 +41,7 @@ workload:
   helper_memory_percent: 80.0
   worker_core_percent: 85.0
   parallel_lanes: true
-  parallel_user_levels: false
+  parallel_user_levels: true
   tools:
     - convert_time
     - echo
@@ -53,4 +50,4 @@ workload:
     - schema_success
     - verify-protocol
 scenarios:
-  - { id: comparison, label: Built-in dataplane vs external dataplane, replicas: 1, cpu: 4, memory_gb: 4, multiplier: 1 }
+  - { id: comparison, label: Built-in dataplane vs external dataplane, replicas: 1, cpu: 2, memory_gb: 2, multiplier: 1 }
