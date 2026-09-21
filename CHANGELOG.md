@@ -7,6 +7,11 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+### Fixed
+
+- Accept optional request metadata on session-era `initialize` requests in the
+  pinned conformance fixture instead of misclassifying them as modern traffic.
+
 ## [0.5.0] - 2026-09-16
 
 ### Added
