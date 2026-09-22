@@ -7,6 +7,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-21
+
 ### Fixed
 
 - Accept optional request metadata on session-era `initialize` requests in the
@@ -332,7 +334,8 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Added builtin and external dataplane routing through reusable Docker Compose
   overlays.
 
-[Unreleased]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.3.0...v0.3.1
