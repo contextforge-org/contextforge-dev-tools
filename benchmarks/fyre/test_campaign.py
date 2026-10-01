@@ -659,10 +659,13 @@ class CapacityTests(unittest.TestCase):
                 {"workload": {"user_levels": [125]}}, root, render=False
             )
             summary = json.loads((root / "summary.json").read_text())
+            markdown = (root / "report.md").read_text()
             with (root / "summary.csv").open(newline="") as stream:
                 csv_rows = list(csv.DictReader(stream))
         self.assertEqual(summary["rows"][0]["external_vs_built_in"], 2.5)
         self.assertEqual(csv_rows[0]["external_dataplane_requests"], "2500")
+        self.assertIn("External vs built-in", markdown)
+        self.assertNotIn("](", markdown)
 
     def test_monitor_calculates_cpu_and_memory_pressure(self):
         cpu = monitor.cpu_percent(
