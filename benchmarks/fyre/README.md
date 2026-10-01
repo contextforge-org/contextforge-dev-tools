@@ -206,15 +206,20 @@ requests and limits. Pods share only with pods serving the same role.
 
 | Dedicated worker role | Worker size | Pods | Reserved per measurement |
 | --- | ---: | ---: | ---: |
-| Target | 16 vCPU / 16 GiB | 8 | 2 vCPU / 2 GiB limits; 1.75 vCPU / 1.75 GiB requests |
-| Locust | 14 vCPU / 12 GiB | 8 | 1.5 vCPU / 1.25 GiB |
-| Fast Time | 14 vCPU / 12 GiB | 8 | 1.5 vCPU / 1.375 GiB |
+| Target | 16 vCPU / 16 GB | 8 | 2 vCPU / 2 GiB limits; 1.5 vCPU / 1.25 GiB requests |
+| Locust | 14 vCPU / 12 GB | 8 | 1.5 vCPU / 0.75 GiB |
+| Fast Time | 14 vCPU / 12 GB | 8 | 1.5 vCPU / 0.75 GiB |
 
 Each target reservation includes its supporting PostgreSQL and Redis
 containers for the built-in dataplane, or Redis and loopback JWKS containers
-for the external dataplane. Each Locust pod has one master and three workers.
+for the external dataplane. Each Locust pod has one master and three workers plus a small report container
+within the same allocation. The shared report volume remains writable and
+readable after the Locust processes exit.
 The helper pressure gate rejects the campaign if the shared helper workers or
-individual helper pods become the bottleneck.
+individual helper pods become the bottleneck. Pods use required node affinity
+so the scheduler checks available resources on each assigned worker. The
+reservations leave room for OpenShift system pods and node memory reservations;
+FYRE worker memory in GB is smaller than the equivalent pod allocation in GiB.
 
 Run the full comparison with one command:
 

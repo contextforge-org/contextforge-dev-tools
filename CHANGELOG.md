@@ -16,7 +16,7 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   the existing CSV, JSON, and Slack-ready PNG artifacts.
 - Add a quota-sized 2 vCPU / 2 GiB OpenShift profile that runs all eight
   built-in/external and 125/250/500/1,000-user measurements concurrently with
-  exact pod limits on three dedicated-role workers. Reserve 1.75 vCPU / 1.75
+  exact pod limits on three dedicated-role workers. Reserve 1.5 vCPU / 1.25
   GiB per 2 vCPU / 2 GiB target so all eight targets schedule with host
   headroom, set 40 GB master and worker root disks, disable FYRE's automatic
   worker data disks, and preserve structured FYRE API validation errors.
@@ -27,6 +27,18 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
   run-owned OpenShift clusters as well as standalone Terraform VMs.
 - Resume an interrupted OpenShift campaign when `load fyre run` is invoked
   again with the same run ID and saved configuration.
+
+### Fixed
+
+- Schedule OpenShift benchmark pods through required node affinity instead of
+  bypassing the scheduler with `nodeName`. Reduce parallel-profile memory
+  reservations to leave room for OpenShift services and node reservations.
+  Check actual allocatable CPU and memory, existing system pods, and setup
+  overhead before deployment.
+- Collect Locust artifacts through a live report container after the master
+  exits, and make the report volume writable by Locust.
+- Refuse cluster name collisions before creating an ownership record so a
+  new run cannot delete a pre-existing cluster.
 
 ## [0.5.1] - 2026-09-21
 

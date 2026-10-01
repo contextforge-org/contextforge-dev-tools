@@ -65,8 +65,8 @@ def comparison_markdown(config: dict, rows: list[dict]) -> str:
             (
                 "All eight lane/user measurements ran concurrently. Each measurement had "
                 "its own reserved Locust, target, and Fast Time pods. Pods of the same role "
-                "shared a dedicated worker pool, with requests and limits equal to the stated "
-                "per-measurement allocation."
+                "shared a dedicated worker pool. Helper requests equal their limits; "
+                "target requests reserve scheduling capacity below the stated target limits."
                 if all_parallel
                 else "The two lanes ran concurrently on six dedicated OpenShift worker nodes. "
                 "Each lane had its own load generator, target, and backend, so the measured "
@@ -81,6 +81,9 @@ def comparison_markdown(config: dict, rows: list[dict]) -> str:
         f"| Infrastructure | {'FYRE OpenShift ' + str(infrastructure.get('openshift', {}).get('version', '')) if openshift else 'FYRE standalone VMs'} |",
         f"| Worker root disk | {disk} |",
         f"| Target allocation per lane | {target.get('cpu', 'n/a')} vCPU / {target.get('memory_gb', 'n/a')} GiB |",
+        *([
+            f"| Target scheduling request per lane | {openshift_config.get('target_pod', {}).get('cpu_millicores', 0) / 1000} vCPU / {openshift_config.get('target_pod', {}).get('memory_mib', 0) / 1024} GiB |"
+        ] if openshift else []),
         f"| Locust allocation per measurement | {locust_cpu} vCPU / {locust_memory} GiB; "
         + ("one master and three workers |" if openshift else "distributed workers |"),
         f"| Fast Time allocation per measurement | {fast_time_cpu} vCPU / {fast_time_memory} GiB |",

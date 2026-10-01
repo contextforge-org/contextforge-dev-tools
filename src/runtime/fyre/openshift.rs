@@ -93,10 +93,6 @@ impl FyreOpenShiftApi {
     }
 
     async fn create(&self, cluster: &str, config: &FyreConfig) -> Result<()> {
-        ensure!(
-            self.hostname_available(cluster).await?,
-            "FYRE OpenShift cluster {cluster} already exists"
-        );
         let openshift = config
             .infrastructure
             .openshift
@@ -212,6 +208,17 @@ impl<R: ProcessRunner> RuntimeContext<R> {
         let root = self.config.integration_dir().join("fyre").join(&run_id);
         let config_path = root.join("config.json");
         let resuming = root.exists();
+        let api = FyreOpenShiftApi::new(self).map_err(AppFailure::from)?;
+        if !resuming
+            && !api
+                .hostname_available(&cluster_name)
+                .await
+                .map_err(AppFailure::from)?
+        {
+            return Err(AppFailure::from(anyhow::anyhow!(
+                "FYRE OpenShift cluster {cluster_name} already exists; refusing to create or delete it"
+            )));
+        }
         let (config, mut state) = if resuming {
             let state = super::read_owned_state(&root, &run_id).map_err(AppFailure::from)?;
             if !state.cleanup_required {
@@ -258,8 +265,6 @@ impl<R: ProcessRunner> RuntimeContext<R> {
             write_state(&root, &state).map_err(AppFailure::from)?;
             (config, state)
         };
-        let api = FyreOpenShiftApi::new(self).map_err(AppFailure::from)?;
-
         let primary = async {
             let provision = async {
                 if resuming {
@@ -578,6 +583,64 @@ fn set_private_permissions(path: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn existing_cluster_is_not_owned_or_deleted_by_a_new_run() {
+        use std::ffi::OsString;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use crate::infrastructure::config::{
+            AppConfig, ConfigBootstrap, ConfigRequirements, Environment,
+        };
+        use crate::infrastructure::process::SystemProcessRunner;
+        use axum::{Json, Router};
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let captured = Arc::clone(&requests);
+        let app = Router::new().fallback(move || {
+            captured.fetch_add(1, Ordering::SeqCst);
+            async { Json(json!({"status": "error", "details": "hostname already exists"})) }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test API listener");
+        let address = listener.local_addr().expect("test API address");
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let root = tempfile::tempdir().expect("temporary run root");
+        let environment = Environment::from([
+            (OsString::from("FYRE_USERNAME"), OsString::from("test-user")),
+            (OsString::from("FYRE_API_KEY"), OsString::from("test-key")),
+            (
+                OsString::from("FYRE_PRODUCT_GROUP_ID"),
+                OsString::from("808"),
+            ),
+            (
+                OsString::from("FYRE_OCP_API_URL"),
+                OsString::from(format!("http://{address}")),
+            ),
+        ]);
+        let app_config = AppConfig::load(
+            ConfigBootstrap::load(&environment, root.path()).expect("test bootstrap"),
+            ConfigRequirements::ReadOnly,
+        )
+        .expect("test application config");
+        let runtime = RuntimeContext::new(app_config, SystemProcessRunner);
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("benchmarks/fyre/openshift-2v2-parallel.yaml");
+        let config = super::super::read_config(&source).expect("packaged OpenShift profile");
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            runtime.run_fyre_openshift(source, config, Some("already-owned".to_owned())),
+        )
+        .await
+        .expect("collision check must return without provisioning or cleanup");
+        server.abort();
+        let error = result.expect_err("existing cluster must be refused");
+        assert!(error.to_string().contains("refusing to create or delete"));
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(!root.path().join(".integration/fyre/already-owned").exists());
+    }
+
     #[test]
     fn redaction_removes_cluster_credentials() {
         let value = json!({"clusters": [{
@@ -699,5 +762,29 @@ mod tests {
         )
         .expect_err("bad request must fail");
         assert!(error.to_string().contains("disk quota exceeded"));
+    }
+
+    #[test]
+    fn parallel_reservations_do_not_treat_fyre_gb_as_gib() {
+        let mut config = super::super::read_config(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("benchmarks/fyre/openshift-2v2-parallel.yaml")
+                .as_path(),
+        )
+        .expect("packaged parallel OpenShift profile");
+        config
+            .infrastructure
+            .openshift
+            .as_mut()
+            .expect("OpenShift settings")
+            .backend_pod
+            .memory_mib = 1_536;
+        let error = super::super::validate_config(&config)
+            .expect_err("eight 1.5 GiB pods do not fit a 12 GB worker");
+        assert!(
+            error
+                .to_string()
+                .contains("fast-time worker cannot reserve")
+        );
     }
 }

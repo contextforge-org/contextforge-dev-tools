@@ -16,6 +16,8 @@ from campaign import read_stats
 
 LANES = ("builtin", "external")
 SERVER_ID = "fyre-fast-time"
+REPORT_CPU_MILLICORES = 20
+REPORT_MEMORY_MIB = 32
 
 
 class Oc:
@@ -81,6 +83,22 @@ def metadata(name: str, namespace: str | None = None) -> dict:
     if namespace:
         result["namespace"] = namespace
     return result
+
+
+def node_affinity(node: str) -> dict:
+    return {
+        "nodeAffinity": {
+            "requiredDuringSchedulingIgnoredDuringExecution": {
+                "nodeSelectorTerms": [
+                    {
+                        "matchFields": [
+                            {"key": "metadata.name", "operator": "In", "values": [node]}
+                        ]
+                    }
+                ]
+            }
+        }
+    }
 
 
 def resources(
@@ -157,11 +175,16 @@ def wait_for(
         timeout=timeout_seconds + 30,
     )
     if result.returncode:
-        describe = oc.run(
-            "describe", f"{kind}/{name}", "-n", namespace, check=False
+        status = oc.run(
+            "get", f"{kind}/{name}", "-n", namespace,
+            "-o", "jsonpath={.status}", check=False,
+        ).stdout
+        events = oc.run(
+            "get", "events", "-n", namespace,
+            "--field-selector", f"involvedObject.name={name}", check=False,
         ).stdout
         raise RuntimeError(
-            f"{kind}/{name} did not reach {condition}: {result.stderr}\n{describe}"
+            f"{kind}/{name} did not reach {condition}: {result.stderr}\n{status}\n{events}"
         )
 
 
@@ -236,6 +259,100 @@ def assigned_node(
         raise RuntimeError(f"no OpenShift worker assigned for {role}-{lane}")
     lane_offset = 0 if lane == "builtin" else 1
     return candidates[((users or 0) + lane_offset) % len(candidates)]
+
+
+def pod_requests(pod: dict) -> tuple[float, float]:
+    def container_requests(container: dict) -> tuple[float, float]:
+        request = container.get("resources", {}).get("requests", {})
+        return (
+            parse_cpu_millicores(str(request.get("cpu", "0"))),
+            parse_memory_mib(str(request.get("memory", "0"))),
+        )
+
+    spec = pod.get("spec", {})
+    cpu = memory = sidecar_cpu = sidecar_memory = 0.0
+    for container in spec.get("containers", []):
+        requested_cpu, requested_memory = container_requests(container)
+        cpu += requested_cpu
+        memory += requested_memory
+    peak_cpu = peak_memory = 0.0
+    for container in spec.get("initContainers", []):
+        requested_cpu, requested_memory = container_requests(container)
+        if container.get("restartPolicy") == "Always":
+            sidecar_cpu += requested_cpu
+            sidecar_memory += requested_memory
+            requested_cpu = requested_memory = 0.0
+        peak_cpu = max(peak_cpu, sidecar_cpu + requested_cpu)
+        peak_memory = max(peak_memory, sidecar_memory + requested_memory)
+    overhead = spec.get("overhead", {})
+    return (
+        max(cpu + sidecar_cpu, peak_cpu)
+        + parse_cpu_millicores(str(overhead.get("cpu", "0"))),
+        max(memory + sidecar_memory, peak_memory)
+        + parse_memory_mib(str(overhead.get("memory", "0"))),
+    )
+
+
+def validate_capacity(
+    config: dict, nodes: dict, assigned: dict[str, list[str]], pods: dict
+) -> list[dict]:
+    required = {name: [0, 0] for names in assigned.values() for name in names}
+    existing = {name: [0.0, 0.0] for name in required}
+    workload = config["workload"]
+    levels = (
+        workload["user_levels"] if workload.get("parallel_user_levels") else [None]
+    )
+    openshift = config["infrastructure"]["openshift"]
+    for users in levels:
+        for lane in LANES:
+            for role, key in (
+                ("target", "target_pod"),
+                ("locust", "load_pod"),
+                ("fast-time", "backend_pod"),
+            ):
+                size = openshift[key]
+                demand = required[assigned_node(assigned, role, lane, users)]
+                demand[0] += int(size["cpu_millicores"])
+                demand[1] += int(size["memory_mib"])
+                if role == "target" and lane == "builtin":
+                    # Registration runs alongside the complete target stack.
+                    demand[0] += 250
+                    demand[1] += 256
+    for pod in pods.get("items", []):
+        node = pod.get("spec", {}).get("nodeName")
+        if node not in existing or pod.get("status", {}).get("phase") in (
+            "Succeeded", "Failed",
+        ):
+            continue
+        cpu, memory = pod_requests(pod)
+        existing[node][0] += cpu
+        existing[node][1] += memory
+    capacity = []
+    for node in nodes.get("items", []):
+        name = node["metadata"]["name"]
+        if name not in required:
+            continue
+        allocatable = node["status"]["allocatable"]
+        available_cpu = parse_cpu_millicores(allocatable["cpu"]) - existing[name][0]
+        available_memory = parse_memory_mib(allocatable["memory"]) - existing[name][1]
+        cpu, memory = required[name]
+        if cpu > available_cpu or memory > available_memory:
+            raise RuntimeError(
+                f"OpenShift worker {name} cannot fit the benchmark: "
+                f"requires {cpu}m CPU / {memory} MiB including setup, "
+                f"available {available_cpu:.0f}m CPU / {available_memory:.0f} MiB "
+                "after OpenShift reservations and existing pods"
+            )
+        capacity.append(
+            {
+                "node": name,
+                "available_cpu_millicores": available_cpu,
+                "available_memory_mib": available_memory,
+                "required_cpu_millicores": cpu,
+                "required_memory_mib": memory,
+            }
+        )
+    return capacity
 
 
 def setup_namespace(oc: Oc, namespace: str, assets: Path) -> None:
@@ -316,7 +433,7 @@ def deploy_fast_time(
             },
             "spec": {
                 "serviceAccountName": "benchmark",
-                "nodeName": node,
+                "affinity": node_affinity(node),
                 "restartPolicy": "Always",
                 "containers": [
                     {
@@ -371,7 +488,7 @@ def deploy_external(
             },
             "spec": {
                 "serviceAccountName": "benchmark",
-                "nodeName": node,
+                "affinity": node_affinity(node),
                 "restartPolicy": "Always",
                 "volumes": [{"name": "keys", "emptyDir": {}}],
                 "containers": [
@@ -603,7 +720,7 @@ def deploy_builtin(
             },
             "spec": {
                 "serviceAccountName": "benchmark",
-                "nodeName": node,
+                "affinity": node_affinity(node),
                 "restartPolicy": "Always",
                 "containers": [
                     {
@@ -688,7 +805,7 @@ def deploy_builtin(
             "metadata": metadata(migration_name, namespace),
             "spec": {
                 "serviceAccountName": "benchmark",
-                "nodeName": node,
+                "affinity": node_affinity(node),
                 "restartPolicy": "Never",
                 "containers": [
                     {
@@ -714,7 +831,7 @@ def deploy_builtin(
             },
             "spec": {
                 "serviceAccountName": "benchmark",
-                "nodeName": node,
+                "affinity": node_affinity(node),
                 "restartPolicy": "Always",
                 "containers": [
                     {
@@ -753,7 +870,7 @@ def deploy_builtin(
             "metadata": metadata(registration_name, namespace),
             "spec": {
                 "serviceAccountName": "benchmark",
-                "nodeName": node,
+                "affinity": node_affinity(node),
                 "restartPolicy": "Never",
                 "volumes": [{"name": "code", "configMap": {"name": "benchmark-code"}}],
                 "containers": [
@@ -827,7 +944,7 @@ def smoke_lane(
             "metadata": metadata(name, namespace),
             "spec": {
                 "serviceAccountName": "benchmark",
-                "nodeName": node,
+                "affinity": node_affinity(node),
                 "restartPolicy": "Never",
                 "volumes": [
                     {"name": "code", "configMap": {"name": "benchmark-code"}},
@@ -936,6 +1053,13 @@ def locust_pod(
         "--logfile",
         "/reports/locust.log",
     ]
+    load_size = config["infrastructure"]["openshift"]["load_pod"]
+    container_cpu = (int(load_size["cpu_millicores"]) - REPORT_CPU_MILLICORES) // 4
+    container_memory = (int(load_size["memory_mib"]) - REPORT_MEMORY_MIB) // 4
+    if container_cpu <= 0 or container_memory <= 0:
+        raise RuntimeError(
+            "Locust allocation must fit four processes and report collection"
+        )
     containers = [
         {
             "name": "master",
@@ -944,8 +1068,8 @@ def locust_pod(
             "env": common_env,
             "volumeMounts": common_mounts,
             "resources": resources(
-                f"{int(config['infrastructure']['openshift']['load_pod']['cpu_millicores']) // 4}m",
-                f"{int(config['infrastructure']['openshift']['load_pod']['memory_mib']) // 4}Mi",
+                f"{container_cpu}m",
+                f"{container_memory}Mi",
             ),
         }
     ]
@@ -967,8 +1091,8 @@ def locust_pod(
                 ],
                 "volumeMounts": common_mounts,
                 "resources": resources(
-                    f"{int(config['infrastructure']['openshift']['load_pod']['cpu_millicores']) // 4}m",
-                    f"{int(config['infrastructure']['openshift']['load_pod']['memory_mib']) // 4}Mi",
+                    f"{container_cpu}m",
+                    f"{container_memory}Mi",
                 ),
             }
         )
@@ -978,14 +1102,26 @@ def locust_pod(
         "metadata": metadata(name, namespace),
         "spec": {
             "serviceAccountName": "benchmark",
-            "nodeName": node,
+            "affinity": node_affinity(node),
             "restartPolicy": "Never",
             "terminationGracePeriodSeconds": 5,
+            "securityContext": {"fsGroup": 1000},
             "volumes": [
                 {"name": "code", "configMap": {"name": "benchmark-code"}},
                 {"name": "reports", "emptyDir": {}},
             ],
-            "containers": containers,
+            "containers": [
+                *containers,
+                {
+                    "name": "reports",
+                    "image": config["images"]["locust"],
+                    "command": ["python", "-c", "import time; time.sleep(86400)"],
+                    "volumeMounts": [{"name": "reports", "mountPath": "/reports"}],
+                    "resources": resources(
+                        f"{REPORT_CPU_MILLICORES}m", f"{REPORT_MEMORY_MIB}Mi"
+                    ),
+                },
+            ],
         },
     }
 
@@ -1118,7 +1254,7 @@ def helper_pressure(
                 seen_locust = True
                 if container.startswith("worker-"):
                     worker_cpu.setdefault(container, []).append(
-                        cpu_milli / (load_cpu / 4) * 100
+                        cpu_milli / ((load_cpu - REPORT_CPU_MILLICORES) // 4) * 100
                     )
             elif pod == instance_name("fast-time", lane, users):
                 fast_cpu += cpu_milli
@@ -1173,7 +1309,7 @@ def collect_reports(
         f"{namespace}/{pod}:/reports/.",
         oc.container_path(destination),
         "-c",
-        "master",
+        "reports",
         check=False,
         timeout=300,
     )
@@ -1332,11 +1468,20 @@ def main() -> None:
     save()
     try:
         setup_namespace(oc, namespace, Path(args.assets))
-        nodes = assign_nodes(config, oc.json("get", "nodes"))
+        oc.run(
+            "wait", "--for=condition=Ready", "nodes", "--all",
+            "--timeout=600s", timeout=630,
+        )
+        cluster_nodes = oc.json("get", "nodes")
+        nodes = assign_nodes(config, cluster_nodes)
+        capacity = validate_capacity(
+            config, cluster_nodes, nodes, oc.json("get", "pods", "-A")
+        )
         all_parallel = bool(config["workload"].get("parallel_user_levels"))
         result["inventory"] = {
             "namespace": namespace,
             "nodes": nodes,
+            "capacity": capacity,
             "architecture": (
                 "eight reserved 2v2 targets running concurrently on three dedicated-role workers"
                 if all_parallel
@@ -1352,6 +1497,10 @@ def main() -> None:
             [(lane, users) for users in levels for lane in LANES]
             if all_parallel
             else [(lane, None) for lane in LANES]
+        )
+        print(
+            f"OpenShift capacity checked; deploying {len(instances)} Fast Time pods",
+            flush=True,
         )
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=len(instances)
@@ -1371,6 +1520,7 @@ def main() -> None:
             for future in futures:
                 future.result()
         credentials: dict[tuple[str, int | None], tuple[str, list[str]]] = {}
+        print(f"Deploying {len(instances)} target stacks", flush=True)
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=len(instances)
         ) as executor:
@@ -1413,6 +1563,10 @@ def main() -> None:
             if all_parallel
             else [(lane, levels[0]) for lane in LANES]
         )
+        print(
+            f"Checking all six tools on {len(smoke_instances)} target stacks",
+            flush=True,
+        )
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=len(smoke_instances)
         ) as executor:
@@ -1433,6 +1587,7 @@ def main() -> None:
             for future in futures:
                 future.result()
         stop_event = threading.Event()
+        print(f"Starting benchmark measurements: {levels}", flush=True)
         step_results: dict[int, dict[str, dict]] = {}
         workers = len(levels) if all_parallel else 1
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:

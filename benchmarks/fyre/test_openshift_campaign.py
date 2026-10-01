@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 
 import openshift_campaign
 
@@ -122,7 +124,74 @@ class OpenShiftCampaignTests(unittest.TestCase):
         )
         self.assertEqual(cpu_milli, 4000)
         self.assertEqual(memory_mib, 16384)
-        self.assertEqual(len(containers), 4)
+        self.assertEqual(len(containers), 5)
+        self.assertEqual(containers[-1]["name"], "reports")
+        self.assertEqual(pod["spec"]["securityContext"]["fsGroup"], 1000)
+        self.assertNotIn("nodeName", pod["spec"])
+        selection = pod["spec"]["affinity"]["nodeAffinity"][
+            "requiredDuringSchedulingIgnoredDuringExecution"
+        ]["nodeSelectorTerms"][0]["matchFields"][0]
+        self.assertEqual(selection["key"], "metadata.name")
+        self.assertEqual(selection["values"], ["worker-1"])
+
+    def test_collects_reports_from_live_container_after_master_exits(self):
+        class FakeOc:
+            def container_path(self, path):
+                return str(path)
+
+            def run(self, *arguments, **kwargs):
+                if arguments[arguments.index("-c") + 1] != "reports":
+                    raise RuntimeError("cannot exec into a terminated master")
+                return subprocess.CompletedProcess(arguments, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as directory:
+            openshift_campaign.collect_reports(
+                FakeOc(), "benchmark", "load-external-125", Path(directory)
+            )
+
+    def test_capacity_accounts_for_system_pods_and_setup(self):
+        config = {
+            "workload": {"parallel_user_levels": True, "user_levels": [125, 250, 500, 1000]},
+            "infrastructure": {"openshift": {
+                "target_pod": {"cpu_millicores": 1500, "memory_mib": 1280},
+                "load_pod": {"cpu_millicores": 1500, "memory_mib": 768},
+                "backend_pod": {"cpu_millicores": 1500, "memory_mib": 768},
+            }},
+        }
+        assigned = {role: [role] for role in ("target", "locust", "fast-time")}
+        nodes = {"items": [
+            {"metadata": {"name": role}, "status": {"allocatable": {
+                "cpu": "14", "memory": "12Gi" if role == "target" else "9Gi"
+            }}} for role in assigned
+        ]}
+        pods = {"items": [{
+            "spec": {"nodeName": "target", "containers": [{"resources": {
+                "requests": {"cpu": "500m", "memory": "512Mi"}
+            }}]}, "status": {"phase": "Running"}
+        }]}
+        capacity = openshift_campaign.validate_capacity(config, nodes, assigned, pods)
+        self.assertEqual(len(capacity), 3)
+        config["infrastructure"]["openshift"]["target_pod"]["memory_mib"] = 1408
+        with self.assertRaisesRegex(RuntimeError, "after OpenShift reservations and existing pods"):
+            openshift_campaign.validate_capacity(config, nodes, assigned, pods)
+        # A completed system job no longer consumes its request.
+        pods["items"][0]["status"]["phase"] = "Succeeded"
+        openshift_campaign.validate_capacity(config, nodes, assigned, pods)
+        config["infrastructure"]["openshift"]["backend_pod"]["memory_mib"] = 1408
+        with self.assertRaisesRegex(RuntimeError, "fast-time cannot fit"):
+            openshift_campaign.validate_capacity(config, nodes, assigned, pods)
+
+    def test_capacity_includes_init_sidecars_and_pod_overhead(self):
+        cpu, memory = openshift_campaign.pod_requests({"spec": {
+            "containers": [{"resources": {"requests": {"cpu": "1", "memory": "1Gi"}}}],
+            "initContainers": [
+                {"restartPolicy": "Always", "resources": {"requests": {"cpu": "100m", "memory": "128Mi"}}},
+                {"resources": {"requests": {"cpu": "2", "memory": "512Mi"}}},
+            ],
+            "overhead": {"cpu": "10m", "memory": "16Mi"},
+        }})
+        self.assertEqual(cpu, 2110)
+        self.assertEqual(memory, 1168)
 
     def test_memory_summary_adds_all_gateway_sidecars(self):
         samples = [

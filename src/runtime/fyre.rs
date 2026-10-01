@@ -1013,6 +1013,18 @@ fn validate_openshift_config(config: &FyreConfig) -> Result<()> {
             && openshift.backend_pod.memory_mib > 0,
         "OpenShift helper pod resources must be positive"
     );
+    ensure!(
+        openshift.load_pod.cpu_millicores >= 20 + 4 && openshift.load_pod.memory_mib >= 32 + 4,
+        "OpenShift Locust allocation must fit four processes and report collection"
+    );
+    let scenario = &config.scenarios[0];
+    ensure!(
+        openshift.target_pod.cpu_millicores > 500
+            && openshift.target_pod.memory_mib > 512
+            && openshift.target_pod.cpu_millicores <= scenario.cpu * 1_000
+            && openshift.target_pod.memory_mib <= scenario.memory_gb * 1_024,
+        "OpenShift target requests must fit sidecars and cannot exceed the target limits"
+    );
     if config.workload.parallel_user_levels {
         let measurements = (config.workload.user_levels.len() * 2) as u32;
         let pool = |role: &str| {
@@ -1023,16 +1035,14 @@ fn validate_openshift_config(config: &FyreConfig) -> Result<()> {
                 .expect("validated OpenShift worker role")
         };
         let target = pool("target");
-        let scenario = &config.scenarios[0];
-        ensure!(
-            openshift.target_pod.cpu_millicores <= scenario.cpu * 1_000
-                && openshift.target_pod.memory_mib <= scenario.memory_gb * 1_024,
-            "OpenShift target requests cannot exceed the target limits"
-        );
+        // FYRE VM memory is decimal GB; pod memory requests are binary MiB.
+        let memory_mib = |worker: &OpenShiftWorkerPool| {
+            u64::from(worker.memory_gb) * u64::from(worker.count) * 1_000_000_000 / (1_024 * 1_024)
+        };
         ensure!(
             openshift.target_pod.cpu_millicores * measurements <= target.cpu * target.count * 1_000
-                && openshift.target_pod.memory_mib * measurements
-                    <= target.memory_gb * target.count * 1_024,
+                && u64::from(openshift.target_pod.memory_mib) * u64::from(measurements)
+                    <= memory_mib(target),
             "shared OpenShift target workers cannot reserve every parallel target"
         );
         for (role, pod) in [
@@ -1042,7 +1052,7 @@ fn validate_openshift_config(config: &FyreConfig) -> Result<()> {
             let worker = pool(role);
             ensure!(
                 pod.cpu_millicores * measurements <= worker.cpu * worker.count * 1_000
-                    && pod.memory_mib * measurements <= worker.memory_gb * worker.count * 1_024,
+                    && u64::from(pod.memory_mib) * u64::from(measurements) <= memory_mib(worker),
                 "shared OpenShift {role} worker cannot reserve every parallel benchmark pod"
             );
         }
