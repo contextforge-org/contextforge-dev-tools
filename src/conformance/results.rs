@@ -195,9 +195,9 @@ pub(crate) fn is_trusted_official_fixture(fixture: &ConformanceFixtureMetadata) 
         && fixture.server_id == OFFICIAL_CONFORMANCE_SERVER_ID
 }
 
-// Exact server catalogs emitted by @modelcontextprotocol/conformance@0.2.0-alpha.11.
-// Keep these coupled to OFFICIAL_CONFORMANCE_PACKAGE and verify the pin with
-// the ignored package-backed test before updating either.
+// Exact server catalogs emitted by @modelcontextprotocol/conformance@0.2.0-alpha.12.
+// Keep these coupled to OFFICIAL_CONFORMANCE_PACKAGE and verify each catalog
+// against the published CLI before updating either.
 const SERVER_SCENARIOS_2025_06_18: [&str; 27] = [
     "server-initialize",
     "server-session-lifecycle",

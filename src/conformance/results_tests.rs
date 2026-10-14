@@ -246,7 +246,7 @@ fn official_command_is_pinned_complete_and_ordered() {
 
     assert_eq!(
         OFFICIAL_CONFORMANCE_PACKAGE,
-        "@modelcontextprotocol/conformance@0.2.0-alpha.11"
+        "@modelcontextprotocol/conformance@0.2.0-alpha.12"
     );
     assert_eq!(DEFAULT_MCP_SPEC_VERSION, "2026-07-28");
     assert_eq!(spec.program(), "conformance");

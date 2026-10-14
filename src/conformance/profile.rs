@@ -2,12 +2,12 @@
 
 /// Published official CLI package used as the conformance client.
 pub(crate) const OFFICIAL_CONFORMANCE_PACKAGE: &str =
-    "@modelcontextprotocol/conformance@0.2.0-alpha.11";
+    "@modelcontextprotocol/conformance@0.2.0-alpha.12";
 /// Official repository containing the matching TypeScript fixture server.
 pub(crate) const OFFICIAL_CONFORMANCE_REPOSITORY: &str =
     "https://github.com/modelcontextprotocol/conformance";
 /// Exact source revision behind the published CLI and TypeScript fixture.
-pub(crate) const OFFICIAL_CONFORMANCE_REVISION: &str = "c321dd32035556e6769d3724a8ee97d87c3faaac";
+pub(crate) const OFFICIAL_CONFORMANCE_REVISION: &str = "f44482ba17df816d3176962a11cdf36aec9bda00";
 /// Default draft protocol revision exercised by official conformance commands.
 pub(crate) const DEFAULT_MCP_SPEC_VERSION: &str = "2026-07-28";
 /// Previous stable revision supported by the pinned official conformance package.
