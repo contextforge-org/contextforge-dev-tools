@@ -7,6 +7,17 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-14
+
+### Changed
+
+- Upgrade the official MCP conformance runner to `0.2.0-alpha.12` and pin
+  the matching TypeScript fixture revision. Refresh packaged baselines from
+  verified runs against the updated runner and fixture.
+- Apply the upstream runner's 30-second server-scenario deadline. Stalled
+  scenarios now report `scenario-timeout` findings. Regenerate caller-owned
+  baselines when adopting the upgraded runner.
+
 ## [0.5.1] - 2026-09-21
 
 ### Fixed
