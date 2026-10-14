@@ -67,10 +67,6 @@ findings:
   check: wire-schema-valid
   name: WireSchemaValid
   status: FAILURE
-- scenario: input-required-result-validate-input
-  check: wire-schema-valid
-  name: WireSchemaValid
-  status: FAILURE
 - scenario: json-schema-2020-12
   check: wire-schema-valid
   name: WireSchemaValid
@@ -110,10 +106,6 @@ findings:
 - scenario: resources-templates-read
   check: wire-schema-valid
   name: WireSchemaValid
-  status: FAILURE
-- scenario: sep-2164-resource-not-found
-  check: sep-2164-data-uri
-  name: ResourcesNotFoundDataUri
   status: FAILURE
 - scenario: sep-2164-resource-not-found
   check: wire-schema-valid
