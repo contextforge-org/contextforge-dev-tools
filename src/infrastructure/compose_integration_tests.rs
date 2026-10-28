@@ -862,7 +862,7 @@ fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
     assert!(dockerfile.contains("FROM node:22-bookworm-slim"));
     assert!(
         dockerfile
-            .contains("ARG MCP_CONFORMANCE_REVISION=c321dd32035556e6769d3724a8ee97d87c3faaac")
+            .contains("ARG MCP_CONFORMANCE_REVISION=f44482ba17df816d3176962a11cdf36aec9bda00")
     );
     assert!(dockerfile.contains(
         "git clone https://github.com/modelcontextprotocol/conformance.git mcp-conformance"
@@ -870,6 +870,9 @@ fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
     assert!(
         dockerfile
             .contains("git -C mcp-conformance checkout --detach \"${MCP_CONFORMANCE_REVISION}\"")
+    );
+    assert!(
+        dockerfile.contains("git -C mcp-conformance fetch origin \"${MCP_CONFORMANCE_REVISION}\"")
     );
     assert!(dockerfile.contains("WORKDIR /opt/mcp-conformance/examples/servers/typescript"));
     assert!(dockerfile.contains("npm ci"));

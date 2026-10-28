@@ -1,33 +1,65 @@
 findings:
-- scenario: input-required-result-unsupported-methods
-  check: sep-2322-not-on-unsupported-requests
-  name: NotOnUnsupportedRequests
+- scenario: completion-complete
+  check: wire-schema-valid
+  name: WireSchemaValid
   status: FAILURE
-- scenario: input-required-result-validate-input
-  check: sep-2322-validate-input-responses
-  name: ValidateInputResponses
-  status: WARNING
-- scenario: sep-2164-resource-not-found
-  check: sep-2164-data-uri
-  name: ResourcesNotFoundDataUri
+- scenario: prompts-get-embedded-resource
+  check: wire-schema-valid
+  name: WireSchemaValid
+  status: FAILURE
+- scenario: prompts-get-simple
+  check: wire-schema-valid
+  name: WireSchemaValid
+  status: FAILURE
+- scenario: prompts-get-with-args
+  check: wire-schema-valid
+  name: WireSchemaValid
+  status: FAILURE
+- scenario: prompts-get-with-image
+  check: wire-schema-valid
+  name: WireSchemaValid
+  status: FAILURE
+- scenario: resources-read-binary
+  check: wire-schema-valid
+  name: WireSchemaValid
+  status: FAILURE
+- scenario: resources-read-text
+  check: wire-schema-valid
+  name: WireSchemaValid
   status: FAILURE
 - scenario: server-stateless
   check: sep-2575-discover-capabilities-match-handlers
   name: DiscoverCapabilitiesMatchHandlers
   status: FAILURE
 - scenario: server-stateless
-  check: sep-2575-http-server-error-jsonrpc-id
-  name: HttpServerErrorJsonrpcId
-  status: FAILURE
-- scenario: server-stateless
-  check: sep-2575-http-server-meta-invalid-400
-  name: HttpServerMetaInvalid400
-  status: FAILURE
-- scenario: server-stateless
-  check: sep-2575-http-server-unsupported-version-400
-  name: HttpServerUnsupportedVersion400
-  status: FAILURE
-- scenario: server-stateless
   check: sep-2575-server-declares-prompts-in-discover
   name: ServerDeclaresPromptsInDiscover
+  status: FAILURE
+- scenario: tools-call-audio
+  check: wire-schema-valid
+  name: WireSchemaValid
+  status: FAILURE
+- scenario: tools-call-embedded-resource
+  check: wire-schema-valid
+  name: WireSchemaValid
+  status: FAILURE
+- scenario: tools-call-error
+  check: wire-schema-valid
+  name: WireSchemaValid
+  status: FAILURE
+- scenario: tools-call-image
+  check: wire-schema-valid
+  name: WireSchemaValid
+  status: FAILURE
+- scenario: tools-call-mixed-content
+  check: wire-schema-valid
+  name: WireSchemaValid
+  status: FAILURE
+- scenario: tools-call-simple-text
+  check: wire-schema-valid
+  name: WireSchemaValid
+  status: FAILURE
+- scenario: tools-call-with-progress
+  check: wire-schema-valid
+  name: WireSchemaValid
   status: FAILURE
