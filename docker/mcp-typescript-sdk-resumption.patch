@@ -1,0 +1,30 @@
+--- a/dist/esm/server/webStandardStreamableHttp.js
++++ b/dist/esm/server/webStandardStreamableHttp.js
+@@ -699,14 +699,16 @@
+             throw new Error(`No connection established for request ID: ${String(requestId)}`);
+         }
+         const stream = this._streamMapping.get(streamId);
+-        if (!this._enableJsonResponse && stream?.controller && stream?.encoder) {
++        if (!this._enableJsonResponse) {
+             // For SSE responses, generate event ID if event store is provided
+             let eventId;
+             if (this._eventStore) {
+                 eventId = await this._eventStore.storeEvent(streamId, message);
+             }
+             // Write the event to the response stream
+-            this.writeSSEEvent(stream.controller, stream.encoder, message, eventId);
++            if (stream?.controller && stream?.encoder) {
++                this.writeSSEEvent(stream.controller, stream.encoder, message, eventId);
++            }
+         }
+         if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) {
+             this._requestResponseMap.set(requestId, message);
+@@ -717,7 +719,7 @@
+             const allResponsesReady = relatedIds.every(id => this._requestResponseMap.has(id));
+             if (allResponsesReady) {
+                 if (!stream) {
+-                    throw new Error(`No connection established for request ID: ${String(requestId)}`);
++                    return;
+                 }
+                 if (this._enableJsonResponse && stream.resolveJson) {
+                     // All responses ready, send as JSON

@@ -7,6 +7,16 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-29
+
+### Fixed
+
+- Preserve legacy fixture tool results while their SSE response stream is
+  disconnected so clients can recover them with `Last-Event-ID`. Validate
+  delayed resumption repeatedly before publishing fixture images. This removes
+  catalog-order-dependent header-validation timeouts and the fixture's SSE
+  polling timeout.
+
 ## [0.6.0] - 2026-10-14
 
 ### Changed
