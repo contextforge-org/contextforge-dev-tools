@@ -14,6 +14,11 @@ RUN git clone https://github.com/modelcontextprotocol/conformance.git mcp-confor
 WORKDIR /opt/mcp-conformance/examples/servers/typescript
 RUN npm ci
 
+COPY docker/mcp-typescript-sdk-resumption.patch /tmp/mcp-typescript-sdk-resumption.patch
+RUN test "$(node -p "require('./node_modules/@modelcontextprotocol/sdk/package.json').version")" = "1.29.0" \
+    && git -C /opt/mcp-conformance apply --check --directory=examples/servers/typescript/node_modules/@modelcontextprotocol/sdk /tmp/mcp-typescript-sdk-resumption.patch \
+    && git -C /opt/mcp-conformance apply --directory=examples/servers/typescript/node_modules/@modelcontextprotocol/sdk /tmp/mcp-typescript-sdk-resumption.patch
+
 COPY docker/mcp-conformance.patch /tmp/mcp-conformance.patch
 RUN git apply --check /tmp/mcp-conformance.patch && git apply /tmp/mcp-conformance.patch
 

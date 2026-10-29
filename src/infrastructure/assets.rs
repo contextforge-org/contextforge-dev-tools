@@ -70,6 +70,7 @@ static ASSETS: LazyLock<Vec<EmbeddedAsset>> = LazyLock::new(|| {
         asset!("docker/nginx.cf-dataplane.conf"),
         asset!("docker/nginx.cf-dataplane-standalone.conf.template"),
         asset!("docker/mcp-conformance.patch"),
+        asset!("docker/mcp-typescript-sdk-resumption.patch"),
         asset!("docker/helpers.Dockerfile"),
         asset!("docker/controlplane-principal.cel"),
         asset!("scripts/live_protocol/sitecustomize.py"),
