@@ -26,8 +26,8 @@ versioned fixture, tooling, and helper images; normal runs pull missing images
 and reuse existing copies without compiling Rust or installing npm packages.
 Use `CF_COMPOSE_BUILD=true` to rebuild images while developing the harness.
 `CF_CONFORMANCE_IMAGE`, `CF_MCP_TOOLS_IMAGE`, and `CF_HELPERS_IMAGE` select
-prebuilt alternatives, including images loaded by another CI workflow. Rust 1.97
-is needed only for explicit source builds.
+prebuilt alternatives, including images loaded by another CI workflow. Building
+from source uses Rust 1.100 by default and supports Rust 1.97 or later.
 
 The release publishes amd64 and arm64 images after container smoke tests. The
 `cf-integration-fixture`, `cf-integration-tools`, and `cf-integration-helpers`
@@ -112,7 +112,7 @@ The CLI generates a strong local admin password in `CF_INTEGRATION_DIR/admin-pas
 (mode `0600`) and reuses it across runs. `PLATFORM_ADMIN_PASSWORD` overrides it;
 `DEFAULT_USER_PASSWORD` defaults to that effective password. Existing databases
 need their original admin password. Fast Time registration logs in through the
-control-plane API and never prints tokens. All load lanes use Locust 2.46.2.
+control-plane API and never prints tokens. All load lanes use Locust 2.47.0.
 Load proxies pool upstream connections and refresh Docker DNS after backend
 restarts. Builtin load routes directly to the active gateway listener on 4444,
 with a shorter idle pool timeout than the backend.

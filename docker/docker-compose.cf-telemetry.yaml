@@ -2,7 +2,7 @@
 
 services:
   clickstack:
-    image: ${CF_CLICKSTACK_IMAGE:-clickhouse/clickstack-local:2.37.0@sha256:1b67e1a3667be097c704913d18b96e388eb4d85c1e8aa8eec805dc9fdad98426}
+    image: ${CF_CLICKSTACK_IMAGE:-clickhouse/clickstack-local:2.47.0@sha256:d491739ed02217e736d509094b28dc001842adacb4de2b654c2cc83fe31662aa}
     labels:
       name: cf-clickstack
     restart: unless-stopped

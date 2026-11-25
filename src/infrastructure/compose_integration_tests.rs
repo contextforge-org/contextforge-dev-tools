@@ -565,7 +565,7 @@ fn standalone_harness_owns_auth_without_dataplane_tools() {
     );
     assert_eq!(
         compose["services"]["locust"]["image"].as_str(),
-        Some("locustio/locust:2.46.2")
+        Some("locustio/locust:2.47.0")
     );
     for service in ["dataplane", "locust"] {
         for key in ["soft", "hard"] {
@@ -728,7 +728,7 @@ fn observability_is_ephemeral_and_exports_both_routed_services() {
         clickstack["image"]
             .as_str()
             .expect("ClickStack image must be text")
-            .contains("clickstack-local:2.37.0@sha256:")
+            .contains("clickstack-local:2.47.0@sha256:")
     );
     assert_eq!(
         clickstack["ports"][0].as_str(),
@@ -859,7 +859,7 @@ fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
         fs::read_to_string(root.join("docker/docker-compose.cf-conformance-controlplane.yaml"))
             .expect("read control-plane conformance Compose overlay");
 
-    assert!(dockerfile.contains("FROM node:22-bookworm-slim"));
+    assert!(dockerfile.contains("FROM node:26.13.1-trixie-slim@sha256:"));
     assert!(
         dockerfile
             .contains("ARG MCP_CONFORMANCE_REVISION=f44482ba17df816d3176962a11cdf36aec9bda00")
@@ -880,11 +880,12 @@ fn conformance_container_inputs_pin_the_runner_revision_and_protocol_fixture() {
         "git apply --check /tmp/mcp-conformance.patch && git apply /tmp/mcp-conformance.patch"
     ));
     assert!(dockerfile.contains(
-        "git diff --exit-code -- . ':(exclude)examples/servers/typescript/everything-server.ts'"
+        "git apply --directory=examples/servers/typescript /tmp/mcp-conformance-fixture-deps.patch"
     ));
-    assert!(
-        dockerfile.contains("git diff --check -- examples/servers/typescript/everything-server.ts")
-    );
+    for file in ["everything-server.ts", "package.json", "package-lock.json"] {
+        assert!(dockerfile.contains(&format!("':(exclude)examples/servers/typescript/{file}'")));
+    }
+    assert!(dockerfile.contains("git diff --check"));
     assert!(dockerfile.contains(
         "grep -Fxc \"const app = createMcpExpressApp({ allowedHosts: ['mcp_conformance_server', 'localhost', '127.0.0.1', '::1'] });\" examples/servers/typescript/everything-server.ts"
     ));
@@ -943,7 +944,7 @@ services:
       - mcpnet
   mcp_conformance_proxy:
     profiles: ["conformance"]
-    image: nginx:1.30.4-alpine3.24
+    image: nginx:1.31.10-alpine3.24
     labels:
       name: cf-conformance-proxy
     restart: "no"

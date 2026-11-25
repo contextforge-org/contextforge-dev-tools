@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 HELPER_SATURATED = 42
-ANSIBLE_CORE_VERSION = "2.21.4"
+ANSIBLE_CORE_VERSION = "2.22.0"
 
 
 def run(
@@ -135,6 +135,8 @@ def bootstrap_hosts(
             "uv",
             "tool",
             "run",
+            "--python",
+            "3.13",
             "--from",
             f"ansible-core=={ANSIBLE_CORE_VERSION}",
             "ansible-playbook",
