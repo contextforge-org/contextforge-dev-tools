@@ -5,7 +5,7 @@ services:
 
   mcp_conformance_proxy:
     profiles: ["conformance"]
-    image: nginx:1.30.4-alpine3.24
+    image: nginx:1.31.10-alpine3.24
     labels:
       name: cf-conformance-proxy
     restart: "no"

@@ -30,7 +30,7 @@ revision accepts the same `2026-07-28` stateless client used by the external dat
 
 - Terraform 1.8+, or `CF_TERRAFORM_BIN` pointing to a compatible binary.
 - `python3`, `uv`, SSH, and SCP on the orchestration host. The CLI runs pinned
-  `ansible-core` through `uv` for host bootstrap.
+  `ansible-core` on Python 3.13 through `uv` for host bootstrap.
 - The SSH key pair configured in `scaling.yaml`.
 - `FYRE_USERNAME` and `FYRE_API_KEY`. `FYRE_PRODUCT_GROUP_ID` and `FYRE_SITE`
   are optional.

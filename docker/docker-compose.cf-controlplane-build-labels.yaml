@@ -52,7 +52,7 @@ services:
     command: []
 
   nginx:
-    image: ${NGINX_IMAGE:-nginx:1.30.4-alpine3.24}
+    image: ${NGINX_IMAGE:-nginx:1.31.10-alpine3.24}
     labels:
       name: cf-nginx
 
@@ -69,12 +69,12 @@ services:
       name: cf-redis
 
   locust:
-    image: locustio/locust:2.46.2
+    image: locustio/locust:2.47.0
     labels:
       name: cf-locust
 
   locust_worker:
-    image: locustio/locust:2.46.2
+    image: locustio/locust:2.47.0
     labels:
       name: cf-locust-worker
 

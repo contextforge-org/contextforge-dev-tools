@@ -7,6 +7,21 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-25
+
+### Changed
+
+- Update all direct Rust dependencies, including the breaking upgrades to
+  `base64` 0.23, `jsonwebtoken` 12, and `pem` 4. Use Rust 1.100 for development
+  and release builds while keeping Rust 1.97 as the minimum for source builds.
+- Build the harness images on Debian Trixie and move the conformance and
+  Inspector images to Node.js 26. Upgrade Inspector to 2.16.0 and use the
+  TypeScript SDK 1.32.2's built-in SSE resumption support for the fixture.
+  Refresh the fixture's npm dependency lockfile, including TypeScript 7.
+- Update the CI actions, Redis, NGINX, ClickStack, Locust, and FYRE's PostgreSQL
+  and Ansible dependencies. Use a fresh PostgreSQL data directory for new FYRE
+  campaigns or migrate existing data before using PostgreSQL 19.
+
 ## [0.6.1] - 2026-10-29
 
 ### Fixed
@@ -355,7 +370,10 @@ and this project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 - Added builtin and external dataplane routing through reusable Docker Compose
   overlays.
 
-[Unreleased]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.6.1...v0.7.0
+[0.6.1]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/contextforge-org/contextforge-dev-tools/compare/v0.3.1...v0.4.0
